@@ -388,9 +388,7 @@ end
 --- The object a trait has bound to an instance, or nil. Name the type
 --- to get it typed: `Forge.trait<<Door>>(part, Door)`.
 export function get<T>(instance: Instance, trait: unknown) -> T?
-  const bound = bound_by_trait[exported(trait)]
-
-  return if bound then (bound[instance] :: unknown) :: T else nil
+  return (bound_by_trait[exported(trait)]?[instance] :: unknown) :: T?
 end
 
 --- Every object a trait has bound, in no set order.

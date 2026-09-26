@@ -47,9 +47,7 @@ export type Links = {
 --- it; a name finds a provider the game added.
 @allow(explicit_any)
 export function use(target: Target) -> any
-  const good = if target is string
-    then target ~= ''
-    else target is Instance and target:IsA('ModuleScript')
+  const good = target is string ? target ~= '' : target is Instance and target:IsA('ModuleScript')
 
   if not good then
     error(
@@ -92,7 +90,7 @@ end
 
 --- The name of a target, for a message.
 local function name_of(target: Target) -> string
-  return if target is string then target else target.Name
+  return target is string ? target : target.Name
 end
 
 --- Resolves every dependency field of every entry. Errors with
@@ -194,7 +192,7 @@ export function order(entries: { Entry }, uses: { [Entry]: { Entry } }) -> { Ent
     end
   end
 
-  return if #sorted == #entries then sorted else nil
+  return #sorted == #entries ? sorted : nil
 end
 
 --- One cycle among the entries, as `A -> B -> A`. Called once `order`
