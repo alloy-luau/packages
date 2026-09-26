@@ -98,7 +98,7 @@ export function link(entries: { Entry }) -> Links
   local fields: { [Entry]: { [string]: Entry } } = {}
 
   for _, entry in entries do
-    local seen: Set<Entry> = Set.new()
+    local seen: Set<Entry> = new Set()
     const list: { Entry } = {}
     local named: { [string]: Entry } = {}
 
@@ -196,7 +196,7 @@ end
 --- One cycle among the entries, as `A -> B -> A`. Called once `order`
 --- has shown that a cycle exists.
 export function cycle_path(entries: { Entry }, uses: { [Entry]: { Entry } }) -> string
-  local state: HashMap<Entry, string> = HashMap.new()
+  local state: HashMap<Entry, string> = new HashMap()
   const stack: { Entry } = {}
 
   local function visit(entry: Entry) -> { Entry }?

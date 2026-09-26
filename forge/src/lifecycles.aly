@@ -380,7 +380,7 @@ local function check_listed(
   customs: { CustomLifecycle },
   on_server: () -> boolean
 ) -> ()
-  local fired: Set<string> = Set.new()
+  local fired: Set<string> = new Set()
 
   for _, lifecycle in customs do
     fired:add(lifecycle.Method)

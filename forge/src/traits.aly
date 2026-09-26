@@ -95,7 +95,7 @@ export type TraitInfo = {
 
 --- The bound objects of each trait, by instance. Module-wide, so `get`
 --- works from anywhere, and so a trait wired twice shows.
-local bound_by_trait: HashMap<unknown, HashMap<Instance, ProviderObject>> = HashMap.new()
+local bound_by_trait: HashMap<unknown, HashMap<Instance, ProviderObject>> = new HashMap()
 
 --- Reads a trait from the value of its module. Errors with BadArgument
 --- when the value carries no `@Trait`.
@@ -188,7 +188,7 @@ local function fields_of(
   instance: Instance,
   children: { [string]: Instance }
 ) -> ({ [string]: unknown }?, string?)
-  local fields: { [string]: unknown } = { instance = instance, bin = Bin.new() }
+  local fields: { [string]: unknown } = { instance = instance, bin = new Bin() }
 
   for field, child in children do
     fields[field] = child
@@ -309,8 +309,8 @@ export function watch(info: TraitInfo) -> ()
     return
   end
 
-  local bound: HashMap<Instance, ProviderObject> = HashMap.new()
-  local pending: HashMap<Instance, thread> = HashMap.new()
+  local bound: HashMap<Instance, ProviderObject> = new HashMap()
+  local pending: HashMap<Instance, thread> = new HashMap()
   bound_by_trait:set(info.struct, bound)
 
   local function bind(instance: Instance) -> ()

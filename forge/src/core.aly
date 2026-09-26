@@ -56,10 +56,10 @@ export type Options = { Verbose: boolean? }
 export struct Forge
   private verbose: boolean
   private modules: { ModuleScript } = {}
-  private added: Set<ModuleScript> = Set.new()
+  private added: Set<ModuleScript> = new Set()
   private entries: { Entry } = {}
-  private by_module: HashMap<ModuleScript, Entry> = HashMap.new()
-  private structs: Set<unknown> = Set.new()
+  private by_module: HashMap<ModuleScript, Entry> = new HashMap()
+  private structs: Set<unknown> = new Set()
   private extensions: { Extension } = {}
   private lifecycles: { CustomLifecycle } = {}
   private trait_infos: { TraitInfo } = {}

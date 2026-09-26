@@ -68,7 +68,7 @@ end
 
 @test
 function add_returns_the_item() -> ()
-  const bin = Bin.new()
+  const bin = new Bin()
   const cleanup = function() -> () end
 
   $assert_eq(bin:Add(cleanup), cleanup)
@@ -76,7 +76,7 @@ end
 
 @test
 function add_rejects_what_it_cannot_clean() -> ()
-  const bin = Bin.new()
+  const bin = new Bin()
 
   $expect(function() -> ()
     bin:Add(5)
@@ -85,7 +85,7 @@ end
 
 @test
 function empty_runs_the_newest_item_first() -> ()
-  const bin = Bin.new()
+  const bin = new Bin()
   const order: { number } = []
 
   bin:Add(function() -> ()
@@ -104,7 +104,7 @@ end
 
 @test
 function empty_cancels_a_thread() -> ()
-  const bin = Bin.new()
+  const bin = new Bin()
   const thread = coroutine.create(function() -> ()
     coroutine.yield()
   end)
@@ -118,7 +118,7 @@ end
 
 @test
 function a_second_empty_runs_nothing_again() -> ()
-  const bin = Bin.new()
+  const bin = new Bin()
   local calls = 0
 
   bin:Add(function() -> ()
@@ -132,7 +132,7 @@ end
 
 @test
 function the_bin_stays_usable_after_empty() -> ()
-  const bin = Bin.new()
+  const bin = new Bin()
   local calls = 0
 
   bin:Empty()
