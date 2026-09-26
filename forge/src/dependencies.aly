@@ -260,105 +260,110 @@ export function inject(entries: { Entry }, links: Links) -> ()
   end
 end
 
---- An entry for the tests, with the dependency fields it lists.
-local function entry(name: string, priority: number, uses: { string }) -> Entry
-  local provider: ProviderObject = {}
+--- The tests of dependencies, with the entries they order. The ship
+--- artifact leaves the whole group out.
+@test
+namespace DependencyTests
+  --- An entry for the tests, with the dependency fields it lists.
+  private function entry(name: string, priority: number, uses: { string }) -> Entry
+    local provider: ProviderObject = {}
 
-  for _, target in uses do
-    provider[`dep_{target}`] = use(target)
+    for _, target in uses do
+      provider[`dep_{target}`] = use(target)
+    end
+
+    return {
+      Name = name,
+      ModuleScript = Instance.new('ModuleScript'),
+      Provider = provider,
+      Lifecycles = [],
+      Priority = priority,
+    }
   end
 
-  return {
-    Name = name,
-    ModuleScript = Instance.new('ModuleScript'),
-    Provider = provider,
-    Lifecycles = [],
-    Priority = priority,
-  }
-end
+  --- The names of the entries, in order.
+  private function names(entries: { Entry }) -> string
+    const out: { string } = []
 
---- The names of the entries, in order.
-local function names(entries: { Entry }) -> string
-  const out: { string } = []
+    for _, found in entries do
+      table.insert(out, found.Name)
+    end
 
-  for _, found in entries do
-    table.insert(out, found.Name)
+    return table.concat(out, ',')
   end
 
-  return table.concat(out, ',')
-end
+  --- The entries in Init order.
+  private function ordered(entries: { Entry }) -> string
+    return names(order(entries, link(entries).uses) ?? [])
+  end
 
---- The entries in Init order.
-local function ordered(entries: { Entry }) -> string
-  return names(order(entries, link(entries).uses) ?? [])
-end
+  --- use refuses an empty name and a value that is no ModuleScript.
+  public function use_rejects_a_bad_target() -> ()
+    $expect(function() -> ()
+      use('')
+    end):toThrow('BadArgument')
+    $expect(function() -> ()
+      use((5 :: unknown) :: Target)
+    end):toThrow('BadArgument')
+  end
 
-@test
-function use_rejects_a_bad_target() -> ()
-  $expect(function() -> ()
-    use('')
-  end):toThrow('BadArgument')
-  $expect(function() -> ()
-    use((5 :: unknown) :: Target)
-  end):toThrow('BadArgument')
-end
+  --- A provider inits after the provider it uses.
+  public function a_dependency_inits_first() -> ()
+    $assert_eq(ordered([ entry('Shop', 0, [ 'Data' ]), entry('Data', 0, []) ]), 'Data,Shop')
+  end
 
-@test
-function a_dependency_inits_first() -> ()
-  $assert_eq(ordered([ entry('Shop', 0, [ 'Data' ]), entry('Data', 0, []) ]), 'Data,Shop')
-end
+  --- A chain of uses inits from its far end.
+  public function a_chain_inits_deepest_first() -> ()
+    const chain = [ entry('A', 0, [ 'B' ]), entry('B', 0, [ 'C' ]), entry('C', 0, []) ]
 
-@test
-function a_chain_inits_deepest_first() -> ()
-  const chain = [ entry('A', 0, [ 'B' ]), entry('B', 0, [ 'C' ]), entry('C', 0, []) ]
+    $assert_eq(ordered(chain), 'C,B,A')
+  end
 
-  $assert_eq(ordered(chain), 'C,B,A')
-end
+  --- Priority orders the entries whose uses are done.
+  public function priority_breaks_a_tie_between_ready_entries() -> ()
+    const set = [ entry('Low', 0, []), entry('High', 5, []), entry('Tied', 0, []) ]
 
-@test
-function priority_breaks_a_tie_between_ready_entries() -> ()
-  const set = [ entry('Low', 0, []), entry('High', 5, []), entry('Tied', 0, []) ]
+    $assert_eq(ordered(set), 'High,Low,Tied')
+  end
 
-  $assert_eq(ordered(set), 'High,Low,Tied')
-end
+  --- A use comes before a higher priority.
+  public function a_dependency_beats_priority() -> ()
+    $assert_eq(ordered([ entry('High', 9, [ 'Low' ]), entry('Low', 0, []) ]), 'Low,High')
+  end
 
-@test
-function a_dependency_beats_priority() -> ()
-  $assert_eq(ordered([ entry('High', 9, [ 'Low' ]), entry('Low', 0, []) ]), 'Low,High')
-end
+  --- A cycle leaves the order nil and names its path.
+  public function a_cycle_names_its_path() -> ()
+    const cycle = [ entry('Shop', 0, [ 'Data' ]), entry('Data', 0, [ 'Shop' ]) ]
+    const uses = link(cycle).uses
 
-@test
-function a_cycle_names_its_path() -> ()
-  const cycle = [ entry('Shop', 0, [ 'Data' ]), entry('Data', 0, [ 'Shop' ]) ]
-  const uses = link(cycle).uses
+    $assert_eq(order(cycle, uses), nil)
+    $assert_eq(cycle_path(cycle, uses), 'Shop -> Data -> Shop')
+  end
 
-  $assert_eq(order(cycle, uses), nil)
-  $assert_eq(cycle_path(cycle, uses), 'Shop -> Data -> Shop')
-end
+  --- A use of a provider Forge never loaded errors.
+  public function a_missing_dependency_errors() -> ()
+    $expect(function() -> ()
+      link([ entry('Shop', 0, [ 'Data' ]) ])
+    end):toThrow('MissingDependency')
+  end
 
-@test
-function a_missing_dependency_errors() -> ()
-  $expect(function() -> ()
-    link([ entry('Shop', 0, [ 'Data' ]) ])
-  end):toThrow('MissingDependency')
-end
+  --- inject puts the provider in the field that uses it.
+  public function inject_puts_the_provider_in_the_field() -> ()
+    const set = [ entry('Shop', 0, [ 'Data' ]), entry('Data', 0, []) ]
 
-@test
-function inject_puts_the_provider_in_the_field() -> ()
-  const set = [ entry('Shop', 0, [ 'Data' ]), entry('Data', 0, []) ]
+    inject(set, link(set))
 
-  inject(set, link(set))
+    $assert_eq(set[1].Provider.dep_Data, set[2].Provider)
+  end
 
-  $assert_eq(set[1].Provider.dep_Data, set[2].Provider)
-end
+  --- inject errors on a frozen provider.
+  public function inject_refuses_a_frozen_provider() -> ()
+    const set = [ entry('Shop', 0, [ 'Data' ]), entry('Data', 0, []) ]
+    const links = link(set)
+    table.freeze(set[1].Provider)
 
-@test
-function inject_refuses_a_frozen_provider() -> ()
-  const set = [ entry('Shop', 0, [ 'Data' ]), entry('Data', 0, []) ]
-  const links = link(set)
-  table.freeze(set[1].Provider)
-
-  $expect(function() -> ()
-    inject(set, links)
-  end):toThrow('FrozenModule')
+    $expect(function() -> ()
+      inject(set, links)
+    end):toThrow('FrozenModule')
+  end
 end

@@ -428,174 +428,179 @@ export function wire(
   end
 end
 
---- A provider for the tests: it counts each call of `Tick`.
-local function counter() -> ProviderObject
-  return {
-    calls = 0,
-    Tick = function(self: ProviderObject, n: number?) -> ()
-      self.calls += n ?? 1
-    end,
-  }
-end
-
---- The side for the tests: the server.
-local function server() -> boolean
-  return true
-end
-
---- An entry for the tests.
-local function entry(name: string, provider: ProviderObject, lifecycles: { string }) -> Entry
-  return {
-    Name = name,
-    ModuleScript = Instance.new('ModuleScript'),
-    Provider = provider,
-    Lifecycles = lifecycles,
-    Priority = 0,
-  }
-end
-
+--- The tests of lifecycles, with the fixture providers they fire. The ship
+--- artifact leaves the whole group out.
 @test
-function inline_runs_each_handler_before_it_returns() -> ()
-  const a = counter()
-  const b = counter()
+namespace LifecycleTests
+  --- A provider for the tests: it counts each call of `Tick`.
+  private function counter() -> ProviderObject
+    return {
+      calls = 0,
+      Tick = function(self: ProviderObject, n: number?) -> ()
+        self.calls += n ?? 1
+      end,
+    }
+  end
 
-  dispatcher([ a, b ], 'Tick', Dispatch.Inline)(2)
+  --- The side for the tests: the server.
+  private function server() -> boolean
+    return true
+  end
 
-  $assert_eq(a.calls, 2)
-  $assert_eq(b.calls, 2)
-end
+  --- An entry for the tests.
+  private function entry(name: string, provider: ProviderObject, lifecycles: { string }) -> Entry
+    return {
+      Name = name,
+      ModuleScript = Instance.new('ModuleScript'),
+      Provider = provider,
+      Lifecycles = lifecycles,
+      Priority = 0,
+    }
+  end
 
-@test
-function spawn_runs_each_handler_on_its_own_thread() -> ()
-  const threads: { thread } = []
-  const provider = {
-    Tick = function(_self: unknown) -> ()
-      table.insert(threads, coroutine.running())
-    end,
-  }
+  --- Inline runs every handler before `fire` returns.
+  public function inline_runs_each_handler_before_it_returns() -> ()
+    const a = counter()
+    const b = counter()
 
-  dispatcher([ provider, provider ], 'Tick', Dispatch.Spawn)()
+    dispatcher([ a, b ], 'Tick', Dispatch.Inline)(2)
 
-  $assert_eq(#threads, 2)
-  $assert(threads[1] ~= threads[2])
-end
+    $assert_eq(a.calls, 2)
+    $assert_eq(b.calls, 2)
+  end
 
-@test
-function inline_stops_at_an_error() -> ()
-  const after = counter()
-  const failing = {
-    Tick = function(_self: unknown) -> ()
-      error('boom')
-    end,
-  }
+  --- Spawn gives each handler a thread of its own.
+  public function spawn_runs_each_handler_on_its_own_thread() -> ()
+    const threads: { thread } = []
+    const provider = {
+      Tick = function(_self: unknown) -> ()
+        table.insert(threads, coroutine.running())
+      end,
+    }
 
-  $expect(function() -> ()
-    dispatcher([ failing, after ], 'Tick', Dispatch.Inline)()
-  end):toThrow('boom')
-  $assert_eq(after.calls, 0)
-end
+    dispatcher([ provider, provider ], 'Tick', Dispatch.Spawn)()
 
-@test
-function await_returns_at_once_when_every_handler_is_synchronous() -> ()
-  const a = counter()
-  const b = counter()
+    $assert_eq(#threads, 2)
+    $assert(threads[1] ~= threads[2])
+  end
 
-  dispatcher([ a, b ], 'Tick', Dispatch.Await)()
+  --- Inline stops at the first handler that errors.
+  public function inline_stops_at_an_error() -> ()
+    const after = counter()
+    const failing = {
+      Tick = function(_self: unknown) -> ()
+        error('boom')
+      end,
+    }
 
-  $assert_eq(a.calls + b.calls, 2)
-end
+    $expect(function() -> ()
+      dispatcher([ failing, after ], 'Tick', Dispatch.Inline)()
+    end):toThrow('boom')
+    $assert_eq(after.calls, 0)
+  end
 
-@test
-function await_waits_for_a_handler_that_yields() -> ()
-  local resume: thread? = nil
-  local done = false
-  const slow = {
-    Tick = function(_self: unknown) -> ()
-      resume = coroutine.running()
-      coroutine.yield()
-    end,
-  }
-  const fire = dispatcher([ slow ], 'Tick', Dispatch.Await)
-  const caller = coroutine.create(function() -> ()
-    fire()
-    done = true
-  end)
+  --- Await does not yield when no handler yields.
+  public function await_returns_at_once_when_every_handler_is_synchronous() -> ()
+    const a = counter()
+    const b = counter()
 
-  coroutine.resume(caller)
-  $assert_eq(done, false)
+    dispatcher([ a, b ], 'Tick', Dispatch.Await)()
 
-  coroutine.resume(resume :: thread)
-  $assert_eq(done, true)
-end
+    $assert_eq(a.calls + b.calls, 2)
+  end
 
-@test
-function await_survives_a_failing_handler() -> ()
-  const after = counter()
-  const failing = {
-    Tick = function(_self: unknown) -> ()
-      error('boom')
-    end,
-  }
+  --- Await returns once the last handler that yields ends.
+  public function await_waits_for_a_handler_that_yields() -> ()
+    local resume: thread? = nil
+    local done = false
+    const slow = {
+      Tick = function(_self: unknown) -> ()
+        resume = coroutine.running()
+        coroutine.yield()
+      end,
+    }
+    const fire = dispatcher([ slow ], 'Tick', Dispatch.Await)
+    const caller = coroutine.create(function() -> ()
+      fire()
+      done = true
+    end)
 
-  dispatcher([ failing, after ], 'Tick', Dispatch.Await)()
+    coroutine.resume(caller)
+    $assert_eq(done, false)
 
-  $assert_eq(after.calls, 1)
-end
+    coroutine.resume(resume :: thread)
+    $assert_eq(done, true)
+  end
 
-@test
-function every_rejects_a_bad_interval() -> ()
-  $expect(function() -> ()
-    every(0, 'Autosave')
-  end):toThrow('BadArgument')
-  $expect(function() -> ()
-    every(5, '')
-  end):toThrow('BadArgument')
-  $assert_eq(every(5, 'Autosave').Method, 'Autosave')
-end
+  --- Await runs the other handlers when one errors.
+  public function await_survives_a_failing_handler() -> ()
+    const after = counter()
+    const failing = {
+      Tick = function(_self: unknown) -> ()
+        error('boom')
+      end,
+    }
 
-@test
-function check_lifecycle_names_the_bad_field() -> ()
-  $expect(function() -> ()
-    check_lifecycle({ Method = 'X', Connect = 5 }, 1, 'AddLifecycles')
-  end):toThrow('Connect')
-  $expect(function() -> ()
-    check_lifecycle({ Method = 'X', Connect = print, Dispatch = 'Later' }, 1, 'AddLifecycles')
-  end):toThrow('Dispatch')
-  check_lifecycle({ Method = 'X', Connect = print, Dispatch = 'Await' }, 1, 'AddLifecycles')
-end
+    dispatcher([ failing, after ], 'Tick', Dispatch.Await)()
 
-@test
-function a_custom_lifecycle_reaches_the_providers_that_list_it() -> ()
-  const listed = counter()
-  const other = counter()
-  local fire: Fire? = nil
-  const lifecycle: CustomLifecycle = {
-    Method = 'Tick',
-    Connect = function(given: Fire) -> RBXScriptConnection?
-      fire = given
+    $assert_eq(after.calls, 1)
+  end
 
-      return nil
-    end,
-    Dispatch = Dispatch.Inline,
-  }
+  --- every refuses an interval of 0 and an empty method.
+  public function every_rejects_a_bad_interval() -> ()
+    $expect(function() -> ()
+      every(0, 'Autosave')
+    end):toThrow('BadArgument')
+    $expect(function() -> ()
+      every(5, '')
+    end):toThrow('BadArgument')
+    $assert_eq(every(5, 'Autosave').Method, 'Autosave')
+  end
 
-  wire([ entry('Listed', listed, [ 'Tick' ]), entry('Other', other, []) ], [ lifecycle ], server)
-  ; (fire :: Fire)()
+  --- The lifecycle check names the field at fault.
+  public function check_lifecycle_names_the_bad_field() -> ()
+    $expect(function() -> ()
+      check_lifecycle({ Method = 'X', Connect = 5 }, 1, 'AddLifecycles')
+    end):toThrow('Connect')
+    $expect(function() -> ()
+      check_lifecycle({ Method = 'X', Connect = print, Dispatch = 'Later' }, 1, 'AddLifecycles')
+    end):toThrow('Dispatch')
+    check_lifecycle({ Method = 'X', Connect = print, Dispatch = 'Await' }, 1, 'AddLifecycles')
+  end
 
-  $assert_eq(listed.calls, 1)
-  $assert_eq(other.calls, 0)
-end
+  --- A custom lifecycle fires only the providers that list it.
+  public function a_custom_lifecycle_reaches_the_providers_that_list_it() -> ()
+    const listed = counter()
+    const other = counter()
+    local fire: Fire? = nil
+    const lifecycle: CustomLifecycle = {
+      Method = 'Tick',
+      Connect = function(given: Fire) -> RBXScriptConnection?
+        fire = given
 
-@test
-function a_listed_lifecycle_that_nothing_fires_errors() -> ()
-  $expect(function() -> ()
-    wire([ entry('World', counter(), [ 'Autosave' ]) ], [], server)
-  end):toThrow('World lists \'Autosave\'')
-end
+        return nil
+      end,
+      Dispatch = Dispatch.Inline,
+    }
 
-@test
-function a_client_lifecycle_on_the_server_errors() -> ()
-  $expect(function() -> ()
-    wire([ entry('Camera', counter(), [ 'PreRender' ]) ], [], server)
-  end):toThrow('BadCall')
+    wire([ entry('Listed', listed, [ 'Tick' ]), entry('Other', other, []) ], [ lifecycle ], server)
+    ; (fire :: Fire)()
+
+    $assert_eq(listed.calls, 1)
+    $assert_eq(other.calls, 0)
+  end
+
+  --- A listed method that no lifecycle fires errors at the wiring.
+  public function a_listed_lifecycle_that_nothing_fires_errors() -> ()
+    $expect(function() -> ()
+      wire([ entry('World', counter(), [ 'Autosave' ]) ], [], server)
+    end):toThrow('World lists \'Autosave\'')
+  end
+
+  --- A client-only lifecycle listed on the server errors.
+  public function a_client_lifecycle_on_the_server_errors() -> ()
+    $expect(function() -> ()
+      wire([ entry('Camera', counter(), [ 'PreRender' ]) ], [], server)
+    end):toThrow('BadCall')
+  end
 end
