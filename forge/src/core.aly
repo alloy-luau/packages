@@ -537,12 +537,12 @@ end
 --- artifact leaves the whole group out.
 @test
 namespace CoreTests
-  --- A provider that lists its lifecycles by key.
-  @Provider({ lifecycles = [ Lifecycle.Init, 'Autosave' ], priority = 10 })
+  --- A provider in the form to write: `@Provider` on the impl, by key.
   private struct Keyed
     saves: number = 0
   end
 
+  @Provider({ lifecycles = [ Lifecycle.Init, 'Autosave' ], priority = 10 })
   impl Keyed
     private function Init(self) -> ()
       self.saves = 0
@@ -553,7 +553,7 @@ namespace CoreTests
     end
   end
 
-  --- A provider that lists its lifecycles by position.
+  --- A provider with `@Provider` on the struct, by position.
   @Provider([ Lifecycle.PlayerAdded ], 3)
   private struct Positional
     greeted: number = 0
@@ -569,6 +569,16 @@ namespace CoreTests
   @Provider()
   private struct Plain
     x: number = 0
+  end
+
+  --- A provider that lists Start and writes no Start method.
+  private struct Broken
+    x: number = 0
+  end
+
+  --@alloy-expect-error the contract asks the impl for a private Start
+  @Provider({ lifecycles = [ Lifecycle.Start ] })
+  impl Broken
   end
 
   --- A ModuleScript named for a test.
@@ -607,8 +617,8 @@ namespace CoreTests
     $assert_eq(names:join(','), 'B,D,A,C')
   end
 
-  --- Reads the keyed form of @Provider.
-  public function reads_keyed_options() -> ()
+  --- Reads `@Provider` from an impl, by key.
+  public function reads_the_options_of_an_impl() -> ()
     const entry = entry_of(module('KeyedProvider'), { default = new Keyed {} })
 
     $assert_eq(entry.Name, 'KeyedProvider')
@@ -616,8 +626,8 @@ namespace CoreTests
     $assert_eq(table.concat(entry.Lifecycles, ','), 'Init,Autosave')
   end
 
-  --- Reads the positional form of @Provider.
-  public function reads_positional_options() -> ()
+  --- Reads `@Provider` from a struct, by position.
+  public function reads_the_options_of_a_struct() -> ()
     const entry = entry_of(module('PositionalProvider'), { default = new Positional {} })
 
     $assert_eq(entry.Priority, 3)
@@ -637,6 +647,13 @@ namespace CoreTests
     $expect(function() -> ()
       entry_of(module('Nothing'), { default = {} })
     end):toThrow('BadArgument')
+  end
+
+  --- Refuses a provider that breaks its contract, as the compiler does.
+  public function refuses_a_broken_contract() -> ()
+    $expect(function() -> ()
+      entry_of(module('Broken'), { default = new Broken {} })
+    end):toThrow('BadArgument: Broken lists \'Start\'')
   end
 
   --- Fires the phases in order.

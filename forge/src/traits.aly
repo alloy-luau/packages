@@ -4,13 +4,17 @@
   instance that meets the contract gets an object of its own, so a trait
   is not a singleton, and its module exports the struct.
 
-    @Trait({ tag = 'Door', instance = 'BasePart', lifecycles = [TraitLifecycle.Init] })
-    export struct Door
+    export default struct Door
       instance: BasePart
       bin: Bin
       @Attribute('Locked', 'boolean') locked: boolean
       @Attribute('OpenAngle', 'number') open_angle: number = 90
       @Child('Prompt', 'ProximityPrompt', 5) prompt: ProximityPrompt
+    end
+
+    @Trait({ tag = 'Door', instance = 'BasePart', lifecycles = [ TraitLifecycle.Init ] })
+    impl Door
+      private function Init(self) -> () end
     end
 
   Forge fills `instance`, `bin`, and each field that `@Attribute` or
@@ -405,7 +409,6 @@ end
 @test
 namespace TraitTests
   --- A door: a part with a lock, an angle, and a prompt.
-  @Trait({ tag = 'Door', instance = 'BasePart', lifecycles = [ TraitLifecycle.Init ] })
   private struct Door
     instance: BasePart
     bin: Bin
@@ -414,6 +417,7 @@ namespace TraitTests
     @Child('Prompt', 'ProximityPrompt') prompt: ProximityPrompt
   end
 
+  @Trait({ tag = 'Door', instance = 'BasePart', lifecycles = [ TraitLifecycle.Init ] })
   impl Door
     private function Init(self) -> ()
       self.open_angle += 0
