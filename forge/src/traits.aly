@@ -26,7 +26,7 @@
 import CollectionService from '@game/CollectionService'
 import { Attributes } from '@alloy/std/roblox'
 import { Bin } from './bin'
-import { type ProviderObject, check_contract, exported, keyed } from './provider'
+import { type ProviderObject, check_contract, exported } from './provider'
 import { run_sync } from './sync'
 
 --- A per-instance step a trait can list in `@Trait`.
@@ -49,18 +49,15 @@ end
   the class the tagged instance must be, and `lifecycles` the steps the
   impl writes. The contract asks for an `instance` field and a `bin`
   field, which Forge fills, and a private method for each step.
-
-  The clauses sit at column 0 because alloy fmt puts them there once the
-  header breaks over lines; a second run moves them from any indent.
 ]]
 export attribute Trait(
   tag: string,
   instance: string = 'Instance',
-  lifecycles: TraitLifecycle[] = {}
+  lifecycles: TraitLifecycle[] = []
 ) on struct, impl as
-requires field instance
-requires field bin
-requires private function each lifecycles
+  requires field instance
+  requires field bin
+  requires private function each lifecycles
 end
 
 --- Fills a field from the attribute `name` of the tagged instance, which
@@ -99,61 +96,39 @@ local bound_by_trait: { [unknown]: { [Instance]: ProviderObject } } = {}
 --- when the value carries no `@Trait`.
 export function info_of(name: string, value: unknown) -> TraitInfo
   const struct = exported(value)
-  const raw = if struct is table then Attributes.get(struct, Trait) else nil
+  const read = Attributes.get(struct, Trait)
 
-  if raw == nil or struct is not table then
+  if read == nil or struct is not table then
     error(`BadArgument: {name} carries no @Trait; export the struct that carries it`, 0)
   end
 
-  const read = keyed((raw :: unknown) :: { [string]: unknown }, 'tag')
-  const tag = read.tag
-
-  if tag is not string or tag == '' then
+  if read.tag == '' then
     error(`BadArgument: {name}'s @Trait has no tag`, 0)
   end
 
-  local lifecycles: string[] = []
-
-  for _, step in (read.lifecycles ?? {}) :: { unknown } do
-    lifecycles:push(tostring(step))
-  end
-
+  const lifecycles = read.lifecycles :: { string }
   check_contract(name, struct, lifecycles)
 
   const attributes: { AttributeSpec } = {}
 
-  for field, raw_args in Attributes.fields(struct, Attribute) do
-    const args = keyed((raw_args :: unknown) :: { [string]: unknown }, 'name')
-    table.insert(
-      attributes,
-      { field = field, name = tostring(args.name), kind = tostring(args.kind) }
-    )
+  for field, spec in Attributes.fields(struct, Attribute) do
+    table.insert(attributes, { field = field, name = spec.name, kind = spec.kind })
   end
 
   const children: { ChildSpec } = {}
 
-  for field, raw_args in Attributes.fields(struct, Child) do
-    const args = keyed((raw_args :: unknown) :: { [string]: unknown }, 'name')
-    const wait = args.wait
-
+  for field, spec in Attributes.fields(struct, Child) do
     table.insert(
       children,
-      {
-        field = field,
-        name = tostring(args.name),
-        class_name = tostring(args.class_name ?? 'Instance'),
-        wait = wait is number ? wait : 0,
-      }
+      { field = field, name = spec.name, class_name = spec.class_name, wait = spec.wait }
     )
   end
-
-  const instance = read.instance
 
   return {
     name = name,
     struct = (struct :: unknown) :: (fields: { [string]: unknown }) -> ProviderObject,
-    tag = tag,
-    instance = instance is string ? instance : 'Instance',
+    tag = read.tag,
+    instance = read.instance,
     lifecycles = lifecycles,
     attributes = attributes,
     children = children,

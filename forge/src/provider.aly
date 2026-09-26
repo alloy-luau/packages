@@ -65,10 +65,10 @@ end
   such as 'Autosave'. The contract makes the compiler ask the impl for a
   private method of each name. Higher `priority` inits first.
 
-  The default is `{}`, not `[]`: Alloy writes a `[]` default into the
-  Luau as it is, and the built module does not load.
+  Put it on the impl, beside the methods it asks for. The struct takes it
+  too, since a struct and its impls are one type.
 ]]
-export attribute Provider(lifecycles: (Lifecycle | string)[] = {}, priority: number = 0) on struct, impl as
+export attribute Provider(lifecycles: (Lifecycle | string)[] = [], priority: number = 0) on struct, impl as
   requires private function each lifecycles
 end
 
@@ -103,58 +103,15 @@ export function exported(value: unknown) -> unknown
   return value
 end
 
---[[
-  The options of a `@Provider` or `@Trait` read at runtime. Alloy
-  0.1.0-rc.8 stores a keyed argument, `@Provider({ lifecycles = [...],
-  priority = 10 })`, as the first positional one: the first parameter
-  then holds the whole table, and the rest hold their defaults. The
-  compiler's contract reads it by key, so this reads both shapes and
-  gives the keyed one.
-]]
-export function keyed(raw: { [string]: unknown }, first: string) -> { [string]: unknown }
-  const head = raw[first]
-
-  if head is table and head[1] == nil and next(head) ~= nil then
-    local merged: { [string]: unknown } = table.clone(raw)
-
-    for key, value in head do
-      merged[key :: string] = value
-    end
-
-    if merged[first] == head then
-      merged[first] = nil
-    end
-
-    return merged
-  end
-
-  return raw
-end
-
 --- The options `@Provider` gives a struct, or nil when it carries none.
+--- It gives a copy, so an extension that edits an entry leaves the
+--- attribute as it is.
 export function options_of(struct: unknown) -> ProviderOptions?
-  -- Attributes.get raises on a target that is no table, so a value with
-  -- no metatable stops here.
-  if struct is not table then
-    return nil
+  if const read = Attributes.get(struct, Provider) then
+    return { lifecycles = table.clone(read.lifecycles), priority = read.priority }
   end
 
-  const raw = Attributes.get(struct, Provider)
-
-  if raw == nil then
-    return nil
-  end
-
-  const read = keyed((raw :: unknown) :: { [string]: unknown }, 'lifecycles')
-  local lifecycles: string[] = []
-
-  for _, name in (read.lifecycles ?? {}) :: { unknown } do
-    lifecycles:push(tostring(name))
-  end
-
-  const priority = read.priority
-
-  return { lifecycles = lifecycles, priority = if priority is number then priority else 0 }
+  return nil
 end
 
 --- Errors unless a provider writes a method for each lifecycle it lists.
@@ -199,35 +156,6 @@ function exported_takes_the_default() -> ()
 
   $assert_eq(exported({ default = value }), value)
   $assert_eq(exported(value), value)
-end
-
-@test
-function keyed_reads_the_keyed_shape() -> ()
-  const lifecycles = [ 'Init' ]
-  const read = keyed(
-    { lifecycles = { lifecycles = lifecycles, priority = 10 }, priority = 0 },
-    'lifecycles'
-  )
-
-  $assert_eq(read.lifecycles, lifecycles)
-  $assert_eq(read.priority, 10)
-end
-
-@test
-function keyed_keeps_the_positional_shape() -> ()
-  const lifecycles = [ 'Init' ]
-  const read = keyed({ lifecycles = lifecycles, priority = 3 }, 'lifecycles')
-
-  $assert_eq(read.lifecycles, lifecycles)
-  $assert_eq(read.priority, 3)
-end
-
-@test
-function keyed_reads_a_key_that_skips_the_first() -> ()
-  const read = keyed({ lifecycles = { priority = 4 }, priority = 0 }, 'lifecycles')
-
-  $assert_eq(read.lifecycles, nil)
-  $assert_eq(read.priority, 4)
 end
 
 @test
