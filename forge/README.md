@@ -460,7 +460,7 @@ import { Bin } from '@shared/forge'
 
 const bin = Bin.new()
 const touched = bin:Add(part.Touched:Connect(on_touch))
-bin:Add(Instance.new('Folder'))
+bin:Add(new Instance('Folder'))
 bin:Add(task.spawn(loop))
 bin:Add(function() -> ()
   print('emptied')
@@ -621,10 +621,12 @@ With Forge beside the game on disk:
    The path leads from this module to Forge's source on disk. Add the
    other names the game uses, such as `Trait` or `Bin`.
 
-`alloy build`, `alloy check` and `alloy flux` in the game then build
-Forge first and check each contract against its source. The built
-require names `@game/ReplicatedStorage/Forge/index`, where the mount
-puts the output.
+`alloy build` in the game then builds Forge first, and `alloy check`
+checks each contract against Forge's source. The built require names
+`@game/ReplicatedStorage/Forge/index`, where the mount puts the output.
+`alloy flux` reads Forge's build output, so run `alloy build` once on a
+fresh clone, and again after a change to Forge, before `alloy flux`
+(Strata's `docs/LANG_BUGS.md`, entry 77).
 
 ## Development
 
