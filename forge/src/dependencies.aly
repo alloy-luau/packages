@@ -10,11 +10,8 @@
   provider inits after the ones it uses, and errors with the path when
   the uses form a cycle.
 
-  The field's type comes from `import type { DataProvider }`, so the
-  module of one provider never requires the module of another, and two
-  providers may use each other's types. Set `[emit] erase_type_imports =
-  true` in the game: Alloy keeps the require of a type-only import
-  otherwise.
+  The field's type comes from `import type { DataProvider }`. A type-only
+  import emits no require, so two providers may use each other's types.
 ]]
 
 import { type Entry, type ProviderObject } from './provider'
