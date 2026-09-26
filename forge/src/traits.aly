@@ -49,15 +49,18 @@ end
   the class the tagged instance must be, and `lifecycles` the steps the
   impl writes. The contract asks for an `instance` field and a `bin`
   field, which Forge fills, and a private method for each step.
+
+  The clauses sit at column 0 because alloy fmt puts them there once the
+  header breaks over lines; a second run moves them from any indent.
 ]]
 export attribute Trait(
   tag: string,
   instance: string = 'Instance',
   lifecycles: TraitLifecycle[] = {}
 ) on struct, impl as
-  requires field instance
-  requires field bin
-  requires private function each lifecycles
+requires field instance
+requires field bin
+requires private function each lifecycles
 end
 
 --- Fills a field from the attribute `name` of the tagged instance, which
