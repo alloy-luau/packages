@@ -2423,10 +2423,10 @@
             "interpolate": {
               "type": "string",
               "enum": [
-                "plain",
-                "compute"
+                "wrap",
+                "plain"
               ],
-              "description": "How `{expr}` in text lowers: `plain` inserts the value, `compute` wraps it."
+              "description": "How `{expr}` in text lowers: `wrap` wraps it so a reactive library re-runs it (through `compute` when set), `plain` inserts the value."
             },
             "merge": {
               "type": "string",
