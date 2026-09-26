@@ -242,8 +242,7 @@ export function check_lifecycle(value: unknown, index: number, call: string) -> 
 
   const connect = value.Connect
 
-  -- `not (x is function)`: alloy fmt misreads `is not function`.
-  if connect is not RBXScriptSignal and not (connect is function) then
+  if connect is not RBXScriptSignal and connect is not function then
     error(`{bad} (Connect: expected RBXScriptSignal or function, got {typeof(connect)})`, 0)
   end
 
@@ -353,12 +352,10 @@ local function connect(lifecycle: CustomLifecycle, listeners: { ProviderObject }
   const fire = dispatcher(listeners, lifecycle.Method, lifecycle.Dispatch ?? Dispatch.Spawn)
   const source = lifecycle.Connect
 
-  -- A cast, not `source is function`: after that test the implicit_any
-  -- lint reports `fire` as a parameter with no type.
   if source is RBXScriptSignal then
     source:Connect(fire)
-  else
-    (source :: (Fire) -> RBXScriptConnection?)(fire)
+  elseif source is function then
+    source(fire)
   end
 end
 

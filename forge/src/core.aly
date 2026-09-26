@@ -125,8 +125,7 @@ local function check_extension(value: unknown, index: number, call: string) -> (
   end
 
   for _, hook in [ 'onPhase', 'onProvider' ] do
-    -- `not (x is function)`: alloy fmt misreads `is not function`.
-    if value[hook] ~= nil and not (value[hook] is function) then
+    if value[hook] ~= nil and value[hook] is not function then
       error(`{bad} ({hook}: expected function or nil, got {typeof(value[hook])})`, 0)
     end
   end
@@ -729,10 +728,8 @@ namespace CoreTests
         if phase == Phase.PreLoad then
           given:AddLifecycle(Forge.every(1, 'Early'))
         elseif phase == Phase.PostInit then
-          -- The function returns a value: Result.pcall types a function
-          -- that returns nothing as an error.
-          const added = Result.pcall(function() -> Forge
-            return given:AddLifecycle(Forge.every(1, 'Late'))
+          const added = Result.pcall(function() -> ()
+            given:AddLifecycle(Forge.every(1, 'Late'))
           end)
 
           if local Err(problem) = added then
