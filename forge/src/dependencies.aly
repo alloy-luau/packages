@@ -1,0 +1,369 @@
+--[[
+  Dependencies: a provider field that holds another provider.
+
+    struct ShopProvider
+      data: DataProvider = Forge.use('DataProvider')
+    end
+
+  `use` returns a marker. The field keeps it until PreInit, when Forge
+  puts the provider it names there. Forge orders Init so that each
+  provider inits after the ones it uses, and errors with the path when
+  the uses form a cycle.
+
+  The field's type comes from `import type { DataProvider }`, so the
+  module of one provider never requires the module of another, and two
+  providers may use each other's types. Set `[emit] erase_type_imports =
+  true` in the game: Alloy keeps the require of a type-only import
+  otherwise.
+]]
+
+import { type Entry, type ProviderObject } from './provider'
+
+--- The key only a marker carries. A local table collides with no key a
+--- provider could hold.
+const MARKER = {}
+
+--- What a marker names: a provider by the name of its ModuleScript, or
+--- the ModuleScript itself. A ModuleScript that no one added loads too.
+export type Target = string | ModuleScript
+
+--- One dependency field of a provider.
+export type Link = { field: string, target: Target }
+
+--- The dependencies of every entry, resolved.
+export type Links = {
+  --- The entries each entry uses, each once.
+  uses: { [Entry]: { Entry } },
+  --- The entry each dependency field of an entry names.
+  fields: { [Entry]: { [string]: Entry } },
+}
+
+--- Declares a dependency. Put it in a field of the provider; Forge
+--- replaces it with the provider it names before any Init runs:
+---
+---     data: DataProvider = Forge.use('DataProvider')
+---
+--- A ModuleScript target loads that provider when the game did not add
+--- it; a name finds a provider the game added.
+@allow(explicit_any)
+export function use(target: Target) -> any
+  const good = if target is string
+    then target ~= ''
+    else target is Instance and target:IsA('ModuleScript')
+
+  if not good then
+    error(
+      `BadArgument: Bad argument #1 for use (expected a provider name or a ModuleScript, got {typeof(target)})`,
+      2
+    )
+  end
+
+  return { [MARKER] = true, target = target }
+end
+
+--- Whether a value is a marker `use` made.
+local function is_marker(value: unknown) -> boolean
+  return value is table and value[MARKER] ~= nil
+end
+
+--- The dependency fields of a provider, in no set order.
+export function links_of(provider: ProviderObject) -> { Link }
+  const out: { Link } = {}
+
+  for field, value in provider do
+    if is_marker(value) then
+      table.insert(out, { field = tostring(field), target = value.target })
+    end
+  end
+
+  return out
+end
+
+--- The entry a target names, or nil.
+local function find(entries: { Entry }, target: Target) -> Entry?
+  for _, entry in entries do
+    if entry.Name == target or entry.ModuleScript == target then
+      return entry
+    end
+  end
+
+  return nil
+end
+
+--- The name of a target, for a message.
+local function name_of(target: Target) -> string
+  return if target is string then target else target.Name
+end
+
+--- Resolves every dependency field of every entry. Errors with
+--- MissingDependency when one names a provider Forge never loaded.
+export function link(entries: { Entry }) -> Links
+  local uses: { [Entry]: { Entry } } = {}
+  local fields: { [Entry]: { [string]: Entry } } = {}
+
+  for _, entry in entries do
+    local seen: { [Entry]: boolean } = {}
+    const list: { Entry } = {}
+    local named: { [string]: Entry } = {}
+
+    for _, found in links_of(entry.Provider) do
+      const dependency = find(entries, found.target)
+
+      if dependency == nil then
+        error(
+          `MissingDependency: {entry.Name} uses '{name_of(found.target)}', which Forge never loaded; add it with AddProviders`,
+          0
+        )
+      end
+
+      named[found.field] = dependency
+
+      if not seen[dependency] then
+        seen[dependency] = true
+        table.insert(list, dependency)
+      end
+    end
+
+    uses[entry] = list
+    fields[entry] = named
+  end
+
+  return { uses = uses, fields = fields }
+end
+
+--- The ready entry to take next: the highest priority, then the one
+--- added first.
+local function best(ready: { Entry }, index_of: { [Entry]: number }) -> number
+  local at = 1
+
+  for i = 2, #ready do
+    const a = ready[at]
+    const b = ready[i]
+
+    if b.Priority > a.Priority or (b.Priority == a.Priority and index_of[b] < index_of[a]) then
+      at = i
+    end
+  end
+
+  return at
+end
+
+--[[
+  Kahn's algorithm: the entries with each one after everything it uses.
+  Among the entries whose uses are all done, the higher priority goes
+  first, then the one added first. Nil when a cycle leaves some entries
+  unordered.
+]]
+export function order(entries: { Entry }, uses: { [Entry]: { Entry } }) -> { Entry }?
+  local index_of: { [Entry]: number } = {}
+  local waiting: { [Entry]: number } = {}
+  local users: { [Entry]: { Entry } } = {}
+
+  for index, entry in entries do
+    index_of[entry] = index
+    waiting[entry] = #uses[entry]
+    users[entry] = {}
+  end
+
+  for _, entry in entries do
+    for _, dependency in uses[entry] do
+      table.insert(users[dependency], entry)
+    end
+  end
+
+  const ready: { Entry } = {}
+
+  for _, entry in entries do
+    if waiting[entry] == 0 then
+      table.insert(ready, entry)
+    end
+  end
+
+  const sorted: { Entry } = {}
+
+  while #ready > 0 do
+    const entry = table.remove(ready, best(ready, index_of)) :: Entry
+    table.insert(sorted, entry)
+
+    for _, user in users[entry] do
+      waiting[user] -= 1
+
+      if waiting[user] == 0 then
+        table.insert(ready, user)
+      end
+    end
+  end
+
+  return if #sorted == #entries then sorted else nil
+end
+
+--- One cycle among the entries, as `A -> B -> A`. Called once `order`
+--- has shown that a cycle exists.
+export function cycle_path(entries: { Entry }, uses: { [Entry]: { Entry } }) -> string
+  local state: { [Entry]: string } = {}
+  const stack: { Entry } = {}
+
+  local function visit(entry: Entry) -> { Entry }?
+    state[entry] = 'open'
+    table.insert(stack, entry)
+
+    for _, dependency in uses[entry] do
+      if state[dependency] == 'open' then
+        const cycle = table.move(stack, table.find(stack, dependency) :: number, #stack, 1, {})
+        table.insert(cycle, dependency)
+
+        return cycle
+      end
+
+      if state[dependency] == nil then
+        const cycle = visit(dependency)
+
+        if cycle then
+          return cycle
+        end
+      end
+    end
+
+    state[entry] = 'done'
+    table.remove(stack)
+
+    return nil
+  end
+
+  for _, entry in entries do
+    if state[entry] ~= nil then
+      continue
+    end
+
+    if const cycle = visit(entry) then
+      const names: { string } = {}
+
+      for _, step in cycle do
+        table.insert(names, step.Name)
+      end
+
+      return table.concat(names, ' -> ')
+    end
+  end
+
+  return '(the cycle could not be traced)'
+end
+
+--- Puts each provider in the fields that use it.
+export function inject(entries: { Entry }, links: Links) -> ()
+  for _, entry in entries do
+    for field, dependency in links.fields[entry] do
+      if table.isfrozen(entry.Provider) then
+        error(
+          `FrozenModule: Cannot put '{field}' into {entry.Name}, since its provider is frozen`,
+          0
+        )
+      end
+
+      entry.Provider[field] = dependency.Provider
+    end
+  end
+end
+
+--- An entry for the tests, with the dependency fields it lists.
+local function entry(name: string, priority: number, uses: { string }) -> Entry
+  local provider: ProviderObject = {}
+
+  for _, target in uses do
+    provider[`dep_{target}`] = use(target)
+  end
+
+  return {
+    Name = name,
+    ModuleScript = Instance.new('ModuleScript'),
+    Provider = provider,
+    Lifecycles = [],
+    Priority = priority,
+  }
+end
+
+--- The names of the entries, in order.
+local function names(entries: { Entry }) -> string
+  const out: { string } = []
+
+  for _, found in entries do
+    table.insert(out, found.Name)
+  end
+
+  return table.concat(out, ',')
+end
+
+--- The entries in Init order.
+local function ordered(entries: { Entry }) -> string
+  return names(order(entries, link(entries).uses) ?? [])
+end
+
+@test
+function use_rejects_a_bad_target() -> ()
+  $expect(function() -> ()
+    use('')
+  end):toThrow('BadArgument')
+  $expect(function() -> ()
+    use((5 :: unknown) :: Target)
+  end):toThrow('BadArgument')
+end
+
+@test
+function a_dependency_inits_first() -> ()
+  $assert_eq(ordered([ entry('Shop', 0, [ 'Data' ]), entry('Data', 0, []) ]), 'Data,Shop')
+end
+
+@test
+function a_chain_inits_deepest_first() -> ()
+  const chain = [ entry('A', 0, [ 'B' ]), entry('B', 0, [ 'C' ]), entry('C', 0, []) ]
+
+  $assert_eq(ordered(chain), 'C,B,A')
+end
+
+@test
+function priority_breaks_a_tie_between_ready_entries() -> ()
+  const set = [ entry('Low', 0, []), entry('High', 5, []), entry('Tied', 0, []) ]
+
+  $assert_eq(ordered(set), 'High,Low,Tied')
+end
+
+@test
+function a_dependency_beats_priority() -> ()
+  $assert_eq(ordered([ entry('High', 9, [ 'Low' ]), entry('Low', 0, []) ]), 'Low,High')
+end
+
+@test
+function a_cycle_names_its_path() -> ()
+  const cycle = [ entry('Shop', 0, [ 'Data' ]), entry('Data', 0, [ 'Shop' ]) ]
+  const uses = link(cycle).uses
+
+  $assert_eq(order(cycle, uses), nil)
+  $assert_eq(cycle_path(cycle, uses), 'Shop -> Data -> Shop')
+end
+
+@test
+function a_missing_dependency_errors() -> ()
+  $expect(function() -> ()
+    link([ entry('Shop', 0, [ 'Data' ]) ])
+  end):toThrow('MissingDependency')
+end
+
+@test
+function inject_puts_the_provider_in_the_field() -> ()
+  const set = [ entry('Shop', 0, [ 'Data' ]), entry('Data', 0, []) ]
+
+  inject(set, link(set))
+
+  $assert_eq(set[1].Provider.dep_Data, set[2].Provider)
+end
+
+@test
+function inject_refuses_a_frozen_provider() -> ()
+  const set = [ entry('Shop', 0, [ 'Data' ]), entry('Data', 0, []) ]
+  const links = link(set)
+  table.freeze(set[1].Provider)
+
+  $expect(function() -> ()
+    inject(set, links)
+  end):toThrow('FrozenModule')
+end

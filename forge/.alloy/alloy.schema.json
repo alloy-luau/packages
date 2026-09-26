@@ -1,0 +1,2490 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/alloy-luau/extensions/main/vscode/schemas/alloy.toml.json",
+  "title": "alloy.toml",
+  "description": "The project file of Alloy. Every key has a default, and an unknown key is an error.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "build": {
+      "type": "object",
+      "title": "[build]",
+      "description": "What compiles, and where the output goes.",
+      "properties": {
+        "in": {
+          "type": "string",
+          "description": "The source root. Every `.aly` and `.alx` under it compiles, relative to the folder that holds this file.",
+          "default": "src"
+        },
+        "out": {
+          "type": "string",
+          "description": "The output root. The tree under `in` is mirrored under it, and the runtime is written beside it as `alloy.luau`.",
+          "default": "build"
+        },
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Glob patterns, relative to `in`, of sources to skip.",
+          "default": []
+        },
+        "clean": {
+          "type": "boolean",
+          "description": "Delete every `.luau` under `out` that no source makes. Off, the build deletes only the stale outputs it wrote itself.",
+          "default": false
+        },
+        "artifact": {
+          "type": "string",
+          "enum": [
+            "ship",
+            "check"
+          ],
+          "description": "Which artifact to write. `ship` runs on Roblox; `check` is what luau-lsp sees, with the types kept.",
+          "default": "ship"
+        }
+      },
+      "additionalProperties": false
+    },
+    "emit": {
+      "type": "object",
+      "title": "[emit]",
+      "description": "The few knobs that change what emitted code does.",
+      "properties": {
+        "wait_timeout": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Seconds passed to every `WaitForChild` that `=>` emits. Unset means no timeout: the engine waits forever and warns after five seconds. With a timeout the call can return nil, so `=>` guards like `->`. The file `alloy init` writes sets five seconds."
+        },
+        "std_require": {
+          "type": "string",
+          "description": "The string emitted code passes to `require` for the runtime. Unset means a relative path to the `alloy.luau` the build writes, or the runtime's instance path when the tree holds the file."
+        },
+        "erase_type_imports": {
+          "type": "boolean",
+          "description": "Blank `import type` lines in the output so they add no runtime dependency. The output is then untyped for anyone who analyzes it directly.",
+          "default": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "lint": {
+      "type": "object",
+      "title": "[lint]",
+      "description": "Where every lint starts under `alloy flux` and `alloy lint`. `[lint.rules]` then sets one lint or one group. `alloy doc lints` names them.",
+      "properties": {
+        "recommended": {
+          "type": "boolean",
+          "description": "Apply the level each lint declares. Off, every lint starts at `allow`, and `[lint.rules]` alone turns one on.",
+          "default": true
+        },
+        "strict": {
+          "type": "boolean",
+          "description": "Turns the pedantic group on, at warn: `implicit_any`, `missing_return_type`, `explicit_any`, `todo_comment`, `print_debug`, `missing_doc`.",
+          "default": true
+        },
+        "deny": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "correctness",
+                  "suspicious",
+                  "style",
+                  "complexity",
+                  "perf",
+                  "roblox",
+                  "pedantic",
+                  "naming",
+                  "luau",
+                  "optional_access",
+                  "needless_assert",
+                  "dropped_result",
+                  "static_call",
+                  "argument_count",
+                  "unreachable_default",
+                  "empty_default",
+                  "unused_import",
+                  "self_assignment",
+                  "unreachable_code",
+                  "constant_condition",
+                  "duplicate_key",
+                  "misplaced_not",
+                  "identical_branches",
+                  "private_access",
+                  "duplicate_function",
+                  "identity_compare",
+                  "circular_import",
+                  "single_angle_call",
+                  "deprecated_namespace",
+                  "stale_export",
+                  "deprecated_call",
+                  "and_or_ternary",
+                  "unused_variable",
+                  "unused_function",
+                  "empty_block",
+                  "bool_comparison",
+                  "needless_bool",
+                  "prefer_destroy",
+                  "manual_safe_access",
+                  "manual_coalesce",
+                  "nil_check_call",
+                  "manual_type_test",
+                  "array_long_string",
+                  "pattern_shadows_local",
+                  "prefer_const",
+                  "redundant_as",
+                  "match_guard_and",
+                  "legacy_iterator",
+                  "manual_floor_div",
+                  "manual_push",
+                  "concat_interpolation",
+                  "raw_pcall",
+                  "raw_require",
+                  "game_alias",
+                  "manual_class",
+                  "manual_ternary_return",
+                  "redundant_return",
+                  "local_then_return",
+                  "numeric_for_index",
+                  "missing_reason",
+                  "too_many_arguments",
+                  "too_many_lines",
+                  "deep_nesting",
+                  "cognitive_complexity",
+                  "collapsible_if",
+                  "collapsible_else_if",
+                  "concat_in_loop",
+                  "service_in_loop",
+                  "table_insert_position",
+                  "deprecated_global",
+                  "manual_child_lookup",
+                  "deprecated_method",
+                  "instance_new_parent",
+                  "deprecated_body_mover",
+                  "explicit_any",
+                  "implicit_any",
+                  "missing_return_type",
+                  "todo_comment",
+                  "print_debug",
+                  "const_mutation",
+                  "missing_doc",
+                  "missing_doc_type",
+                  "naming_convention"
+                ]
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "description": "Deprecated: lints or groups that fail the run. Write `[lint.rules] <name> = \"deny\"`.",
+          "default": []
+        },
+        "warn": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "correctness",
+                  "suspicious",
+                  "style",
+                  "complexity",
+                  "perf",
+                  "roblox",
+                  "pedantic",
+                  "naming",
+                  "luau",
+                  "optional_access",
+                  "needless_assert",
+                  "dropped_result",
+                  "static_call",
+                  "argument_count",
+                  "unreachable_default",
+                  "empty_default",
+                  "unused_import",
+                  "self_assignment",
+                  "unreachable_code",
+                  "constant_condition",
+                  "duplicate_key",
+                  "misplaced_not",
+                  "identical_branches",
+                  "private_access",
+                  "duplicate_function",
+                  "identity_compare",
+                  "circular_import",
+                  "single_angle_call",
+                  "deprecated_namespace",
+                  "stale_export",
+                  "deprecated_call",
+                  "and_or_ternary",
+                  "unused_variable",
+                  "unused_function",
+                  "empty_block",
+                  "bool_comparison",
+                  "needless_bool",
+                  "prefer_destroy",
+                  "manual_safe_access",
+                  "manual_coalesce",
+                  "nil_check_call",
+                  "manual_type_test",
+                  "array_long_string",
+                  "pattern_shadows_local",
+                  "prefer_const",
+                  "redundant_as",
+                  "match_guard_and",
+                  "legacy_iterator",
+                  "manual_floor_div",
+                  "manual_push",
+                  "concat_interpolation",
+                  "raw_pcall",
+                  "raw_require",
+                  "game_alias",
+                  "manual_class",
+                  "manual_ternary_return",
+                  "redundant_return",
+                  "local_then_return",
+                  "numeric_for_index",
+                  "missing_reason",
+                  "too_many_arguments",
+                  "too_many_lines",
+                  "deep_nesting",
+                  "cognitive_complexity",
+                  "collapsible_if",
+                  "collapsible_else_if",
+                  "concat_in_loop",
+                  "service_in_loop",
+                  "table_insert_position",
+                  "deprecated_global",
+                  "manual_child_lookup",
+                  "deprecated_method",
+                  "instance_new_parent",
+                  "deprecated_body_mover",
+                  "explicit_any",
+                  "implicit_any",
+                  "missing_return_type",
+                  "todo_comment",
+                  "print_debug",
+                  "const_mutation",
+                  "missing_doc",
+                  "missing_doc_type",
+                  "naming_convention"
+                ]
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "description": "Deprecated: lints or groups that print and pass. Write `[lint.rules] <name> = \"warn\"`.",
+          "default": []
+        },
+        "allow": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "correctness",
+                  "suspicious",
+                  "style",
+                  "complexity",
+                  "perf",
+                  "roblox",
+                  "pedantic",
+                  "naming",
+                  "luau",
+                  "optional_access",
+                  "needless_assert",
+                  "dropped_result",
+                  "static_call",
+                  "argument_count",
+                  "unreachable_default",
+                  "empty_default",
+                  "unused_import",
+                  "self_assignment",
+                  "unreachable_code",
+                  "constant_condition",
+                  "duplicate_key",
+                  "misplaced_not",
+                  "identical_branches",
+                  "private_access",
+                  "duplicate_function",
+                  "identity_compare",
+                  "circular_import",
+                  "single_angle_call",
+                  "deprecated_namespace",
+                  "stale_export",
+                  "deprecated_call",
+                  "and_or_ternary",
+                  "unused_variable",
+                  "unused_function",
+                  "empty_block",
+                  "bool_comparison",
+                  "needless_bool",
+                  "prefer_destroy",
+                  "manual_safe_access",
+                  "manual_coalesce",
+                  "nil_check_call",
+                  "manual_type_test",
+                  "array_long_string",
+                  "pattern_shadows_local",
+                  "prefer_const",
+                  "redundant_as",
+                  "match_guard_and",
+                  "legacy_iterator",
+                  "manual_floor_div",
+                  "manual_push",
+                  "concat_interpolation",
+                  "raw_pcall",
+                  "raw_require",
+                  "game_alias",
+                  "manual_class",
+                  "manual_ternary_return",
+                  "redundant_return",
+                  "local_then_return",
+                  "numeric_for_index",
+                  "missing_reason",
+                  "too_many_arguments",
+                  "too_many_lines",
+                  "deep_nesting",
+                  "cognitive_complexity",
+                  "collapsible_if",
+                  "collapsible_else_if",
+                  "concat_in_loop",
+                  "service_in_loop",
+                  "table_insert_position",
+                  "deprecated_global",
+                  "manual_child_lookup",
+                  "deprecated_method",
+                  "instance_new_parent",
+                  "deprecated_body_mover",
+                  "explicit_any",
+                  "implicit_any",
+                  "missing_return_type",
+                  "todo_comment",
+                  "print_debug",
+                  "const_mutation",
+                  "missing_doc",
+                  "missing_doc_type",
+                  "naming_convention"
+                ]
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          "description": "Deprecated: lints or groups that stay silent. Write `[lint.rules] <name> = \"allow\"`.",
+          "default": []
+        },
+        "rules": {
+          "type": "object",
+          "title": "[lint.rules]",
+          "description": "The level of one lint: a lint name, a group name (correctness, suspicious, style, complexity, perf, roblox, pedantic, naming, or luau for the type checker's own), an ingot's `<ingot>/<lint>`, or `alx.<name>` for a markup lint. A name beats its group.",
+          "properties": {
+            "correctness": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "The `correctness` group: code that is wrong, or cannot run."
+            },
+            "suspicious": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "The `suspicious` group: code that is probably not what the author meant."
+            },
+            "style": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "The `style` group: a Luau habit with an Alloy form."
+            },
+            "complexity": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "The `complexity` group: a simple thing done in a hard way."
+            },
+            "perf": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "The `perf` group: code that runs slower than the plain form."
+            },
+            "roblox": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "The `roblox` group: a Roblox API that is deprecated or misused."
+            },
+            "pedantic": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "The `pedantic` group: strict rules, on while `[lint] strict = true`."
+            },
+            "naming": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "The `naming` group: the case of names, by `[lint.naming]`; `[lint.rules] naming = \"allow\"` turns it off."
+            },
+            "luau": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "The `luau` group: the type checker's own reports."
+            },
+            "optional_access": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a value that may be nil is indexed without a guard. Default: `warn`."
+            },
+            "needless_assert": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a `!` on a value the file types as never nil. Default: `warn`."
+            },
+            "dropped_result": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a call of a `Result` function whose value nothing reads. Default: `warn`."
+            },
+            "static_call": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a static of an `impl` called with `:`. Default: `warn`."
+            },
+            "argument_count": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a call passes more arguments than the function takes. Default: `warn`."
+            },
+            "unreachable_default": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a `default` arm after arms that cover every variant. Default: `warn`."
+            },
+            "empty_default": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a `default` arm with an empty body. Default: `warn`."
+            },
+            "unused_import": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "an imported name the file never uses. Default: `warn`."
+            },
+            "self_assignment": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`x = x`, an assignment that changes nothing. Default: `warn`."
+            },
+            "unreachable_code": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a statement after `return`, `break`, or `continue`. Default: `warn`."
+            },
+            "constant_condition": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`if true`, `if false`, or `if nil`. Default: `warn`."
+            },
+            "duplicate_key": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a table constructor that sets one key twice. Default: `warn`."
+            },
+            "misplaced_not": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`not a == b`, which compares `not a` to `b`. Default: `warn`."
+            },
+            "identical_branches": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "an `if` whose `then` and `else` bodies are the same. Default: `warn`."
+            },
+            "private_access": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a private field or method read outside its struct's impl. Default: `warn`."
+            },
+            "duplicate_function": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "one name given a `function` body twice. Default: `warn`."
+            },
+            "identity_compare": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`==` or `~=` with a new payload variant or a new struct of a type that derives no `Eq`. Default: `warn`."
+            },
+            "circular_import": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "two files that import each other. Default: `warn`."
+            },
+            "single_angle_call": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a call that writes its type arguments in one `<...>`. Default: `warn`."
+            },
+            "deprecated_namespace": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a use of a namespace declared `@deprecated`. Default: `warn`."
+            },
+            "stale_export": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a write to an exported `local` inside a function. Default: `warn`."
+            },
+            "deprecated_call": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a `:` call of an impl method declared `@deprecated`. Default: `warn`."
+            },
+            "and_or_ternary": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`c and a or b` in place of a ternary. Default: `warn`."
+            },
+            "unused_variable": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a local that nothing reads. Default: `warn`."
+            },
+            "unused_function": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a function that nothing calls. Default: `warn`."
+            },
+            "empty_block": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "an `if`, `else`, or loop body with nothing in it. Default: `warn`."
+            },
+            "bool_comparison": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`x == true` or `x == false`. Default: `warn`."
+            },
+            "needless_bool": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`if c then return true else return false end`. Default: `warn`."
+            },
+            "prefer_destroy": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`delete part` on a plain Instance, where `destroy part` says it. Default: `allow`."
+            },
+            "manual_safe_access": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`a and a.b`, the guard written by hand. Default: `warn`."
+            },
+            "manual_coalesce": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`if x == nil then x = v end`, a coalescing assignment by hand. Default: `warn`."
+            },
+            "nil_check_call": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`if f then f(...) end`, an optional call by hand. Default: `warn`."
+            },
+            "manual_type_test": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`typeof(x) == \"T\"` in place of `x is T`. Default: `warn`."
+            },
+            "array_long_string": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a long string whose text reads like a nested array. Default: `warn`."
+            },
+            "pattern_shadows_local": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a match pattern that binds the name of a local in scope. Default: `warn`."
+            },
+            "prefer_const": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a `local` that nothing assigns again. Default: `warn`."
+            },
+            "redundant_as": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`as` before a declaration body on the next line. Default: `warn`."
+            },
+            "match_guard_and": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a match guard written with `and`. Default: `warn`."
+            },
+            "legacy_iterator": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`pairs` or `ipairs` around a `for ... in` table. Default: `warn`."
+            },
+            "manual_floor_div": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`math.floor(a / b)` in place of `a // b`. Default: `warn`."
+            },
+            "manual_push": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`table.insert` or `table.remove` on a value typed as an Array. Default: `warn`."
+            },
+            "concat_interpolation": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a `..` chain that joins literals and values. Default: `warn`."
+            },
+            "raw_pcall": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a `pcall` or `xpcall`. Default: `warn`."
+            },
+            "raw_require": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a `require` where an `import` would do. Default: `warn`."
+            },
+            "game_alias": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`\"game\"` or `\"game:X\"`, the service path before the alias. Default: `warn`."
+            },
+            "manual_class": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`X.__index = X`, the class idiom by hand. Default: `warn`."
+            },
+            "manual_ternary_return": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`if c then return a else return b end`. Default: `warn`."
+            },
+            "redundant_return": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a bare `return` at the end of a function. Default: `warn`."
+            },
+            "local_then_return": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`local x = v` followed by `return x`. Default: `warn`."
+            },
+            "numeric_for_index": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`for i = 1, #t do local v = t[i]`. Default: `warn`."
+            },
+            "missing_reason": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "an `--@alloy-expect-error` with no reason. Default: `warn`."
+            },
+            "too_many_arguments": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a function with more parameters than `[flux] too_many_arguments`. Default: `warn`."
+            },
+            "too_many_lines": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a function longer than `[flux] too_many_lines`. Default: `warn`."
+            },
+            "deep_nesting": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "blocks nested deeper than `[flux] max_nesting`. Default: `warn`."
+            },
+            "cognitive_complexity": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a function whose branches score past `[flux] cognitive_complexity`. Default: `warn`."
+            },
+            "collapsible_if": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`if a then if b then ... end end`. Default: `warn`."
+            },
+            "collapsible_else_if": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`else if ... end end` in place of `elseif`. Default: `warn`."
+            },
+            "concat_in_loop": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`s = s .. x` inside a loop. Default: `warn`."
+            },
+            "service_in_loop": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`game:GetService` inside a loop. Default: `warn`."
+            },
+            "table_insert_position": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`table.insert(t, #t + 1, v)`. Default: `warn`."
+            },
+            "deprecated_global": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a call to `wait`, `spawn`, `delay`, or `unpack`. Default: `warn`."
+            },
+            "manual_child_lookup": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`:FindFirstChild(\"X\")` or `:WaitForChild(\"X\")` with a literal name. Default: `warn`."
+            },
+            "deprecated_method": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a lowercase Roblox method: `:connect`, `:wait`, `:remove`, `:clone`. Default: `warn`."
+            },
+            "instance_new_parent": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`Instance.new(class, parent)`, the parent as an argument. Default: `warn`."
+            },
+            "deprecated_body_mover": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "`BodyVelocity`, `BodyPosition`, `BodyGyro`, and the other body movers. Default: `warn`."
+            },
+            "explicit_any": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "an annotation of `any`. Default: `allow`."
+            },
+            "implicit_any": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a named function parameter, or an empty array literal, with no type. Default: `allow`."
+            },
+            "missing_return_type": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a public function with no return type. Default: `allow`."
+            },
+            "todo_comment": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a `TODO`, `FIXME`, `XXX`, or `HACK` comment. Default: `allow`."
+            },
+            "print_debug": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a `print` call. Default: `allow`."
+            },
+            "const_mutation": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a write into the value a `const` holds. Default: `allow`."
+            },
+            "missing_doc": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "an exported declaration with no comment above it. Default: `allow`."
+            },
+            "missing_doc_type": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "an exported `type` alias or `interface` with no comment above it. Default: `allow`."
+            },
+            "naming_convention": {
+              "type": "string",
+              "enum": [
+                "allow",
+                "warn",
+                "deny"
+              ],
+              "description": "a name in a case other than the one `[lint.naming]` sets for its kind. Default: `warn`."
+            },
+            "alx": {
+              "type": "object",
+              "description": "The levels of the markup lints.",
+              "properties": {
+                "static_conditional_child": {
+                  "type": "string",
+                  "enum": [
+                    "allow",
+                    "warn",
+                    "deny"
+                  ],
+                  "description": "markup in a child expression that no function encloses: it is built once, not on each render. Default: `warn`."
+                }
+              },
+              "additionalProperties": {
+                "type": "string",
+                "enum": [
+                  "allow",
+                  "warn",
+                  "deny"
+                ],
+                "description": "The level of one markup lint."
+              }
+            }
+          },
+          "additionalProperties": {
+            "description": "The level of one lint, one group, or a table of them under a prefix: `alx.static_conditional_child = \"warn\"`.",
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "allow",
+                  "warn",
+                  "deny"
+                ],
+                "description": "What the lint does when it fires: `allow` is silent, `warn` prints and passes, `deny` prints and fails the run."
+              },
+              {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string",
+                  "enum": [
+                    "allow",
+                    "warn",
+                    "deny"
+                  ],
+                  "description": "What the lint does when it fires: `allow` is silent, `warn` prints and passes, `deny` prints and fails the run."
+                }
+              }
+            ]
+          },
+          "propertyNames": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "correctness",
+                  "suspicious",
+                  "style",
+                  "complexity",
+                  "perf",
+                  "roblox",
+                  "pedantic",
+                  "naming",
+                  "luau",
+                  "optional_access",
+                  "needless_assert",
+                  "dropped_result",
+                  "static_call",
+                  "argument_count",
+                  "unreachable_default",
+                  "empty_default",
+                  "unused_import",
+                  "self_assignment",
+                  "unreachable_code",
+                  "constant_condition",
+                  "duplicate_key",
+                  "misplaced_not",
+                  "identical_branches",
+                  "private_access",
+                  "duplicate_function",
+                  "identity_compare",
+                  "circular_import",
+                  "single_angle_call",
+                  "deprecated_namespace",
+                  "stale_export",
+                  "deprecated_call",
+                  "and_or_ternary",
+                  "unused_variable",
+                  "unused_function",
+                  "empty_block",
+                  "bool_comparison",
+                  "needless_bool",
+                  "prefer_destroy",
+                  "manual_safe_access",
+                  "manual_coalesce",
+                  "nil_check_call",
+                  "manual_type_test",
+                  "array_long_string",
+                  "pattern_shadows_local",
+                  "prefer_const",
+                  "redundant_as",
+                  "match_guard_and",
+                  "legacy_iterator",
+                  "manual_floor_div",
+                  "manual_push",
+                  "concat_interpolation",
+                  "raw_pcall",
+                  "raw_require",
+                  "game_alias",
+                  "manual_class",
+                  "manual_ternary_return",
+                  "redundant_return",
+                  "local_then_return",
+                  "numeric_for_index",
+                  "missing_reason",
+                  "too_many_arguments",
+                  "too_many_lines",
+                  "deep_nesting",
+                  "cognitive_complexity",
+                  "collapsible_if",
+                  "collapsible_else_if",
+                  "concat_in_loop",
+                  "service_in_loop",
+                  "table_insert_position",
+                  "deprecated_global",
+                  "manual_child_lookup",
+                  "deprecated_method",
+                  "instance_new_parent",
+                  "deprecated_body_mover",
+                  "explicit_any",
+                  "implicit_any",
+                  "missing_return_type",
+                  "todo_comment",
+                  "print_debug",
+                  "const_mutation",
+                  "missing_doc",
+                  "missing_doc_type",
+                  "naming_convention",
+                  "alx.static_conditional_child",
+                  "alx"
+                ]
+              },
+              {
+                "type": "string"
+              }
+            ]
+          }
+        },
+        "naming": {
+          "type": "object",
+          "title": "[lint.naming]",
+          "description": "The case style of each kind of name, for the `naming_convention` lint. A value is `snake_case`, `camelCase`, `PascalCase`, `SCREAMING_SNAKE_CASE`, `any`, or a list of them. A name passes when it fits one style of its list, and `alloy flux --fix` and `alloy fmt` rename it to the first. `alloy doc naming-conventions` explains it.",
+          "properties": {
+            "variable": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "A local, and a loop variable.",
+              "default": "snake_case"
+            },
+            "const": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "A `const` binding. Alloy marks any binding that the file never assigns again as `const`, so both cases pass by default.",
+              "default": [
+                "snake_case",
+                "SCREAMING_SNAKE_CASE"
+              ]
+            },
+            "function": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "A free function and a `local function`.",
+              "default": "snake_case"
+            },
+            "component": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "A function of an `.alx` file that returns markup, or that a tag names, `<Row />`.",
+              "default": "PascalCase"
+            },
+            "method": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "A function in an `impl` or a `trait`.",
+              "default": "snake_case"
+            },
+            "parameter": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "A parameter of a function.",
+              "default": "snake_case"
+            },
+            "field": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "A field of a struct or an interface.",
+              "default": "snake_case"
+            },
+            "struct": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "A struct.",
+              "default": "PascalCase"
+            },
+            "enum": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "An enum.",
+              "default": "PascalCase"
+            },
+            "variant": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "A variant of an enum.",
+              "default": "PascalCase"
+            },
+            "trait": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "A trait.",
+              "default": "PascalCase"
+            },
+            "interface": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "An interface.",
+              "default": "PascalCase"
+            },
+            "type": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "A type alias.",
+              "default": "PascalCase"
+            },
+            "namespace": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "A namespace.",
+              "default": "PascalCase"
+            },
+            "attribute": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "An attribute declaration.",
+              "default": "snake_case"
+            },
+            "macro": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "A macro.",
+              "default": "snake_case"
+            },
+            "remote": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "snake_case",
+                    "camelCase",
+                    "PascalCase",
+                    "SCREAMING_SNAKE_CASE",
+                    "any"
+                  ]
+                },
+                {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "snake_case",
+                      "camelCase",
+                      "PascalCase",
+                      "SCREAMING_SNAKE_CASE",
+                      "any"
+                    ]
+                  }
+                }
+              ],
+              "description": "A remote.",
+              "default": "PascalCase"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "flux": {
+      "type": "object",
+      "title": "[flux]",
+      "description": "What `alloy flux` runs beyond the lints, and the limits of the complexity lints. The levels of the lints stay in `[lint]`. `alloy doc flux` explains it.",
+      "properties": {
+        "typecheck": {
+          "type": "boolean",
+          "description": "Run luau-lsp over the check artifact and report its type errors on the source lines.",
+          "default": true
+        },
+        "definitions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Definitions files for the type check, `.d.luau` or `.d.aly`, relative to this file. The project's `.d.aly` files join them on their own. The editor loads the same list.",
+          "default": []
+        },
+        "roblox_types": {
+          "type": "boolean",
+          "description": "Load the Roblox globals. The file comes from the luau-lsp extension's storage, or downloads once into `~/.alloy/types`.",
+          "default": true
+        },
+        "security_level": {
+          "type": "string",
+          "enum": [
+            "PluginSecurity",
+            "LocalUserSecurity",
+            "RobloxScriptSecurity",
+            "None"
+          ],
+          "description": "The security level of the Roblox globals.",
+          "default": "PluginSecurity"
+        },
+        "luau_lsp": {
+          "type": "string",
+          "description": "The luau-lsp binary. Unset means `luau-lsp` on the PATH, then `~/.alloy/bin` and `~/.ember/bin`."
+        },
+        "new_solver": {
+          "type": "boolean",
+          "description": "Run the checker's new solver. `false` runs the old one, which evaluates no type function, the way an editor on the old solver does.",
+          "default": true
+        },
+        "too_many_arguments": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "`too_many_arguments` fires past this many parameters; `self` does not count.",
+          "default": 7
+        },
+        "too_many_lines": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "`too_many_lines` fires past this many lines in one function.",
+          "default": 100
+        },
+        "max_nesting": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "`deep_nesting` fires past this many nested blocks.",
+          "default": 5
+        },
+        "cognitive_complexity": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "`cognitive_complexity` fires past this score: one per branch, loop, `and`, `or`, and ternary, plus the depth of each branch.",
+          "default": 25
+        }
+      },
+      "additionalProperties": false
+    },
+    "roblox": {
+      "type": "object",
+      "title": "[roblox]",
+      "description": "What the place is like. `rig` picks the character type `Player.Character` reads as; the editor's `alloy-luau.rig` setting wins over it.",
+      "properties": {
+        "rig": {
+          "type": "string",
+          "enum": [
+            "R15",
+            "R6"
+          ],
+          "description": "The rig of a player's character. `Player.Character` types as `R15Character?` or `R6Character?`; `alloy doc R15Character` shows the parts.",
+          "default": "R15"
+        }
+      },
+      "additionalProperties": false
+    },
+    "test": {
+      "type": "object",
+      "title": "[test]",
+      "description": "Where `alloy test` writes the specs: one lest spec per source with a `@test`, with everything the tests reach. `alloy doc test` explains it.",
+      "properties": {
+        "out": {
+          "type": "string",
+          "description": "The folder the specs land in, relative to this file. Each source with a `@test` writes `<out>/<path>.spec.luau`.",
+          "default": "tests"
+        },
+        "suite": {
+          "type": "string",
+          "description": "The suite name in `lest.toml`.",
+          "default": "alloy"
+        },
+        "lest": {
+          "type": "boolean",
+          "description": "Write `lest.toml` and the `@lest` alias of `.luaurc` when the root has none.",
+          "default": true
+        },
+        "shim": {
+          "type": "boolean",
+          "description": "Load engine doubles before each spec: `Vector3`, `Color3`, `Enum`, `task`, `game`, and a small Instance tree, so shared code runs on a plain VM. In Studio they do nothing.",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "fmt": {
+      "type": "object",
+      "title": "[fmt]",
+      "description": "How Anneal, `alloy fmt`, lays code out. The names follow larvae and stylua where the option is theirs; `alloy doc fmt` explains each.",
+      "properties": {
+        "recommended": {
+          "type": "boolean",
+          "description": "Apply the recommended layout, the defaults below. Off, the formatter preserves what the file does: no line is reflowed, quotes and blank lines stay as written, and the indent comes from the file. The keys set here still apply over that.",
+          "default": true
+        },
+        "column_width": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The width a bracket group breaks past: a call, a table, or an array that does not fit goes one element per line.",
+          "default": 100
+        },
+        "line_endings": {
+          "type": "string",
+          "enum": [
+            "input",
+            "unix",
+            "windows"
+          ],
+          "description": "The line ending of the written file. `input` keeps the endings the file already uses.",
+          "default": "input"
+        },
+        "indent_type": {
+          "type": "string",
+          "enum": [
+            "spaces",
+            "tabs"
+          ],
+          "description": "What one indentation level is.",
+          "default": "spaces"
+        },
+        "indent_width": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Spaces per level, when `indent_type` is spaces.",
+          "default": 2
+        },
+        "quote_style": {
+          "type": "string",
+          "enum": [
+            "auto-prefer-double",
+            "auto-prefer-single",
+            "force-double",
+            "force-single",
+            "preserve"
+          ],
+          "description": "The quotes of a string literal. An `auto` style keeps the other quote for a string that holds the preferred one; `force` escapes instead.",
+          "default": "force-single"
+        },
+        "leading_zero": {
+          "type": "string",
+          "enum": [
+            "add",
+            "strip",
+            "preserve"
+          ],
+          "description": "`.5` and `0.5`: add the zero, strip it, or leave the literal.",
+          "default": "add"
+        },
+        "call_parentheses": {
+          "type": "string",
+          "enum": [
+            "always",
+            "no-single-string",
+            "no-single-table",
+            "none",
+            "input"
+          ],
+          "description": "The parentheses of a call with one string or one table argument: `f(\"x\")` and `f \"x\"`. `input` keeps what the author wrote.",
+          "default": "always"
+        },
+        "space_after_function_names": {
+          "type": "string",
+          "enum": [
+            "never",
+            "definitions",
+            "calls",
+            "always"
+          ],
+          "description": "Where a space goes before the `(` of a function: `function f ()` in definitions, `f ()` in calls.",
+          "default": "never"
+        },
+        "collapse_simple_statement": {
+          "type": "string",
+          "enum": [
+            "never",
+            "function-only",
+            "conditional-only",
+            "always"
+          ],
+          "description": "Whether `if c then return end` or a function with one statement may sit on one line.",
+          "default": "never"
+        },
+        "block_newline_gaps": {
+          "type": "string",
+          "enum": [
+            "never",
+            "preserve"
+          ],
+          "description": "A blank line right after a block opener or right before its closer: dropped, or kept.",
+          "default": "never"
+        },
+        "magic_trailing_comma": {
+          "type": "boolean",
+          "description": "A trailing comma in the source keeps its group expanded, one element per line, whatever the width.",
+          "default": true
+        },
+        "space_inside_braces": {
+          "type": "boolean",
+          "description": "`{ a = 1 }` rather than `{a = 1}`.",
+          "default": true
+        },
+        "space_inside_parens": {
+          "type": "boolean",
+          "description": "`f( a )` rather than `f(a)`.",
+          "default": false
+        },
+        "space_inside_brackets": {
+          "type": "boolean",
+          "description": "`t[ k ]` rather than `t[k]`.",
+          "default": false
+        },
+        "trailing_comma": {
+          "type": "boolean",
+          "description": "An expanded table or array ends its last element with a comma.",
+          "default": true
+        },
+        "space_inside_array": {
+          "type": "boolean",
+          "description": "Alloy's own: `[ 1, 2 ]` rather than `[1, 2]` in an array literal.",
+          "default": true
+        },
+        "align_struct_fields": {
+          "type": "boolean",
+          "description": "Alloy's own: the `:` of a struct's fields line up.",
+          "default": false
+        },
+        "expand_imports": {
+          "type": "boolean",
+          "description": "Alloy's own: an `import { }` or `export { }` list with more than one name breaks one name per line. Off, a trailing comma in the list asks for the same.",
+          "default": false
+        },
+        "prefer_const": {
+          "type": "boolean",
+          "description": "Alloy's own: a `local` that nothing assigns again becomes a `const`, as the `prefer_const` lint asks. `recommended = false` leaves it off.",
+          "default": true
+        },
+        "exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Paths the formatter leaves alone. A `*` matches any run of characters: `\"vendor/*\"`, `\"*.gen.aly\"`.",
+          "default": []
+        },
+        "fix_naming": {
+          "type": "boolean",
+          "description": "Rename a name that breaks its `[lint.naming]` style, as `alloy flux --fix` does, while the `naming_convention` lint is on. The rename skips a name that another file reads.",
+          "default": true
+        },
+        "call_chains": {
+          "type": "object",
+          "title": "[fmt.call_chains]",
+          "description": "How a chain of method calls breaks.",
+          "properties": {
+            "style": {
+              "type": "string",
+              "enum": [
+                "preserve",
+                "method",
+                "full"
+              ],
+              "description": "`method` breaks before each call past the first, `full` before every call, once the chain holds `min_calls` calls. `preserve` keeps the author's lines.",
+              "default": "preserve"
+            },
+            "min_calls": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The number of calls a chain needs before it breaks; 0 breaks only what runs past the width.",
+              "default": 3
+            }
+          },
+          "additionalProperties": false
+        },
+        "sort_requires": {
+          "type": "object",
+          "title": "[fmt.sort_requires]",
+          "description": "Sorting of the `import` lines at the top of a file.",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "Sort the run of `import` statements at the top of the file by path.",
+              "default": false
+            },
+            "grouping": {
+              "type": "string",
+              "enum": [
+                "flat",
+                "by-kind"
+              ],
+              "description": "`by-kind` orders `@alias` paths first, then absolute ones, then relative ones; `flat` sorts by path alone.",
+              "default": "flat"
+            }
+          },
+          "additionalProperties": false
+        },
+        "alx": {
+          "type": "object",
+          "title": "[fmt.alx]",
+          "description": "The markup of `.alx` files, after luaux-worm. The code around it formats like any `.aly` file.",
+          "properties": {
+            "attribute_quotes": {
+              "type": "string",
+              "enum": [
+                "double",
+                "single",
+                "preserve"
+              ],
+              "description": "The quotes of a string attribute: `Name=\"x\"`. `quote_style` does not govern it.",
+              "default": "double"
+            },
+            "bracket_same_line": {
+              "type": "boolean",
+              "description": "The `>` of a tag that broke its attributes sits on the last attribute's line rather than its own.",
+              "default": false
+            },
+            "attribute_per_line": {
+              "type": "boolean",
+              "description": "A tag that breaks its attributes puts every attribute on its own line, the way Prettier lays JSX out; `false` packs as many as fit.",
+              "default": true
+            },
+            "self_closing_space": {
+              "type": "boolean",
+              "description": "`<Frame />` rather than `<Frame/>`.",
+              "default": true
+            },
+            "text_wrap": {
+              "type": "string",
+              "enum": [
+                "fill",
+                "preserve"
+              ],
+              "description": "`fill` reflows text children to the column width; `preserve` keeps the author's line breaks.",
+              "default": "fill"
+            },
+            "blank_lines": {
+              "type": "boolean",
+              "description": "A blank line between two children stays.",
+              "default": true
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "project": {
+      "type": "object",
+      "title": "[project]",
+      "description": "The DataModel tree: which project file describes it, and what `alloy build` writes from it.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The name in the project files Alloy writes. A project file at the root carries its own name, which wins.",
+          "default": "game"
+        },
+        "file": {
+          "type": "string",
+          "description": "The Rojo or Argon project file to read, relative to this file. Unset means `default.project.json`, then the one `*.project.json` at the root. Its tree says where each folder lands; a `[mount]` table here wins over it."
+        },
+        "runtime": {
+          "type": "string",
+          "description": "Where `alloy.luau` lands, as `@game/Service/Folder`. Emitted code requires it by an instance path. Unset means the place the tree already gives it, then `alloy` inside the node that mounts `[build] out` or `[build] in`, then `@game/ReplicatedStorage/Alloy`."
+        },
+        "source_of_truth": {
+          "type": "boolean",
+          "description": "The `[mount]` table is the tree: `alloy build` writes `default.project.json` and `.alloy/build.project.json` from it. Off, Alloy writes neither file, and the table only rewrites an `@alias` require into an instance path in the ship artifact, for a sync tool that owns the tree itself.",
+          "default": true
+        },
+        "mount_aliases": {
+          "type": "boolean",
+          "description": "The `[mount]` table names aliases too: the compiler and the language server serve them beside the ones `.config.luau` or `.luaurc` declares, so `@shared/x` completes and resolves. A name in the Luau configuration wins. Off, only the Luau configuration names aliases.",
+          "default": true
+        },
+        "sourcemap": {
+          "type": "boolean",
+          "description": "Write `sourcemap.json` at the root on every build, the name Rojo and luau-lsp read. The language server reads it for `@game/` completion and instance types. On, the build writes over a `sourcemap.json` another tool wrote; off, it writes none.",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "std": {
+      "type": "object",
+      "title": "[std]",
+      "description": "How a file reaches the std. `alloy doc std` lists its modules.",
+      "properties": {
+        "globals": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "none",
+                "all"
+              ]
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "HashMap",
+                  "Set",
+                  "BitSet",
+                  "Queue",
+                  "Heap",
+                  "Array",
+                  "Symbol",
+                  "Iter",
+                  "Result",
+                  "Ok",
+                  "Err",
+                  "Future",
+                  "Scope",
+                  "Signal",
+                  "SignalConnection",
+                  "Signalish",
+                  "Display",
+                  "Debug",
+                  "Clone",
+                  "Default",
+                  "Eq",
+                  "PartialEq",
+                  "Ord",
+                  "Add",
+                  "Sub",
+                  "Mul",
+                  "Div",
+                  "Serialize",
+                  "Deserialize",
+                  "Partial",
+                  "Readonly",
+                  "Sink",
+                  "R15Character",
+                  "R6Character",
+                  "Attributes",
+                  "rename",
+                  "rename_all",
+                  "skip",
+                  "deny_unknown_fields"
+                ]
+              }
+            }
+          ],
+          "description": "The std names a file writes with no import. `none` means a file imports each one, `import { HashMap } from \"@alloy/std/collections\"`; `all` makes every one ambient; a list makes those names ambient. `Future`, `Result`, `Ok`, `Err`, `Array`, and the operator traits need no import under any value, since a keyword or an operator writes them.",
+          "default": "none"
+        }
+      },
+      "additionalProperties": false
+    },
+    "mount": {
+      "type": "object",
+      "title": "[mount]",
+      "description": "Where each folder lands in the DataModel: `alias = [path, mount]`. A tool that reads a Rojo or Argon project file needs no table here; Alloy reads `default.project.json`. A tool with its own format describes the tree here, and this table then wins over any project file. With it, `alloy build` also writes `default.project.json` over the sources. `alias = path`, a bare string, names a folder another mount already carries and gives it an alias alone.",
+      "properties": {},
+      "additionalProperties": {
+        "description": "A path and where it lands, or a path alone. The pair mounts the folder at a DataModel location; a `.server.` or `.client.` file name picks the script class, and `init` names its directory. A bare string is the alias-only form: the name serves as an alias for a folder another mount already carries, and the folder has to sit under one.",
+        "oneOf": [
+          {
+            "type": "array",
+            "description": "The folder on disk, relative to this file, and the DataModel location.",
+            "items": [
+              {
+                "type": "string",
+                "description": "The folder on disk, relative to this file."
+              },
+              {
+                "type": "string",
+                "description": "The DataModel location: `@game/Service/Folder`.",
+                "pattern": "^@game/"
+              }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          },
+          {
+            "type": "string",
+            "description": "A folder another mount already carries, relative to this file. The name is an alias for it and nothing else."
+          }
+        ],
+        "examples": [
+          [
+            "src/server",
+            "@game/ServerScriptService/Server"
+          ],
+          "src/shared/types"
+        ]
+      }
+    },
+    "ingots": {
+      "type": "object",
+      "title": "[ingots]",
+      "description": "The extensions of the project, name to source. An ingot is an executable beside an `ingot.toml`; it edits source before the desugar, lints, formats, and answers the editor. A path is read where it is; a repo is fetched by `alloy ingot install` into `.alloy/ingots` and recorded in `.alloy/ingots.lock`. `alloy doc ingots` explains them.",
+      "properties": {},
+      "additionalProperties": {
+        "description": "Where the ingot comes from: a path relative to this file that holds `ingot.toml` and the binary, or a GitHub release. `alloy ingot install` fetches it; a build never does.",
+        "oneOf": [
+          {
+            "type": "string",
+            "description": "A directory relative to this file."
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "A directory relative to this file."
+              },
+              "repo": {
+                "type": "string",
+                "description": "`owner/repo` on GitHub; the release `v<version>` holds the zip."
+              },
+              "version": {
+                "type": "string",
+                "description": "The release to install. `^`, the default, is the latest release at install time, and `.alloy/ingots.lock` records what it resolved to. A version, `1.2.3` or `v1.2.3`, pins that release, and `alloy ingot update` leaves it alone.",
+                "default": "^"
+              },
+              "asset": {
+                "type": "string",
+                "description": "The asset name in the release. Unset means `<name>-ingot-<target>.zip`, then `<name>-ingot.zip`."
+              },
+              "order": {
+                "type": "integer",
+                "description": "The pass the ingot's transform runs in, over the manifest's word. A lower number runs first."
+              },
+              "lints": {
+                "type": "object",
+                "description": "Lints of this ingot switched on or off by name, over the manifest's defaults.",
+                "additionalProperties": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        ],
+        "examples": [
+          "ingots/tailwind",
+          {
+            "repo": "alloy-luau/tailwind-ingot"
+          },
+          {
+            "repo": "alloy-luau/tailwind-ingot",
+            "version": "0.1.0"
+          }
+        ]
+      }
+    },
+    "ingot": {
+      "type": "object",
+      "title": "[ingot]",
+      "description": "One table per ingot, `[ingot.<name>]`: its options, over the defaults its manifest declares.",
+      "properties": {},
+      "additionalProperties": {
+        "type": "object",
+        "description": "The options of one ingot, over the defaults its manifest declares. The key is the ingot's name under `[ingots]`; a key the manifest does not declare is an error.",
+        "additionalProperties": true
+      }
+    },
+    "alx": {
+      "type": "object",
+      "title": "[alx]",
+      "description": "How `.alx` markup lowers: the factory it calls and the names it maps. The shape `luaux.toml` has, kept in this file so a project needs no second one; a `luaux.toml` beside it still reads when this table is empty. `alloy doc markup` explains the keys.",
+      "properties": {
+        "factory": {
+          "type": "object",
+          "title": "[alx.factory]",
+          "description": "The functions the lowered markup calls. With no key set, the markup picks a UI library on its own; with any key set, it assumes nothing.",
+          "properties": {
+            "backend": {
+              "type": "string",
+              "enum": [
+                "table",
+                "element"
+              ],
+              "description": "The arrangement of a lowered element: `table` passes children in the props table, `element` as a third argument."
+            },
+            "create": {
+              "type": "string",
+              "description": "The expression that constructs an element, called with the class name."
+            },
+            "children": {
+              "type": "string",
+              "description": "The expression that attaches children, when the backend takes one."
+            },
+            "event": {
+              "type": "string",
+              "description": "The expression that connects an event handler."
+            },
+            "compute": {
+              "type": "string",
+              "description": "The expression that wraps a computed value."
+            },
+            "use": {
+              "type": "string",
+              "description": "The expression that reads a state value."
+            },
+            "fragment": {
+              "type": "string",
+              "description": "The expression that groups children without a parent."
+            },
+            "interpolate": {
+              "type": "string",
+              "enum": [
+                "plain",
+                "compute"
+              ],
+              "description": "How `{expr}` in text lowers: `plain` inserts the value, `compute` wraps it."
+            },
+            "merge": {
+              "type": "string",
+              "description": "The expression that merges a spread props table."
+            }
+          },
+          "additionalProperties": false
+        },
+        "elements": {
+          "type": "object",
+          "title": "[alx.elements]",
+          "description": "Element name aliases: `Frame = \"frame\"` renames one class in markup, and `all = \"camel\"` renames every class by a scheme: PascalCase, camelCase, snake_case, or flatcase.",
+          "properties": {},
+          "additionalProperties": {
+            "type": "string",
+            "description": "The name markup uses for this class, or a casing scheme for `all`."
+          }
+        },
+        "properties": {
+          "type": "object",
+          "title": "[alx.properties]",
+          "description": "Property and event aliases: `Text = \"text\"` for every class, `all = \"camel\"` for a scheme, or a class table with its own.",
+          "properties": {},
+          "additionalProperties": {
+            "description": "The name markup uses for this property in every class, or a table of aliases for one class.",
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              }
+            ]
+          }
+        },
+        "lints": {
+          "type": "object",
+          "title": "[alx.lints]",
+          "description": "Deprecated: the levels of the markup lints. Write `[lint.rules] alx.<name> = \"allow\" | \"warn\" | \"deny\"`.",
+          "properties": {
+            "static_conditional_child": {
+              "type": "string",
+              "enum": [
+                "off",
+                "warn",
+                "error"
+              ],
+              "description": "Deprecated: write `[lint.rules] alx.static_conditional_child`. Markup in a child expression that no function encloses: it is built once, not on each render."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

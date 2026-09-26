@@ -1,0 +1,13 @@
+--[[
+  Forge: OOP providers for Alloy, after Chief. This module sends out the
+  public API; each part lives in its own module beside it.
+
+    import { Forge, Provider, Lifecycle } from 'forge/src/index'
+]]
+
+export { Forge, Phase, ProviderEvent, type Extension, type Options } from './core'
+export { Lifecycle, Provider, type Entry, type ProviderObject } from './provider'
+export { Dispatch, type CustomLifecycle, type Fire } from './lifecycles'
+export { type Target } from './dependencies'
+export { Attribute, Child, Trait, TraitLifecycle } from './traits'
+export { Bin, type BinItem } from './bin'

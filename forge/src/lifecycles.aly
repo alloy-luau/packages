@@ -1,0 +1,604 @@
+--[[
+  Lifecycles: events bound to provider methods. A provider opts in by
+  listing the method in `@Provider`, and the contract makes it write the
+  method. Forge wires each lifecycle at PostInit, after every Init and
+  before any Start, so a handler may assume every provider has
+  initialized.
+
+  A built-in (a Lifecycle other than Init and Start) wires itself once
+  any provider lists it. `every` and custom lifecycles wire when the game
+  adds them with AddLifecycles and a provider lists their method.
+]]
+
+import Players from '@game/Players'
+import RunService from '@game/RunService'
+import { type Entry, type ProviderObject, is_boot } from './provider'
+
+--- How `fire` hands an event to the providers that listen.
+export enum Dispatch
+  --- Each handler runs on its own thread, and `fire` returns at once. A
+  --- slow or failing handler cannot hold up the others. The default.
+  Spawn
+  --- The handlers run one after another on the event's thread. No
+  --- thread per event, so the per-frame built-ins use it; a slow handler
+  --- delays the rest, and an error stops the dispatch.
+  Inline
+  --- The handlers run at once, and `fire` returns when the last one
+  --- ends. An error in one does not stop the others. For an event source
+  --- that must wait, such as BindToClose.
+  Await
+end
+
+--- A handler's arguments pass through untyped: each lifecycle has its
+--- own.
+@allow(explicit_any)
+export type Fire = (...any) -> ()
+
+--[[
+  A lifecycle: an event bound to a method name.
+
+  - `Method`: the name a provider lists and writes.
+  - `Connect`: a signal to connect to, or a function that takes `fire`
+    and returns a connection, or nil when nothing stays connected. Call
+    `fire(...)` to hand the arguments to each provider that listens.
+  - `Dispatch`: how `fire` runs the handlers. Spawn when nil.
+]]
+export type CustomLifecycle = {
+  Method: string,
+  Connect: RBXScriptSignal | (fire: Fire) -> RBXScriptConnection?,
+  Dispatch: Dispatch?,
+}
+
+--- The lifecycles that connect client-only signals.
+const CLIENT_ONLY: { [string]: boolean } = {
+  PreRender = true,
+  LocalCharacterAdded = true,
+  LocalCharacterRemoving = true,
+  LocalAppearanceLoaded = true,
+  LocalHumanoidDied = true,
+}
+
+--- The lifecycles that connect server-only signals.
+const SERVER_ONLY: { [string]: boolean } = { Closing = true }
+
+--- Watches each player in the game now and each who joins later.
+local function each_player(watch: (Player) -> ()) -> RBXScriptConnection
+  for _, player in Players:GetPlayers() do
+    task.spawn(watch, player)
+  end
+
+  return Players.PlayerAdded:Connect(watch)
+end
+
+--- Fires on each new humanoid death of a character.
+local function on_death(fire: Fire, player: Player, character: Model) -> ()
+  const humanoid = character:WaitForChild('Humanoid', 10)
+
+  if humanoid is Humanoid then
+    humanoid.Died:Connect(function() -> ()
+      fire(player, character, humanoid)
+    end)
+  end
+end
+
+--- A frame event of RunService, dispatched inline.
+local function frame(method: string, signal: () -> RBXScriptSignal) -> CustomLifecycle
+  return {
+    Method = method,
+    Connect = function(fire: Fire) -> RBXScriptConnection?
+      return signal():Connect(fire)
+    end,
+    Dispatch = Dispatch.Inline,
+  }
+end
+
+--- The Roblox event behind each built-in lifecycle. Each connects when
+--- Forge wires it, never at load.
+const BUILTINS: { [string]: CustomLifecycle } = {
+  PlayerAdded = {
+    Method = 'PlayerAdded',
+    Connect = function(fire: Fire) -> RBXScriptConnection?
+      return each_player(fire)
+    end,
+  },
+  PlayerRemoving = {
+    Method = 'PlayerRemoving',
+    Connect = function(fire: Fire) -> RBXScriptConnection?
+      return Players.PlayerRemoving:Connect(fire)
+    end,
+  },
+  CharacterAdded = {
+    Method = 'CharacterAdded',
+    Connect = function(fire: Fire) -> RBXScriptConnection?
+      return each_player(function(player: Player) -> ()
+        if player.Character then
+          task.spawn(fire, player, player.Character)
+        end
+
+        player.CharacterAdded:Connect(function(character: Model) -> ()
+          fire(player, character)
+        end)
+      end)
+    end,
+  },
+  CharacterRemoving = {
+    Method = 'CharacterRemoving',
+    Connect = function(fire: Fire) -> RBXScriptConnection?
+      return each_player(function(player: Player) -> ()
+        player.CharacterRemoving:Connect(function(character: Model) -> ()
+          fire(player, character)
+        end)
+      end)
+    end,
+  },
+  AppearanceLoaded = {
+    Method = 'AppearanceLoaded',
+    Connect = function(fire: Fire) -> RBXScriptConnection?
+      return each_player(function(player: Player) -> ()
+        player.CharacterAppearanceLoaded:Connect(function(character: Model) -> ()
+          fire(player, character)
+        end)
+      end)
+    end,
+  },
+  HumanoidDied = {
+    Method = 'HumanoidDied',
+    Connect = function(fire: Fire) -> RBXScriptConnection?
+      return each_player(function(player: Player) -> ()
+        player.CharacterAdded:Connect(function(character: Model) -> ()
+          on_death(fire, player, character)
+        end)
+      end)
+    end,
+  },
+  Closing = {
+    Method = 'Closing',
+    Connect = function(fire: Fire) -> RBXScriptConnection?
+      game:BindToClose(function() -> ()
+        fire()
+      end)
+
+      return nil
+    end,
+    Dispatch = Dispatch.Await,
+  },
+  PreRender = frame('PreRender', function() -> RBXScriptSignal
+    return RunService.PreRender
+  end),
+  PreAnimation = frame('PreAnimation', function() -> RBXScriptSignal
+    return RunService.PreAnimation
+  end),
+  PreSimulation = frame('PreSimulation', function() -> RBXScriptSignal
+    return RunService.PreSimulation
+  end),
+  PostSimulation = frame('PostSimulation', function() -> RBXScriptSignal
+    return RunService.PostSimulation
+  end),
+  Heartbeat = frame('Heartbeat', function() -> RBXScriptSignal
+    return RunService.Heartbeat
+  end),
+  LocalCharacterAdded = {
+    Method = 'LocalCharacterAdded',
+    Connect = function(fire: Fire) -> RBXScriptConnection?
+      const player = Players.LocalPlayer
+
+      if player.Character then
+        task.spawn(fire, player, player.Character)
+      end
+
+      return player.CharacterAdded:Connect(function(character: Model) -> ()
+        fire(player, character)
+      end)
+    end,
+  },
+  LocalCharacterRemoving = {
+    Method = 'LocalCharacterRemoving',
+    Connect = function(fire: Fire) -> RBXScriptConnection?
+      const player = Players.LocalPlayer
+
+      return player.CharacterRemoving:Connect(function(character: Model) -> ()
+        fire(player, character)
+      end)
+    end,
+  },
+  LocalAppearanceLoaded = {
+    Method = 'LocalAppearanceLoaded',
+    Connect = function(fire: Fire) -> RBXScriptConnection?
+      const player = Players.LocalPlayer
+
+      return player.CharacterAppearanceLoaded:Connect(function(character: Model) -> ()
+        fire(player, character)
+      end)
+    end,
+  },
+  LocalHumanoidDied = {
+    Method = 'LocalHumanoidDied',
+    Connect = function(fire: Fire) -> RBXScriptConnection?
+      const player = Players.LocalPlayer
+
+      return player.CharacterAdded:Connect(function(character: Model) -> ()
+        on_death(fire, player, character)
+      end)
+    end,
+  },
+}
+
+--- Whether a name is a built-in lifecycle that Forge wires to an event.
+export function is_builtin(method: string) -> boolean
+  return BUILTINS[method] ~= nil
+end
+
+--- Errors unless a value is a lifecycle Forge can wire.
+export function check_lifecycle(value: unknown, index: number, call: string) -> ()
+  const bad = `BadArgument: Bad argument #{index} for {call}`
+
+  if value is not table then
+    error(`{bad} (expected CustomLifecycle, got {typeof(value)})`, 0)
+  end
+
+  if value.Method is not string or value.Method == '' then
+    error(`{bad} (Method: expected a non-empty string, got {typeof(value.Method)})`, 0)
+  end
+
+  const connect = value.Connect
+
+  -- `not (x is function)`: alloy fmt misreads `is not function`.
+  if connect is not RBXScriptSignal and not (connect is function) then
+    error(`{bad} (Connect: expected RBXScriptSignal or function, got {typeof(connect)})`, 0)
+  end
+
+  const mode = value.Dispatch
+
+  if mode ~= nil and not Dispatch.is(mode) then
+    error(`{bad} (Dispatch: expected 'Spawn', 'Inline', or 'Await', got {tostring(mode)})`, 0)
+  end
+end
+
+--- A lifecycle that calls `method(self, dt)` about every `seconds`, with
+--- the real time since the last tick. A lag spike gives one late tick,
+--- not a burst. Each call makes a new lifecycle, so two intervals can
+--- drive two methods.
+export function every(seconds: number, method: string) -> CustomLifecycle
+  if seconds is not number or seconds <= 0 then
+    error(
+      `BadArgument: Bad argument #1 for every (expected a positive number, got {tostring(seconds)})`,
+      0
+    )
+  end
+
+  if method is not string or method == '' then
+    error(
+      `BadArgument: Bad argument #2 for every (expected a non-empty string, got {typeof(method)})`,
+      0
+    )
+  end
+
+  return {
+    Method = method,
+    Connect = function(fire: Fire) -> RBXScriptConnection?
+      -- task.wait rides Heartbeat already and returns the real time, so a
+      -- plain loop does what an accumulator would. The loop lives as long
+      -- as the session, as every lifecycle does.
+      task.spawn(function() -> ()
+        while true do
+          fire(task.wait(seconds))
+        end
+      end)
+
+      return nil
+    end,
+  }
+end
+
+--[[
+  Runs `method` of each listener at once, and returns when the last one
+  ends. A failing handler must not stop the others, and it must still
+  count down, or the caller would wait forever. task.spawn runs each
+  handler to its first yield, so when every one is synchronous nothing
+  is left to wait for, and the caller does not yield at all.
+]]
+local function await_all(listeners: { ProviderObject }, method: string, ...: unknown) -> ()
+  local remaining = #listeners
+  local waiting = false
+  const caller = coroutine.running()
+
+  local function run(listener: ProviderObject, ...: unknown) -> ()
+    if local Err(problem) = Result.pcall(listener[method], listener, ...) then
+      warn(`LifecycleError: {method} failed\n{problem}`)
+    end
+
+    remaining -= 1
+
+    if remaining == 0 and waiting then
+      task.spawn(caller)
+    end
+  end
+
+  for _, listener in listeners do
+    task.spawn(run, listener, ...)
+  end
+
+  if remaining > 0 then
+    waiting = true
+    coroutine.yield()
+  end
+end
+
+--- A `fire` that hands its arguments to `method` of each listener, the
+--- way `mode` says.
+export function dispatcher(listeners: { ProviderObject }, method: string, mode: Dispatch) -> Fire
+  return function(...) -> ()
+    match mode with
+      case Dispatch.Inline then
+        for _, listener in listeners do
+          listener[method](listener, ...)
+        end
+      case Dispatch.Spawn then
+        for _, listener in listeners do
+          task.spawn(listener[method], listener, ...)
+        end
+      case Dispatch.Await then
+        await_all(listeners, method, ...)
+    end
+  end
+end
+
+--- Connects one lifecycle to its listeners. Nothing connects when no
+--- provider listens.
+local function connect(lifecycle: CustomLifecycle, listeners: { ProviderObject }) -> ()
+  if #listeners == 0 then
+    return
+  end
+
+  const fire = dispatcher(listeners, lifecycle.Method, lifecycle.Dispatch ?? Dispatch.Spawn)
+  const source = lifecycle.Connect
+
+  -- A cast, not `source is function`: after that test the implicit_any
+  -- lint reports `fire` as a parameter with no type.
+  if source is RBXScriptSignal then
+    source:Connect(fire)
+  else
+    (source :: (Fire) -> RBXScriptConnection?)(fire)
+  end
+end
+
+--- The providers that list a method, in boot order.
+local function listeners_of(entries: { Entry }, method: string) -> { ProviderObject }
+  const out: { ProviderObject } = {}
+
+  for _, entry in entries do
+    if table.find(entry.Lifecycles, method) then
+      table.insert(out, entry.Provider)
+    end
+  end
+
+  return out
+end
+
+--- Errors when a provider lists a lifecycle that cannot run here: one
+--- that no lifecycle fires, or one for the other side.
+local function check_listed(
+  entries: { Entry },
+  customs: { CustomLifecycle },
+  on_server: () -> boolean
+) -> ()
+  local fired: { [string]: boolean } = {}
+
+  for _, lifecycle in customs do
+    fired[lifecycle.Method] = true
+  end
+
+  for _, entry in entries do
+    for _, method in entry.Lifecycles do
+      if is_boot(method) or fired[method] then
+        continue
+      end
+
+      if not is_builtin(method) then
+        error(
+          `BadArgument: {entry.Name} lists '{method}', and no lifecycle fires it; add one with AddLifecycles`,
+          0
+        )
+      end
+
+      if CLIENT_ONLY[method] and on_server() then
+        error(`BadCall: {entry.Name} lists '{method}', which is client-only, on the server`, 0)
+      end
+
+      if SERVER_ONLY[method] and not on_server() then
+        error(`BadCall: {entry.Name} lists '{method}', which is server-only, on the client`, 0)
+      end
+    end
+  end
+end
+
+--- Wires every lifecycle the providers list: the built-ins they name,
+--- and each custom one. `on_server` says which side this is; Forge asks
+--- only when a provider lists a lifecycle of one side.
+export function wire(
+  entries: { Entry },
+  customs: { CustomLifecycle },
+  on_server: () -> boolean
+) -> ()
+  check_listed(entries, customs, on_server)
+
+  for method, lifecycle in BUILTINS do
+    connect(lifecycle, listeners_of(entries, method))
+  end
+
+  for _, lifecycle in customs do
+    connect(lifecycle, listeners_of(entries, lifecycle.Method))
+  end
+end
+
+--- A provider for the tests: it counts each call of `Tick`.
+local function counter() -> ProviderObject
+  return {
+    calls = 0,
+    Tick = function(self: ProviderObject, n: number?) -> ()
+      self.calls += n ?? 1
+    end,
+  }
+end
+
+--- The side for the tests: the server.
+local function server() -> boolean
+  return true
+end
+
+--- An entry for the tests.
+local function entry(name: string, provider: ProviderObject, lifecycles: { string }) -> Entry
+  return {
+    Name = name,
+    ModuleScript = Instance.new('ModuleScript'),
+    Provider = provider,
+    Lifecycles = lifecycles,
+    Priority = 0,
+  }
+end
+
+@test
+function inline_runs_each_handler_before_it_returns() -> ()
+  const a = counter()
+  const b = counter()
+
+  dispatcher([ a, b ], 'Tick', Dispatch.Inline)(2)
+
+  $assert_eq(a.calls, 2)
+  $assert_eq(b.calls, 2)
+end
+
+@test
+function spawn_runs_each_handler_on_its_own_thread() -> ()
+  const threads: { thread } = []
+  const provider = {
+    Tick = function(_self: unknown) -> ()
+      table.insert(threads, coroutine.running())
+    end,
+  }
+
+  dispatcher([ provider, provider ], 'Tick', Dispatch.Spawn)()
+
+  $assert_eq(#threads, 2)
+  $assert(threads[1] ~= threads[2])
+end
+
+@test
+function inline_stops_at_an_error() -> ()
+  const after = counter()
+  const failing = {
+    Tick = function(_self: unknown) -> ()
+      error('boom')
+    end,
+  }
+
+  $expect(function() -> ()
+    dispatcher([ failing, after ], 'Tick', Dispatch.Inline)()
+  end):toThrow('boom')
+  $assert_eq(after.calls, 0)
+end
+
+@test
+function await_returns_at_once_when_every_handler_is_synchronous() -> ()
+  const a = counter()
+  const b = counter()
+
+  dispatcher([ a, b ], 'Tick', Dispatch.Await)()
+
+  $assert_eq(a.calls + b.calls, 2)
+end
+
+@test
+function await_waits_for_a_handler_that_yields() -> ()
+  local resume: thread? = nil
+  local done = false
+  const slow = {
+    Tick = function(_self: unknown) -> ()
+      resume = coroutine.running()
+      coroutine.yield()
+    end,
+  }
+  const fire = dispatcher([ slow ], 'Tick', Dispatch.Await)
+  const caller = coroutine.create(function() -> ()
+    fire()
+    done = true
+  end)
+
+  coroutine.resume(caller)
+  $assert_eq(done, false)
+
+  coroutine.resume(resume :: thread)
+  $assert_eq(done, true)
+end
+
+@test
+function await_survives_a_failing_handler() -> ()
+  const after = counter()
+  const failing = {
+    Tick = function(_self: unknown) -> ()
+      error('boom')
+    end,
+  }
+
+  dispatcher([ failing, after ], 'Tick', Dispatch.Await)()
+
+  $assert_eq(after.calls, 1)
+end
+
+@test
+function every_rejects_a_bad_interval() -> ()
+  $expect(function() -> ()
+    every(0, 'Autosave')
+  end):toThrow('BadArgument')
+  $expect(function() -> ()
+    every(5, '')
+  end):toThrow('BadArgument')
+  $assert_eq(every(5, 'Autosave').Method, 'Autosave')
+end
+
+@test
+function check_lifecycle_names_the_bad_field() -> ()
+  $expect(function() -> ()
+    check_lifecycle({ Method = 'X', Connect = 5 }, 1, 'AddLifecycles')
+  end):toThrow('Connect')
+  $expect(function() -> ()
+    check_lifecycle({ Method = 'X', Connect = print, Dispatch = 'Later' }, 1, 'AddLifecycles')
+  end):toThrow('Dispatch')
+  check_lifecycle({ Method = 'X', Connect = print, Dispatch = 'Await' }, 1, 'AddLifecycles')
+end
+
+@test
+function a_custom_lifecycle_reaches_the_providers_that_list_it() -> ()
+  const listed = counter()
+  const other = counter()
+  local fire: Fire? = nil
+  const lifecycle: CustomLifecycle = {
+    Method = 'Tick',
+    Connect = function(given: Fire) -> RBXScriptConnection?
+      fire = given
+
+      return nil
+    end,
+    Dispatch = Dispatch.Inline,
+  }
+
+  wire([ entry('Listed', listed, [ 'Tick' ]), entry('Other', other, []) ], [ lifecycle ], server)
+  ; (fire :: Fire)()
+
+  $assert_eq(listed.calls, 1)
+  $assert_eq(other.calls, 0)
+end
+
+@test
+function a_listed_lifecycle_that_nothing_fires_errors() -> ()
+  $expect(function() -> ()
+    wire([ entry('World', counter(), [ 'Autosave' ]) ], [], server)
+  end):toThrow('World lists \'Autosave\'')
+end
+
+@test
+function a_client_lifecycle_on_the_server_errors() -> ()
+  $expect(function() -> ()
+    wire([ entry('Camera', counter(), [ 'PreRender' ]) ], [], server)
+  end):toThrow('BadCall')
+end

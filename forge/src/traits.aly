@@ -1,0 +1,505 @@
+--[[
+  Traits: behavior bound to Roblox instances through CollectionService
+  tags. A trait is a struct whose impl carries `@Trait`. Each tagged
+  instance that meets the contract gets an object of its own, so a trait
+  is not a singleton, and its module exports the struct.
+
+    @Trait({ tag = 'Door', instance = 'BasePart', lifecycles = [TraitLifecycle.Init] })
+    export struct Door
+      instance: BasePart
+      bin: Bin
+      @Attribute('Locked', 'boolean') locked: boolean
+      @Attribute('OpenAngle', 'number') open_angle: number = 90
+      @Child('Prompt', 'ProximityPrompt', 5) prompt: ProximityPrompt
+    end
+
+  Forge fills `instance`, `bin`, and each field that `@Attribute` or
+  `@Child` marks. A field with a default is optional, and Forge writes
+  the default back to the instance, so it shows in Studio. An instance
+  that lacks a required attribute or child does not bind, and a warning
+  names what it lacks.
+
+  Watching starts at PostStart, after the whole boot, so a trait may use
+  any provider.
+]]
+
+import CollectionService from '@game/CollectionService'
+import { Attributes } from '@alloy/std/roblox'
+import { Bin } from './bin'
+import { type ProviderObject, check_contract, exported, keyed } from './provider'
+import { run_sync } from './sync'
+
+--- A per-instance step a trait can list in `@Trait`.
+export enum TraitLifecycle
+  --- `Init(self)`: runs once the object is built. It must not yield.
+  Init
+  --- `Start(self)`: spawned after Init, and cancelled when the trait
+  --- unbinds.
+  Start
+  --- `AttributeChanged(self, field, value)`: an `@Attribute` field
+  --- changed on the instance. The field holds the new value already.
+  AttributeChanged
+  --- `Destroy(self)`: runs when the trait unbinds, before the bin
+  --- empties. It must not yield.
+  Destroy
+end
+
+--[[
+  Marks a trait. `tag` is the CollectionService tag to watch, `instance`
+  the class the tagged instance must be, and `lifecycles` the steps the
+  impl writes. The contract asks for an `instance` field and a `bin`
+  field, which Forge fills, and a private method for each step.
+]]
+export attribute Trait(
+  tag: string,
+  instance: string = 'Instance',
+  lifecycles: TraitLifecycle[] = {}
+) on struct, impl as
+  requires field instance
+  requires field bin
+  requires private function each lifecycles
+end
+
+--- Fills a field from the attribute `name` of the tagged instance, which
+--- must hold a value of `typeof` kind `kind`, such as 'number'.
+export attribute Attribute(name: string, kind: string) on field
+
+--- Fills a field from the child `name` of the tagged instance, which
+--- must be a `class_name`. With `wait` above 0, Forge waits that many
+--- seconds for it.
+export attribute Child(name: string, class_name: string = 'Instance', wait: number = 0) on field
+
+--- An `@Attribute` field.
+type AttributeSpec = { field: string, name: string, kind: string }
+
+--- A `@Child` field.
+type ChildSpec = { field: string, name: string, class_name: string, wait: number }
+
+--- A trait, read from its struct.
+export type TraitInfo = {
+  --- The name of its ModuleScript.
+  name: string,
+  --- The struct. Calling it builds an object and fills the defaults.
+  struct: (fields: { [string]: unknown }) -> ProviderObject,
+  tag: string,
+  instance: string,
+  lifecycles: { string },
+  attributes: { AttributeSpec },
+  children: { ChildSpec },
+}
+
+--- The bound objects of each trait, by instance. Module-wide, so `get`
+--- works from anywhere, and so a trait wired twice shows.
+local bound_by_trait: { [unknown]: { [Instance]: ProviderObject } } = {}
+
+--- Reads a trait from the value of its module. Errors with BadArgument
+--- when the value carries no `@Trait`.
+export function info_of(name: string, value: unknown) -> TraitInfo
+  const struct = exported(value)
+  const raw = if struct is table then Attributes.get(struct, Trait) else nil
+
+  if raw == nil or struct is not table then
+    error(`BadArgument: {name} carries no @Trait; export the struct that carries it`, 0)
+  end
+
+  const read = keyed((raw :: unknown) :: { [string]: unknown }, 'tag')
+  const tag = read.tag
+
+  if tag is not string or tag == '' then
+    error(`BadArgument: {name}'s @Trait has no tag`, 0)
+  end
+
+  local lifecycles: string[] = []
+
+  for _, step in (read.lifecycles ?? {}) :: { unknown } do
+    lifecycles:push(tostring(step))
+  end
+
+  check_contract(name, struct, lifecycles)
+
+  const attributes: { AttributeSpec } = {}
+
+  for field, raw_args in Attributes.fields(struct, Attribute) do
+    const args = keyed((raw_args :: unknown) :: { [string]: unknown }, 'name')
+    table.insert(
+      attributes,
+      { field = field, name = tostring(args.name), kind = tostring(args.kind) }
+    )
+  end
+
+  const children: { ChildSpec } = {}
+
+  for field, raw_args in Attributes.fields(struct, Child) do
+    const args = keyed((raw_args :: unknown) :: { [string]: unknown }, 'name')
+    const wait = args.wait
+
+    table.insert(
+      children,
+      {
+        field = field,
+        name = tostring(args.name),
+        class_name = tostring(args.class_name ?? 'Instance'),
+        wait = wait is number ? wait : 0,
+      }
+    )
+  end
+
+  const instance = read.instance
+
+  return {
+    name = name,
+    struct = (struct :: unknown) :: (fields: { [string]: unknown }) -> ProviderObject,
+    tag = tag,
+    instance = instance is string ? instance : 'Instance',
+    lifecycles = lifecycles,
+    attributes = attributes,
+    children = children,
+  }
+end
+
+--- Warns that an instance fails a trait's contract. A tagged instance
+--- that does nothing in silence is hard to debug.
+local function refuse(info: TraitInfo, instance: Instance, reason: string) -> ()
+  warn(`BadInstance: {info.name} does not bind to {instance:GetFullName()}: {reason}`)
+end
+
+--- Whether a trait lists a step.
+local function lists(info: TraitInfo, step: string) -> boolean
+  return table.find(info.lifecycles, step) ~= nil
+end
+
+--- The children a trait asks for, or the reason one is missing. Yields
+--- while it waits for a child.
+local function children_of(
+  info: TraitInfo,
+  instance: Instance
+) -> ({ [string]: Instance }?, string?)
+  local found: { [string]: Instance } = {}
+
+  for _, spec in info.children do
+    local child = instance:FindFirstChild(spec.name)
+
+    if child == nil and spec.wait > 0 then
+      child = instance:WaitForChild(spec.name, spec.wait)
+    end
+
+    if child == nil then
+      return nil, `the child '{spec.name}' is missing (expected {spec.class_name})`
+    end
+
+    if not child:IsA(spec.class_name) then
+      return nil, `the child '{spec.name}' is a {child.ClassName}, not a {spec.class_name}`
+    end
+
+    found[spec.field] = child
+  end
+
+  return found, nil
+end
+
+--- The fields a new object starts from: its instance, a bin, its
+--- children, and the attributes the instance holds. Nil and the reason
+--- when an attribute has the wrong kind.
+local function fields_of(
+  info: TraitInfo,
+  instance: Instance,
+  children: { [string]: Instance }
+) -> ({ [string]: unknown }?, string?)
+  local fields: { [string]: unknown } = { instance = instance, bin = Bin.new() }
+
+  for field, child in children do
+    fields[field] = child
+  end
+
+  for _, spec in info.attributes do
+    const value = instance:GetAttribute(spec.name)
+
+    if value ~= nil and typeof(value) ~= spec.kind then
+      return nil, `the attribute '{spec.name}' is a {typeof(value)}, not a {spec.kind}`
+    end
+
+    fields[spec.field] = value
+  end
+
+  return fields, nil
+end
+
+--- Checks that every attribute field has a value after the defaults
+--- filled in, and writes each default back to the instance. Gives the
+--- reason when one does not hold.
+local function settle(info: TraitInfo, instance: Instance, object: ProviderObject) -> string?
+  for _, spec in info.attributes do
+    const value = object[spec.field]
+
+    if value == nil then
+      return `the required attribute '{spec.name}' is missing (expected {spec.kind})`
+    end
+
+    if typeof(value) ~= spec.kind then
+      return `the default of '{spec.name}' is a {typeof(value)}, not a {spec.kind}`
+    end
+
+    if instance:GetAttribute(spec.name) == nil then
+      instance:SetAttribute(spec.name, value)
+    end
+  end
+
+  return nil
+end
+
+--- Keeps each `@Attribute` field in step with the instance, and calls
+--- AttributeChanged when the trait lists it.
+local function follow(
+  info: TraitInfo,
+  instance: Instance,
+  object: ProviderObject
+) -> RBXScriptConnection
+  return instance.AttributeChanged:Connect(function(name: string) -> ()
+    for _, spec in info.attributes do
+      if spec.name ~= name then
+        continue
+      end
+
+      const value = instance:GetAttribute(name)
+
+      if value ~= nil and typeof(value) ~= spec.kind then
+        warn(
+          `BadAttribute: {info.name} ignores '{name}' on {instance:GetFullName()}: a {typeof(value)}, not a {spec.kind}`
+        )
+
+        return
+      end
+
+      object[spec.field] = value
+
+      if lists(info, 'AttributeChanged') then
+        object:AttributeChanged(spec.field, value)
+      end
+    end
+  end)
+end
+
+--- Builds a trait's object for an instance, or warns why it cannot.
+--- Yields while it waits for a child. Returns the object.
+local function build(info: TraitInfo, instance: Instance) -> ProviderObject?
+  if not instance:IsA(info.instance) then
+    refuse(info, instance, `it is a {instance.ClassName}, not a {info.instance}`)
+
+    return nil
+  end
+
+  const children, missing = children_of(info, instance)
+
+  if children == nil then
+    refuse(info, instance, missing ?? 'a child is missing')
+
+    return nil
+  end
+
+  const fields, wrong = fields_of(info, instance, children)
+
+  if fields == nil then
+    refuse(info, instance, wrong ?? 'an attribute is wrong')
+
+    return nil
+  end
+
+  const object: ProviderObject = info.struct(fields)
+  const problem = settle(info, instance, object)
+
+  if problem then
+    object.bin:Empty()
+    refuse(info, instance, problem)
+
+    return nil
+  end
+
+  return object
+end
+
+--- Watches one trait's tag: binds each tagged instance, now and later,
+--- and unbinds on untag. Forge calls it once per trait at PostStart.
+export function watch(info: TraitInfo) -> ()
+  if bound_by_trait[info.struct] ~= nil then
+    warn(`DuplicateTrait: {info.name} is wired already; was it added to two Forges?`)
+
+    return
+  end
+
+  local bound: { [Instance]: ProviderObject } = {}
+  local pending: { [Instance]: thread } = {}
+  bound_by_trait[info.struct] = bound
+
+  local function bind(instance: Instance) -> ()
+    const object = build(info, instance)
+    pending[instance] = nil
+
+    if object == nil then
+      return
+    end
+
+    if lists(info, 'Init') then
+      const ok, problem = run_sync('Init', object.Init, object)
+
+      if not ok then
+        object.bin:Empty()
+        error(`TraitError: Init of {info.name} failed for {instance:GetFullName()}\n{problem}`, 0)
+      end
+    end
+
+    object.bin:Add(follow(info, instance, object))
+    bound[instance] = object
+
+    -- The Start thread goes in the bin, so an unbind cancels a Start that
+    -- still runs.
+    if lists(info, 'Start') then
+      object.bin:Add(task.spawn(object.Start, object))
+    end
+  end
+
+  local function try_bind(instance: Instance) -> ()
+    if bound[instance] ~= nil or pending[instance] ~= nil then
+      return
+    end
+
+    const thread = task.spawn(bind, instance)
+
+    -- A thread still suspended waits for a child; an untag cancels it.
+    if coroutine.status(thread) == 'suspended' then
+      pending[instance] = thread
+    end
+  end
+
+  local function unbind(instance: Instance) -> ()
+    if const thread = pending[instance] then
+      pending[instance] = nil
+      task.cancel(thread)
+    end
+
+    const object = bound[instance]
+
+    if object == nil then
+      return
+    end
+
+    bound[instance] = nil
+
+    if lists(info, 'Destroy') then
+      const ok, problem = run_sync('Destroy', object.Destroy, object)
+
+      if not ok then
+        warn(`TraitError: Destroy of {info.name} failed for {instance:GetFullName()}\n{problem}`)
+      end
+    end
+
+    object.bin:Empty()
+  end
+
+  CollectionService:GetInstanceAddedSignal(info.tag):Connect(try_bind)
+  CollectionService:GetInstanceRemovedSignal(info.tag):Connect(unbind)
+
+  for _, instance in CollectionService:GetTagged(info.tag) do
+    try_bind(instance)
+  end
+end
+
+--- The object a trait has bound to an instance, or nil. Name the type
+--- to get it typed: `Forge.trait<<Door>>(part, Door)`.
+export function get<T>(instance: Instance, trait: unknown) -> T?
+  const bound = bound_by_trait[exported(trait)]
+
+  return if bound then (bound[instance] :: unknown) :: T else nil
+end
+
+--- Every object a trait has bound, in no set order.
+export function get_all<T>(trait: unknown) -> { T }
+  const out: { T } = {}
+
+  for _, object in bound_by_trait[exported(trait)] ?? {} do
+    table.insert(out, (object :: unknown) :: T)
+  end
+
+  return out
+end
+
+--- The tests of traits, with the fixture structs they bind. The ship
+--- artifact leaves the whole group out.
+@test
+namespace TraitTests
+  --- A door: a part with a lock, an angle, and a prompt.
+  @Trait({ tag = 'Door', instance = 'BasePart', lifecycles = [ TraitLifecycle.Init ] })
+  private struct Door
+    instance: BasePart
+    bin: Bin
+    @Attribute('Locked', 'boolean') locked: boolean
+    @Attribute('OpenAngle', 'number') open_angle: number = 90
+    @Child('Prompt', 'ProximityPrompt') prompt: ProximityPrompt
+  end
+
+  impl Door
+    private function Init(self) -> ()
+      self.open_angle += 0
+    end
+  end
+
+  --- A part tagged as a door, with what it holds.
+  private function part(locked: boolean?, prompt: boolean) -> Part
+    const made = Instance.new('Part')
+
+    if locked ~= nil then
+      made:SetAttribute('Locked', locked)
+    end
+
+    if prompt then
+      local child = Instance.new('ProximityPrompt')
+      child.Name = 'Prompt'
+      child.Parent = made
+    end
+
+    return made
+  end
+
+  --- Reads the contract off the struct.
+  public function reads_the_contract() -> ()
+    const info = info_of('Door', { default = Door })
+
+    $assert_eq(info.tag, 'Door')
+    $assert_eq(info.instance, 'BasePart')
+    $assert_eq(table.concat(info.lifecycles, ','), 'Init')
+    $assert_eq(#info.attributes, 2)
+    $assert_eq(info.children[1].name, 'Prompt')
+  end
+
+  --- Refuses a module whose value carries no @Trait.
+  public function refuses_a_struct_with_no_trait() -> ()
+    $expect(function() -> ()
+      info_of('Nothing', { default = {} })
+    end):toThrow('BadArgument')
+  end
+
+  --- Builds an object with the defaults filled in and written back.
+  public function builds_an_object() -> ()
+    const instance = part(true, true)
+    const object = build(info_of('Door', Door), instance)
+
+    $assert(object ~= nil)
+    $assert_eq((object :: ProviderObject).open_angle, 90)
+    $assert_eq((object :: ProviderObject).locked, true)
+    $assert_eq(instance:GetAttribute('OpenAngle'), 90)
+  end
+
+  --- Does not bind without a required attribute.
+  public function refuses_a_missing_attribute() -> ()
+    $assert_eq(build(info_of('Door', Door), part(nil, true)), nil)
+  end
+
+  --- Does not bind without a required child.
+  public function refuses_a_missing_child() -> ()
+    $assert_eq(build(info_of('Door', Door), part(true, false)), nil)
+  end
+
+  --- Does not bind to the wrong class.
+  public function refuses_the_wrong_class() -> ()
+    $assert_eq(build(info_of('Door', Door), Instance.new('Folder')), nil)
+  end
+end
