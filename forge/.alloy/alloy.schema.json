@@ -62,8 +62,7 @@
         },
         "erase_type_imports": {
           "type": "boolean",
-          "description": "Blank `import type` lines in the output so they add no runtime dependency. The output is then untyped for anyone who analyzes it directly.",
-          "default": false
+          "description": "Deprecated, and does nothing. A type-only import never runs its `require`, so remove the key."
         }
       },
       "additionalProperties": false
