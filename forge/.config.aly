@@ -1,0 +1,58 @@
+--[[
+  Forge's project configuration.
+
+  Forge is a package. It lands where the game that uses it mounts its
+  build output, so it writes no project file and no sourcemap.
+]]
+
+export default {
+  build = {
+    ['in'] = 'src',
+    out = 'build',
+    exclude = {},
+    clean = true,
+    artifact = 'ship',
+  },
+  emit = {
+    wait_timeout = 5,
+  },
+  std = {
+    globals = 'none',
+  },
+  fmt = {
+    recommended = true,
+    column_width = 100,
+    indent_type = 'spaces',
+    indent_width = 2,
+    quote_style = 'force-single',
+  },
+  lint = {
+    recommended = true,
+    strict = true,
+    -- Forge keeps Chief's names, so a Chief user finds each call where
+    -- they expect it: PascalCase methods (AddProviders, Start),
+    -- PascalCase attributes (@Provider, @Trait), and Chief's field names
+    -- on the tables an extension reads (Name, onPhase).
+    naming = {
+      method = { 'PascalCase', 'snake_case' },
+      attribute = { 'PascalCase', 'snake_case' },
+      field = { 'snake_case', 'PascalCase', 'camelCase' },
+    },
+  },
+  flux = {
+    typecheck = true,
+    definitions = {},
+  },
+  test = {
+    out = 'tests',
+    suite = 'forge',
+    lest = true,
+    shim = true,
+  },
+  project = {
+    name = 'Forge',
+    sourcemap = false,
+    source_of_truth = false,
+    mount_aliases = false,
+  },
+}
