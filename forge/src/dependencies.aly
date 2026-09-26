@@ -14,6 +14,7 @@
   import emits no require, so two providers may use each other's types.
 ]]
 
+import { HashMap, Set } from '@alloy/std/collections'
 import { type Entry, type ProviderObject } from './provider'
 
 --- The key only a marker carries. A local table collides with no key a
@@ -44,7 +45,7 @@ export type Links = {
 --- it; a name finds a provider the game added.
 @allow(explicit_any)
 export function use(target: Target) -> any
-  const good = target is string ? target ~= '' : target is Instance and target:IsA('ModuleScript')
+  const good = target is string ? target ~= '' : target is ModuleScript
 
   if not good then
     error(
@@ -97,7 +98,7 @@ export function link(entries: { Entry }) -> Links
   local fields: { [Entry]: { [string]: Entry } } = {}
 
   for _, entry in entries do
-    local seen: { [Entry]: boolean } = {}
+    local seen: Set<Entry> = Set.new()
     const list: { Entry } = {}
     local named: { [string]: Entry } = {}
 
@@ -113,8 +114,8 @@ export function link(entries: { Entry }) -> Links
 
       named[found.field] = dependency
 
-      if not seen[dependency] then
-        seen[dependency] = true
+      if not seen:has(dependency) then
+        seen:add(dependency)
         table.insert(list, dependency)
       end
     end
@@ -195,38 +196,36 @@ end
 --- One cycle among the entries, as `A -> B -> A`. Called once `order`
 --- has shown that a cycle exists.
 export function cycle_path(entries: { Entry }, uses: { [Entry]: { Entry } }) -> string
-  local state: { [Entry]: string } = {}
+  local state: HashMap<Entry, string> = HashMap.new()
   const stack: { Entry } = {}
 
   local function visit(entry: Entry) -> { Entry }?
-    state[entry] = 'open'
+    state:set(entry, 'open')
     table.insert(stack, entry)
 
     for _, dependency in uses[entry] do
-      if state[dependency] == 'open' then
+      if state:get(dependency) == 'open' then
         const cycle = table.move(stack, table.find(stack, dependency) :: number, #stack, 1, {})
         table.insert(cycle, dependency)
 
         return cycle
       end
 
-      if state[dependency] == nil then
-        const cycle = visit(dependency)
-
-        if cycle then
+      if not state:has(dependency) then
+        if const cycle = visit(dependency) then
           return cycle
         end
       end
     end
 
-    state[entry] = 'done'
+    state:set(entry, 'done')
     table.remove(stack)
 
     return nil
   end
 
   for _, entry in entries do
-    if state[entry] ~= nil then
+    if state:has(entry) then
       continue
     end
 
@@ -274,7 +273,7 @@ namespace DependencyTests
 
     return {
       Name = name,
-      ModuleScript = Instance.new('ModuleScript'),
+      ModuleScript = new Instance('ModuleScript'),
       Provider = provider,
       Lifecycles = [],
       Priority = priority,

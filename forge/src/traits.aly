@@ -28,6 +28,7 @@
 ]]
 
 import CollectionService from '@game/CollectionService'
+import { HashMap } from '@alloy/std/collections'
 import { Attributes } from '@alloy/std/roblox'
 import { Bin } from './bin'
 import { type ProviderObject, check_contract, exported } from './provider'
@@ -94,7 +95,7 @@ export type TraitInfo = {
 
 --- The bound objects of each trait, by instance. Module-wide, so `get`
 --- works from anywhere, and so a trait wired twice shows.
-local bound_by_trait: { [unknown]: { [Instance]: ProviderObject } } = {}
+local bound_by_trait: HashMap<unknown, HashMap<Instance, ProviderObject>> = HashMap.new()
 
 --- Reads a trait from the value of its module. Errors with BadArgument
 --- when the value carries no `@Trait`.
@@ -159,7 +160,7 @@ local function children_of(
   local found: { [string]: Instance } = {}
 
   for _, spec in info.children do
-    local child = instance:FindFirstChild(spec.name)
+    local child = instance->[spec.name]
 
     if child == nil and spec.wait > 0 then
       child = instance:WaitForChild(spec.name, spec.wait)
@@ -302,19 +303,19 @@ end
 --- Watches one trait's tag: binds each tagged instance, now and later,
 --- and unbinds on untag. Forge calls it once per trait at PostStart.
 export function watch(info: TraitInfo) -> ()
-  if bound_by_trait[info.struct] ~= nil then
+  if bound_by_trait:has(info.struct) then
     warn(`DuplicateTrait: {info.name} is wired already; was it added to two Forges?`)
 
     return
   end
 
-  local bound: { [Instance]: ProviderObject } = {}
-  local pending: { [Instance]: thread } = {}
-  bound_by_trait[info.struct] = bound
+  local bound: HashMap<Instance, ProviderObject> = HashMap.new()
+  local pending: HashMap<Instance, thread> = HashMap.new()
+  bound_by_trait:set(info.struct, bound)
 
   local function bind(instance: Instance) -> ()
     const object = build(info, instance)
-    pending[instance] = nil
+    pending:remove(instance)
 
     if object == nil then
       return
@@ -330,7 +331,7 @@ export function watch(info: TraitInfo) -> ()
     end
 
     object.bin:Add(follow(info, instance, object))
-    bound[instance] = object
+    bound:set(instance, object)
 
     -- The Start thread goes in the bin, so an unbind cancels a Start that
     -- still runs.
@@ -340,7 +341,7 @@ export function watch(info: TraitInfo) -> ()
   end
 
   local function try_bind(instance: Instance) -> ()
-    if bound[instance] ~= nil or pending[instance] ~= nil then
+    if bound:has(instance) or pending:has(instance) then
       return
     end
 
@@ -348,23 +349,20 @@ export function watch(info: TraitInfo) -> ()
 
     -- A thread still suspended waits for a child; an untag cancels it.
     if coroutine.status(thread) == 'suspended' then
-      pending[instance] = thread
+      pending:set(instance, thread)
     end
   end
 
   local function unbind(instance: Instance) -> ()
-    if const thread = pending[instance] then
-      pending[instance] = nil
+    if const thread = pending:remove(instance) then
       task.cancel(thread)
     end
 
-    const object = bound[instance]
+    const object = bound:remove(instance)
 
     if object == nil then
       return
     end
-
-    bound[instance] = nil
 
     if lists(info, 'Destroy') then
       const ok, problem = run_sync('Destroy', object.Destroy, object)
@@ -388,15 +386,17 @@ end
 --- The object a trait has bound to an instance, or nil. Name the type
 --- to get it typed: `Forge.trait<<Door>>(part, Door)`.
 export function get<T>(instance: Instance, trait: unknown) -> T?
-  return (bound_by_trait[exported(trait)]?[instance] :: unknown) :: T?
+  return (bound_by_trait:get(exported(trait))?:get(instance) :: unknown) :: T?
 end
 
 --- Every object a trait has bound, in no set order.
 export function get_all<T>(trait: unknown) -> { T }
   const out: { T } = {}
 
-  for _, object in bound_by_trait[exported(trait)] ?? {} do
-    table.insert(out, (object :: unknown) :: T)
+  if const bound = bound_by_trait:get(exported(trait)) then
+    for _, object in bound do
+      table.insert(out, (object :: unknown) :: T)
+    end
   end
 
   return out
@@ -424,16 +424,14 @@ namespace TraitTests
 
   --- A part tagged as a door, with what it holds.
   private function part(locked: boolean?, prompt: boolean) -> Part
-    const made = Instance.new('Part')
+    const made = new Instance('Part')
 
     if locked ~= nil then
       made:SetAttribute('Locked', locked)
     end
 
     if prompt then
-      local child = Instance.new('ProximityPrompt')
-      child.Name = 'Prompt'
-      child.Parent = made
+      new Instance('ProximityPrompt') { Name = 'Prompt', Parent = made }
     end
 
     return made
@@ -480,6 +478,6 @@ namespace TraitTests
 
   --- Does not bind to the wrong class.
   public function refuses_the_wrong_class() -> ()
-    $assert_eq(build(info_of('Door', Door), Instance.new('Folder')), nil)
+    $assert_eq(build(info_of('Door', Door), new Instance('Folder')), nil)
   end
 end

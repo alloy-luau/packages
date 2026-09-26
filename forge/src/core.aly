@@ -15,7 +15,6 @@
       -> PreStart -> Start -> PostStart
 ]]
 
-import RunService from '@game/RunService'
 import { HashMap, Set } from '@alloy/std/collections'
 import { type CustomLifecycle, check_lifecycle, every, wire } from './lifecycles'
 import { type Target, cycle_path, inject, link, links_of, order, use } from './dependencies'
@@ -88,7 +87,7 @@ export type Extension = {
 
 --- Errors unless a value is a ModuleScript.
 local function check_module(value: unknown, index: number, call: string) -> ()
-  if value is not Instance or not value:IsA('ModuleScript') then
+  if value is not ModuleScript then
     error(
       `BadArgument: Bad argument #{index} for {call} (expected ModuleScript, got {typeof(value)})`,
       0
@@ -191,6 +190,19 @@ end
 --- Whether an entry lists a lifecycle.
 local function lists(entry: Entry, method: string) -> boolean
   return table.find(entry.Lifecycles, method) ~= nil
+end
+
+--- Whether this runs on the server. Forge asks when a provider lists a
+--- lifecycle of one side, and for the boot summary.
+local function on_server() -> boolean
+  local server = false
+
+  -- A statement, not a `@cfg` return, which unreachable_code misreads:
+  -- Strata's docs/LANG_BUGS.md, entry 79.
+  @cfg(server)
+  server = true
+
+  return server
 end
 
 impl Forge
@@ -479,9 +491,7 @@ impl Forge
     self:FirePhase(Phase.PreInit)
 
     self:RunInit()
-    wire(self.entries, self.lifecycles, function() -> boolean
-      return RunService:IsServer()
-    end)
+    wire(self.entries, self.lifecycles, on_server)
     self.wired = true
     self:FirePhase(Phase.PostInit)
 
@@ -495,7 +505,7 @@ impl Forge
     self:FirePhase(Phase.PostStart)
 
     if self.verbose then
-      const side = RunService:IsServer() ? 'Server' : 'Client'
+      const side = on_server() ? 'Server' : 'Client'
       const ms = math.round((os.clock() - began) * 1000)
       print(`Forge ({side}) started {#self.entries} providers in {ms}ms`)
     end
@@ -582,10 +592,7 @@ namespace CoreTests
 
   --- A ModuleScript named for a test.
   private function module(name: string) -> ModuleScript
-    local made = Instance.new('ModuleScript')
-    made.Name = name
-
-    return made
+    return new Instance('ModuleScript') { Name = name }
   end
 
   --- An entry with a priority, for the sort.
@@ -691,7 +698,7 @@ namespace CoreTests
   --- Errors on an add of something that is no ModuleScript.
   public function refuses_a_provider_that_is_no_module() -> ()
     $expect(function() -> ()
-      quiet():AddProvider((Instance.new('Folder') :: unknown) :: ModuleScript)
+      quiet():AddProvider((new Instance('Folder') :: unknown) :: ModuleScript)
     end):toThrow('BadArgument')
   end
 

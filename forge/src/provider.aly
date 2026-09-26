@@ -8,6 +8,7 @@
   instance, for the order and the lifecycles to wire.
 ]]
 
+import { Set } from '@alloy/std/collections'
 import { Attributes } from '@alloy/std/roblox'
 
 --- A lifecycle a provider can list in `@Provider`. Init and Start are
@@ -119,7 +120,7 @@ end
 --- outside it, such as a plain Luau module.
 export function check_contract(name: string, provider: ProviderObject, lifecycles: { string }) -> ()
   for _, method in lifecycles do
-    if typeof(provider[method]) ~= 'function' then
+    if provider[method] is not function then
       error(`BadArgument: {name} lists '{method}' in @Provider but writes no {method} method`, 0)
     end
   end
@@ -128,21 +129,11 @@ end
 --- The Lifecycle methods a provider writes and does not list. Forge does
 --- not call them, and warns so the omission shows.
 export function unlisted(provider: ProviderObject, lifecycles: { string }) -> { string }
-  local listed: { [string]: boolean } = {}
+  const listed = Set.from(lifecycles)
 
-  for _, method in lifecycles do
-    listed[method] = true
-  end
-
-  local out: string[] = []
-
-  for _, method in [ 'Init', 'Start' ] do
-    if not listed[method] and typeof(provider[method]) == 'function' then
-      out:push(method)
-    end
-  end
-
-  return out
+  return [ 'Init', 'Start' ]:filter(function(method: string) -> boolean
+    return not listed:has(method) and provider[method] is function
+  end)
 end
 
 --- Whether Forge calls this lifecycle itself, in the boot barrier.

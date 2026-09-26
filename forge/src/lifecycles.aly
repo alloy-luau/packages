@@ -12,6 +12,7 @@
 
 import Players from '@game/Players'
 import RunService from '@game/RunService'
+import { Set } from '@alloy/std/collections'
 import { type Entry, type ProviderObject, is_boot } from './provider'
 
 --- How `fire` hands an event to the providers that listen.
@@ -50,16 +51,16 @@ export type CustomLifecycle = {
 }
 
 --- The lifecycles that connect client-only signals.
-const CLIENT_ONLY: { [string]: boolean } = {
-  PreRender = true,
-  LocalCharacterAdded = true,
-  LocalCharacterRemoving = true,
-  LocalAppearanceLoaded = true,
-  LocalHumanoidDied = true,
-}
+const CLIENT_ONLY = $set[
+  'PreRender',
+  'LocalCharacterAdded',
+  'LocalCharacterRemoving',
+  'LocalAppearanceLoaded',
+  'LocalHumanoidDied'
+]
 
 --- The lifecycles that connect server-only signals.
-const SERVER_ONLY: { [string]: boolean } = { Closing = true }
+const SERVER_ONLY = $set['Closing']
 
 --- Watches each player in the game now and each who joins later.
 local function each_player(watch: (Player) -> ()) -> RBXScriptConnection
@@ -379,15 +380,15 @@ local function check_listed(
   customs: { CustomLifecycle },
   on_server: () -> boolean
 ) -> ()
-  local fired: { [string]: boolean } = {}
+  local fired: Set<string> = Set.new()
 
   for _, lifecycle in customs do
-    fired[lifecycle.Method] = true
+    fired:add(lifecycle.Method)
   end
 
   for _, entry in entries do
     for _, method in entry.Lifecycles do
-      if is_boot(method) or fired[method] then
+      if is_boot(method) or fired:has(method) then
         continue
       end
 
@@ -398,11 +399,11 @@ local function check_listed(
         )
       end
 
-      if CLIENT_ONLY[method] and on_server() then
+      if CLIENT_ONLY:has(method) and on_server() then
         error(`BadCall: {entry.Name} lists '{method}', which is client-only, on the server`, 0)
       end
 
-      if SERVER_ONLY[method] and not on_server() then
+      if SERVER_ONLY:has(method) and not on_server() then
         error(`BadCall: {entry.Name} lists '{method}', which is server-only, on the client`, 0)
       end
     end
@@ -451,7 +452,7 @@ namespace LifecycleTests
   private function entry(name: string, provider: ProviderObject, lifecycles: { string }) -> Entry
     return {
       Name = name,
-      ModuleScript = Instance.new('ModuleScript'),
+      ModuleScript = new Instance('ModuleScript'),
       Provider = provider,
       Lifecycles = lifecycles,
       Priority = 0,
