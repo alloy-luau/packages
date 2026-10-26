@@ -3,9 +3,10 @@ name = "alloy/forge"
 version = "0.1.0"
 description = "OOP providers for Alloy, after Chief: lifecycles, dependencies, traits, and Bin in one package"
 authors = ["savruun"]
+license = "MIT"
 
 [target]
 environment = "roblox"
 language = "alloy"
 main = "build/index.luau"
-includes = ["src", "build", ".config.aly", "README.md"]
+includes = ["src", "build", ".config.aly", "README.md", "LICENSE"]
