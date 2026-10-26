@@ -12,7 +12,9 @@ order, wires the lifecycles, and starts them.
 Forge has Chief's parts in one package: the core, lifecycles,
 dependencies, traits, and Bin.
 
-Forge needs Alloy 0.1.0-rc.9 or later.
+Forge needs Alloy 0.1.0-rc.9 or later. Installed with
+[Ember](https://emberpm.dev), it needs Alloy 0.1.3 and embr 0.7.1 or
+later.
 
 ## Contents
 
@@ -595,6 +597,48 @@ And the warnings: `LifecycleError:` (an Await handler failed),
 Forge is a project of its own. A game imports Forge's source, so the
 compiler reads `@Provider` and checks each contract in the game. The game
 mounts Forge's build output where the require expects it.
+
+### With Ember
+
+Forge is the Ember package `alloy/forge`. In an Alloy game, an
+`ember.toml` with `language = "alloy"` in its `[target]`:
+
+1. Add Forge, and install it:
+
+   ```sh
+   embr add alloy/forge
+   embr install
+   ```
+
+   `embr install` writes two link files in `packages/roblox`:
+   `forge.luau`, which requires Forge's build output, and `forge.aly`,
+   which re-exports Forge's source. Alloy reads `forge.aly`, so the
+   game checks each `@Provider` contract against Forge's source. Ember
+   also runs `alloy build` in the installed Forge, with the game's own
+   `alloy`.
+
+2. Mount the packages folder in the game's `alloy.toml`, or under
+   `mount` in its `.config.aly`:
+
+   ```toml
+   [mount]
+   packages = ["packages/roblox", "@game/ReplicatedStorage/Packages"]
+   ```
+
+   The mount makes `@packages` an alias, and `alloy build` writes each
+   require of it as `@game/ReplicatedStorage/Packages/...`.
+
+3. Write the one module of the game that brings Forge in:
+
+   ```lua
+   -- src/shared/forge.aly
+   export { Forge, Lifecycle, Provider } from '@packages/forge'
+   ```
+
+`alloy check`, `alloy flux`, and `alloy build` then work with no build
+of Forge by hand.
+
+### From a path
 
 With Forge beside the game on disk:
 
