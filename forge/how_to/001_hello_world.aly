@@ -1,0 +1,28 @@
+--[[
+  It all starts with one Forge. A Forge loads the providers of one side,
+  the server or the client, runs their `Init` in order, wires their
+  lifecycles, and starts them. This tour uses it in every step.
+
+  These files import Forge from `@packages/forge`, where `embr install`
+  puts it. A game can also re-export Forge from one module of its own,
+  such as `@shared/forge`, and import from there.
+]]
+
+import { Forge } from '@packages/forge'
+
+-- The main script of a side does one thing: it sets up Forge. Each child
+-- of the `Providers` folder is a provider module. Step 002 writes one.
+new Forge()
+  :AddProviders(script.Parent->'Providers'!:GetChildren())
+  :Start()
+
+--[[
+  `new Forge(options?)` takes `{ Verbose = false }` to turn off the boot
+  summary that Forge prints:
+
+    Forge (Server) started 6 providers in 4ms
+
+  Each `Add` call returns the Forge, so the calls chain. `Start` runs the
+  boot once. A second `Start`, or an `Add` after it, errors with
+  `BadCall:`.
+]]

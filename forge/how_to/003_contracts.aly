@@ -1,0 +1,51 @@
+--[[
+  `@Provider` has a contract. For each entry of `lifecycles`, the compiler
+  asks the impl for a private method of that name. Forge declares it so:
+
+    export attribute Provider(lifecycles: (Lifecycle | string)[] = [], priority: number = 0) on struct, impl as
+      requires private function each lifecycles
+    end
+
+  A provider that lists `Start` and writes no private `Start` does not
+  compile:
+
+    error(3.11): AttributeContract: `@Provider` requires a private function `Start`; `Clock` declares none
+]]
+
+import { Lifecycle, Provider } from '@packages/forge'
+
+--- Counts the seconds since the server started.
+export struct Clock
+  private started: number = 0
+end
+
+@Provider({ lifecycles = [ Lifecycle.Init ], priority = 5 })
+impl Clock
+  private function Init(self) -> ()
+    self.started = os.clock()
+  end
+
+  --- The seconds since Init.
+  function elapsed(self) -> number
+    return os.clock() - self.started
+  end
+end
+
+export default new Clock {}
+
+--[[
+  The rest of the attribute:
+
+  - `priority` orders Init. A higher priority inits first. A provider
+    still inits after the providers that it uses (step 030).
+  - `@Provider()` with no argument makes a provider that uses no
+    lifecycle.
+
+  The contract fixes the names that it asks for, so the
+  `naming_convention` lint does not report `Init` in a project that
+  writes methods in snake_case.
+
+  Forge checks the same contract again when it loads a provider. A
+  provider that writes `Init` or `Start` and does not list it gets a
+  warning, because Forge does not call it.
+]]

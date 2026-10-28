@@ -1,0 +1,17 @@
+import { Forge, Provider } from '@packages/forge'
+import Door from '../Traits/Door'
+
+--- Locks every door, about every five minutes.
+export struct LockdownProvider
+end
+
+@Provider({ lifecycles = [ 'Lockdown' ] })
+impl LockdownProvider
+  private function Lockdown(self, _dt: number) -> ()
+    for _, door in Forge.traits<<Door>>(Door) do
+      door.instance:SetAttribute('Locked', true)
+    end
+  end
+end
+
+export default new LockdownProvider {}

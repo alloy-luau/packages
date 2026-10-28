@@ -1,0 +1,44 @@
+--[[
+  A provider field can hold another provider. `Forge.use(target)` gives
+  a marker. The field keeps it until PreInit, when Forge puts the
+  provider that it names there.
+
+  - By name: `Forge.use('PlayerProvider')` finds a provider that the game
+    added, by the name of its ModuleScript.
+  - By module: `Forge.use(script.Parent->'PlayerProvider'!)` also loads
+    that provider when no one added it.
+]]
+
+import { Forge, Lifecycle, Provider } from '@packages/forge'
+-- A type-only import emits no require, so two providers can name the
+-- types of each other with no circular require.
+import type { PlayerProvider } from './002_providers'
+
+--- Greets a player by name.
+export struct GreetProvider
+  private players: PlayerProvider = Forge.use('002_providers')
+end
+
+@Provider({ lifecycles = [ Lifecycle.Init ] })
+impl GreetProvider
+  private function Init(self) -> ()
+    -- `self.players` is the PlayerProvider now, and its Init has run.
+    print(self.players:get('Builderman') ?? 'Builderman is not here')
+  end
+end
+
+export default new GreetProvider {}
+
+--[[
+  Forge orders Init by the uses. Among the providers whose uses have all
+  run, the higher priority goes first. A cycle errors with its path:
+
+    CyclicDependency: Forge cannot order Init: ShopProvider -> DataProvider -> ShopProvider.
+
+  A use that names a provider that Forge never loaded errors with
+  `MissingDependency:`.
+
+  The marker types as the field's type, so the field needs no cast. A
+  field with no default must be set in `new GreetProvider {}`, and the
+  marker is that value.
+]]

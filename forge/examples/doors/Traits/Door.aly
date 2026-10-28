@@ -1,0 +1,31 @@
+import { Attribute, Bin, Child, Trait, TraitLifecycle } from '@packages/forge'
+
+--- A door that swings open on its prompt, unless it is locked.
+export default struct Door
+  instance: BasePart
+  bin: Bin
+  @Attribute('Locked', 'boolean') locked: boolean = false
+  @Attribute('OpenAngle', 'number') open_angle: number = 90
+  @Child('Prompt', 'ProximityPrompt', 5) prompt: ProximityPrompt
+  closed: CFrame = CFrame.identity
+end
+
+@Trait({
+  tag = 'Door',
+  instance = 'BasePart',
+  lifecycles = [ TraitLifecycle.Init, TraitLifecycle.Destroy ],
+})
+impl Door
+  private function Init(self) -> ()
+    self.closed = self.instance.CFrame
+    self.bin:Add(self.prompt.Triggered:Connect(function() -> ()
+      if not self.locked then
+        self.instance.CFrame = self.closed * CFrame.Angles(0, math.rad(self.open_angle), 0)
+      end
+    end))
+  end
+
+  private function Destroy(self) -> ()
+    self.instance.CFrame = self.closed
+  end
+end

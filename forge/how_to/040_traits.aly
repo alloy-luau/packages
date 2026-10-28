@@ -1,0 +1,79 @@
+--[[
+  A trait binds behavior to each instance that carries a CollectionService
+  tag. Each tagged instance gets an object of its own, so a trait is not
+  a singleton. Its module exports the struct.
+
+  `@Trait(tag, instance = 'Instance', lifecycles = [])`:
+
+  - `tag`: the CollectionService tag to watch.
+  - `instance`: the class that the tagged instance must be.
+  - `lifecycles`: the steps that the impl writes.
+
+  The contract asks for an `instance` field and a `bin` field, which
+  Forge fills, and a private method for each listed step.
+]]
+
+import { Attribute, Bin, Child, Trait, TraitLifecycle } from '@packages/forge'
+
+--- A door that opens on its prompt.
+export default struct Door
+  instance: BasePart
+  bin: Bin
+  -- From the instance's attribute `Locked`, which must be a boolean.
+  @Attribute('Locked', 'boolean') locked: boolean
+  -- A default makes the attribute optional. Forge writes the default
+  -- back to the instance, so it shows in Studio.
+  @Attribute('OpenAngle', 'number') open_angle: number = 90
+  -- From the child `Prompt`. Forge waits up to 5 seconds for it.
+  @Child('Prompt', 'ProximityPrompt', 5) prompt: ProximityPrompt
+end
+
+@Trait({
+  tag = 'Door',
+  instance = 'BasePart',
+  lifecycles = [ TraitLifecycle.Init, TraitLifecycle.AttributeChanged, TraitLifecycle.Destroy ],
+})
+impl Door
+  -- Runs once the object is built. It must not yield.
+  private function Init(self) -> ()
+    self.bin:Add(self.prompt.Triggered:Connect(function() -> ()
+      if not self.locked then
+        print(`{self.instance.Name} opens by {self.open_angle} degrees`)
+      end
+    end))
+  end
+
+  -- An `@Attribute` field changed on the instance. The field holds the
+  -- new value already.
+  private function AttributeChanged(self, field: string, value: unknown) -> ()
+    print(`{self.instance.Name}: {field} is now {value}`)
+  end
+
+  -- Runs on unbind, before the bin empties. It must not yield.
+  private function Destroy(self) -> ()
+    print(`{self.instance.Name} is gone`)
+  end
+end
+
+--[[
+  The main script adds the traits beside the providers:
+
+    new Forge()
+      :AddProviders(script.Parent->'Providers'!:GetChildren())
+      :AddTraits(script.Parent->'Traits'!:GetChildren())
+      :Start()
+
+  The binding:
+
+  1. Watching starts at PostStart, after the whole boot, so a trait can
+     use any provider.
+  2. Bind: Forge finds the children, reads the attributes, builds the
+     object, runs Init, and spawns Start.
+  3. Unbind: when the tag goes or the instance is destroyed, Destroy runs
+     and the bin empties. That also cancels a Start that still runs.
+
+  An instance that lacks a required attribute or child does not bind.
+  Forge warns with `BadInstance:` and the reason. Write an attribute
+  through the instance, `self.instance:SetAttribute(...)`, and the field
+  follows at the next AttributeChanged.
+]]

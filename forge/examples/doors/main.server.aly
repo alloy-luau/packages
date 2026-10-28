@@ -1,0 +1,12 @@
+--[[
+  Doors on the server. Each part with the tag `Door` gets a Door object,
+  and LockdownProvider locks all of them every five minutes.
+]]
+
+import { Forge } from '@packages/forge'
+
+new Forge()
+  :AddProviders(script.Parent->'Providers'!:GetChildren())
+  :AddTraits(script.Parent->'Traits'!:GetChildren())
+  :AddLifecycles([ Forge.every(300, 'Lockdown') ])
+  :Start()

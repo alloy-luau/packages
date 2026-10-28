@@ -1,0 +1,33 @@
+import { HashMap } from '@alloy/std/collections'
+import { Forge, Lifecycle, Provider } from '@packages/forge'
+import type { DataProvider } from './DataProvider'
+
+--- Sells items for coins.
+export struct ShopProvider
+  -- Forge puts the DataProvider here at PreInit.
+  private data: DataProvider = Forge.use('DataProvider')
+  private prices: HashMap<string, number> = HashMap.from({ sword = 50, shield = 80 })
+end
+
+@Provider({ lifecycles = [ Lifecycle.Init ] })
+impl ShopProvider
+  private function Init(self) -> ()
+    -- DataProvider is ready: Forge inits a provider after the ones that
+    -- it uses.
+    print(`ShopProvider sells {self.prices:len()} kinds of item`)
+  end
+
+  --- Sells an item to a player. Gives false when the player cannot pay.
+  function buy(self, player: Player, item: string) -> boolean
+    const price = self.prices:get(item)
+
+    if price == nil or self.data:balance(player) < price then
+      return false
+    end
+
+    self.data:add(player, -price)
+    return true
+  end
+end
+
+export default new ShopProvider {}

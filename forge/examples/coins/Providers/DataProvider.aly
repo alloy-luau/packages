@@ -1,0 +1,46 @@
+import { HashMap } from '@alloy/std/collections'
+import { Lifecycle, Provider } from '@packages/forge'
+
+--- The coins of each player in the game, by user id.
+export struct DataProvider
+  private coins: HashMap<number, number> = new HashMap()
+end
+
+-- A high priority, so DataProvider inits before the providers that do
+-- not use it.
+@Provider({
+  lifecycles = [ Lifecycle.PlayerAdded, Lifecycle.PlayerRemoving, 'Autosave' ],
+  priority = 10,
+})
+impl DataProvider
+  private function PlayerAdded(self, player: Player) -> ()
+    self.coins:set(player.UserId, 100)
+  end
+
+  private function PlayerRemoving(self, player: Player) -> ()
+    self:save(player.UserId)
+    self.coins:remove(player.UserId)
+  end
+
+  private function Autosave(self, _dt: number) -> ()
+    for id in self.coins do
+      self:save(id)
+    end
+  end
+
+  private function save(self, id: number) -> ()
+    print(`save {id}: {self.coins:get(id) ?? 0} coins`)
+  end
+
+  --- The coins of a player.
+  function balance(self, player: Player) -> number
+    return self.coins:get(player.UserId) ?? 0
+  end
+
+  --- Adds coins to a player. A negative amount takes them.
+  function add(self, player: Player, amount: number) -> ()
+    self.coins:set(player.UserId, self:balance(player) + amount)
+  end
+end
+
+export default new DataProvider {}

@@ -1,0 +1,30 @@
+--[[
+  `Forge.every(seconds, method)` makes a lifecycle that calls
+  `method(self, dt)` about every `seconds`, with the real time since the
+  last tick. A lag spike gives one late tick, not a burst.
+
+  The main script adds it. Each call makes a new lifecycle, so two
+  intervals can drive two methods.
+]]
+
+import { Forge } from '@packages/forge'
+
+new Forge()
+  :AddProviders(script.Parent->'Providers'!:GetChildren())
+  :AddLifecycles([ Forge.every(60, 'Autosave'), Forge.every(1, 'Regenerate') ])
+  :Start()
+
+--[[
+  A provider then lists the method by its name, as a string:
+
+    @Provider({ lifecycles = [ 'Autosave' ] })
+    impl DataProvider
+      private function Autosave(self, dt: number) -> ()
+        -- about every 60 seconds
+      end
+    end
+
+  A string entry names the method of an added lifecycle, so the
+  attribute takes `(Lifecycle | string)[]`. The contract reads the string
+  as the method name, the same way it reads an enum variant.
+]]

@@ -1,0 +1,54 @@
+--[[
+  A provider is a singleton: a struct, an impl that carries `@Provider`,
+  and one instance as the module's default export. Other code reaches
+  the provider through its module.
+]]
+
+import { HashMap } from '@alloy/std/collections'
+import { Lifecycle, Provider } from '@packages/forge'
+
+--- Keeps each player in the game, by name.
+export struct PlayerProvider
+  private players: HashMap<string, Player> = new HashMap()
+end
+
+-- `@Provider` lists the lifecycles that the provider uses. Forge calls a
+-- method only when the provider lists it.
+@Provider({ lifecycles = [ Lifecycle.Init, Lifecycle.Start, Lifecycle.PlayerAdded ] })
+impl PlayerProvider
+  -- Init runs in order, before any Start. It must not yield.
+  private function Init(self) -> ()
+    print('PlayerProvider: Init')
+  end
+
+  -- Start runs on its own thread once every Init has run.
+  private function Start(self) -> ()
+    print('PlayerProvider: Start')
+  end
+
+  -- PlayerAdded also fires for each player who is in the game when
+  -- Forge wires it.
+  private function PlayerAdded(self, player: Player) -> ()
+    self.players:set(player.Name, player)
+  end
+
+  --- A player in the game, by name.
+  function get(self, name: string) -> Player?
+    return self.players:get(name)
+  end
+end
+
+-- The one instance. Forge finds the struct from it, and a second
+-- instance of the struct errors with `BadArgument:`.
+export default new PlayerProvider {}
+
+--[[
+  Another module uses the provider through this module:
+
+    import PlayerProvider from './002_providers'
+
+    print(PlayerProvider:get('Builderman'))
+
+  The lifecycle methods are private. No other module can call `Init` or
+  `Start`. Forge calls them through the instance that it holds.
+]]

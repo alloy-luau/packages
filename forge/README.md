@@ -16,31 +16,23 @@ Forge needs Alloy 0.1.0-rc.9 or later. Installed with
 [Ember](https://emberpm.dev), it needs Alloy 0.1.3 and embr 0.7.1 or
 later.
 
-## Contents
+## Learn
 
-- [Quick start](#quick-start)
-- [Boot sequence](#boot-sequence)
-- [Providers](#providers)
-- [Lifecycles](#lifecycles)
-- [Dependencies](#dependencies)
-- [Traits](#traits)
-- [Bin](#bin)
-- [Extensions](#extensions)
-- [Errors](#errors)
-- [API](#api)
-- [Using Forge from a game](#using-forge-from-a-game)
-- [Development](#development)
-- [Inspired by Chief](#inspired-by-chief)
+- [how_to](https://github.com/alloy-luau/packages/tree/main/forge/how_to)
+  is a tour of Forge in numbered steps, from `001_hello_world.aly` to
+  `070_errors.aly`. Read them in order.
+- [examples](https://github.com/alloy-luau/packages/tree/main/forge/examples)
+  holds small games: a coin economy, and doors driven by a trait.
 
 ## Quick start
 
-The examples import from `@shared/forge`, the one module of the game
-that brings Forge in. [Using Forge from a game](#using-forge-from-a-game)
+The examples in this file import from `@shared/forge`, the one module of
+the game that brings Forge in. The section "Using Forge from a game"
 sets it up.
 
 A main script only sets up Forge:
 
-```lua
+```aly
 import { Forge } from '@shared/forge'
 
 new Forge()
@@ -51,7 +43,7 @@ new Forge()
 
 A provider is a struct, and an impl that carries `@Provider`:
 
-```lua
+```aly
 import { HashMap } from '@alloy/std/collections'
 import { Forge, Lifecycle, Provider } from '@shared/forge'
 import type { DataProvider } from './DataProvider'
@@ -87,7 +79,7 @@ export default new PlayerProvider {}
 
 Other code uses the provider through its module:
 
-```lua
+```aly
 import PlayerProvider from '../Providers/PlayerProvider'
 
 print(PlayerProvider:get('Builderman'))
@@ -97,7 +89,7 @@ print(PlayerProvider:get('Builderman'))
 
 `Forge:Start()` runs these phases in order:
 
-```
+```text
 PreLoad -> Load -> PostLoad -> PreInit -> Init -> PostInit -> PreStart -> Start -> PostStart
 ```
 
@@ -124,7 +116,7 @@ PreLoad -> Load -> PostLoad -> PreInit -> Init -> PostInit -> PreStart -> Start 
 
 With `Verbose` on, which is the default, Forge then prints a summary:
 
-```
+```text
 Forge (Server) started 6 providers in 4ms
 ```
 
@@ -132,7 +124,7 @@ Forge (Server) started 6 providers in 4ms
 
 A provider is one instance of a struct whose impl carries `@Provider`:
 
-```lua
+```aly
 struct PlayerProvider
   players: HashMap<string, Player> = HashMap.new()
 end
@@ -148,7 +140,7 @@ export default new PlayerProvider {}
 
 Forge declares the attribute so:
 
-```lua
+```aly
 export attribute Provider(lifecycles: (Lifecycle | string)[] = [], priority: number = 0) on struct, impl as
   requires private function each lifecycles
 end
@@ -165,7 +157,7 @@ The contract. The `each` clause writes one `requires private function`
 clause for each entry of the list. A provider that lists `Start` and
 writes no private `Start` method does not compile:
 
-```
+```text
 error(3.11): AttributeContract: `@Provider` requires a private function `Start`; `PlayerProvider` declares none
 ```
 
@@ -236,7 +228,7 @@ A provider that lists a client-only lifecycle on the server errors with
 last tick. A lag spike gives one late tick, not a burst. Each call makes
 a new lifecycle, so two intervals can drive two methods.
 
-```lua
+```aly
 new Forge()
   :AddProviders(providers)
   :AddLifecycles([ Forge.every(60, 'Autosave'), Forge.every(1, 'Regenerate') ])
@@ -249,7 +241,7 @@ A provider lists the method by its name: `lifecycles = [ 'Autosave' ]`.
 
 A lifecycle is a table:
 
-```lua
+```aly
 export type CustomLifecycle = {
   Method: string,
   Connect: RBXScriptSignal | (fire: Fire) -> RBXScriptConnection?,
@@ -263,7 +255,7 @@ export type CustomLifecycle = {
   hand the arguments to each provider that lists the method.
 - `Dispatch`: how `fire` runs the handlers. `Spawn` when nil.
 
-```lua
+```aly
 import Players from '@game/Players'
 import { Dispatch, type CustomLifecycle } from '@shared/forge'
 
@@ -308,7 +300,7 @@ An extension may add a lifecycle up to `PreInit`. After Forge wires them,
 
 A provider field holds another provider:
 
-```lua
+```aly
 import { Forge, Lifecycle, Provider } from '@shared/forge'
 import type { DataProvider } from './DataProvider'
 
@@ -339,7 +331,7 @@ Forge orders `Init` by the uses (Kahn's algorithm). Among the providers
 whose uses have all run, the higher priority goes first. A cycle errors
 with its path:
 
-```
+```text
 CyclicDependency: Forge cannot order Init: ShopProvider -> DataProvider -> ShopProvider.
 ```
 
@@ -363,7 +355,7 @@ A trait binds behavior to each instance that carries a CollectionService
 tag. Each tagged instance gets an object of its own, so a trait is not a
 singleton, and its module exports the struct.
 
-```lua
+```aly
 import { Attribute, Bin, Child, Trait, TraitLifecycle } from '@shared/forge'
 
 --- A door that opens on its prompt.
@@ -391,7 +383,7 @@ impl Door
 end
 ```
 
-```lua
+```aly
 new Forge()
   :AddProviders(providers)
   :AddTraits(script.Parent->'Traits'!:GetChildren())
@@ -457,7 +449,7 @@ A Bin holds connections, instances, threads and functions. `Empty`
 disconnects, destroys, cancels and calls them, newest first, so teardown
 unwinds setup. Forge gives one to every trait object.
 
-```lua
+```aly
 import { Bin } from '@shared/forge'
 
 const bin = Bin.new()
@@ -480,7 +472,7 @@ bin:Empty()
 
 An extension is a table with a name and up to two hooks:
 
-```lua
+```aly
 export type Extension = {
   Name: string,
   onPhase: ((forge: Forge, phase: Phase, entries: { Entry }) -> ())?,
@@ -504,7 +496,7 @@ The rules:
 
 An entry:
 
-```lua
+```aly
 export type Entry = {
   Name: string,
   ModuleScript: ModuleScript,
@@ -514,7 +506,7 @@ export type Entry = {
 }
 ```
 
-```lua
+```aly
 import { Forge, ProviderEvent, type Extension } from '@shared/forge'
 
 --- Prints each provider as it initializes.
@@ -630,7 +622,7 @@ Forge is the Ember package `alloy/forge`. In an Alloy game, an
 
 3. Write the one module of the game that brings Forge in:
 
-   ```lua
+   ```aly
    -- src/shared/forge.aly
    export { Forge, Lifecycle, Provider } from '@packages/forge'
    ```
@@ -640,26 +632,27 @@ of Forge by hand.
 
 ### From a path
 
-With Forge beside the game on disk:
+With a clone of [alloy-luau/packages](https://github.com/alloy-luau/packages)
+beside the game on disk:
 
 1. Mount Forge's build output in the game's `alloy.toml`, or under
    `mount` in its `.config.aly`:
 
    ```toml
    [mount]
-   forge = ["../Forge/build", "@game/ReplicatedStorage/Forge"]
+   forge = ["../packages/forge/build", "@game/ReplicatedStorage/Forge"]
    ```
 
    A game that keeps its own Rojo project file puts the same node in
-   its tree instead: `"Forge": { "$path": "../Forge/build" }` under
+   its tree instead: `"Forge": { "$path": "../packages/forge/build" }` under
    `ReplicatedStorage`.
 
 2. Write one module of the game that brings Forge in. Every other
    module imports from it:
 
-   ```lua
+   ```aly
    -- src/shared/forge.aly
-   export { Forge, Lifecycle, Provider } from '../../../Forge/src/index'
+   export { Forge, Lifecycle, Provider } from '../../../packages/forge/src/index'
    ```
 
    The path leads from this module to Forge's source on disk. Add the
@@ -669,8 +662,7 @@ With Forge beside the game on disk:
 checks each contract against Forge's source. The built require names
 `@game/ReplicatedStorage/Forge/index`, where the mount puts the output.
 `alloy flux` reads Forge's build output, so run `alloy build` once on a
-fresh clone, and again after a change to Forge, before `alloy flux`
-(Strata's `docs/LANG_BUGS.md`, entry 77).
+fresh clone, and again after a change to Forge, before `alloy flux`.
 
 ## Development
 
@@ -688,6 +680,16 @@ priority sort, the dependency order and its cycles, the dispatch modes,
 the Bin order, the contract, the phase order, the trait contracts, and
 the errors.
 
+Forge lives in [alloy-luau/packages](https://github.com/alloy-luau/packages),
+the repository of the official Alloy packages, in the `forge` folder.
+Each package there is a member of one Ember workspace and keeps its own
+version. Run the commands above from `forge`. `embr publish` from
+`forge` publishes Forge alone.
+
+The `how_to` and `examples` files import `@packages/forge`. To check
+them, copy them into a game that installs Forge, then run `alloy flux`
+there.
+
 ## Inspired by Chief
 
 Forge follows [Chief](https://github.com/ryancundiff/chief) by Ryan
@@ -696,3 +698,7 @@ dispatch modes, its dependency ordering, its traits and its Bin, and its
 names, so a Chief user finds each call where they expect it. Forge moves
 them to Alloy: a provider is a struct with an attribute, and the
 compiler checks the lifecycles each one lists.
+
+## License
+
+MIT. See [LICENSE](https://github.com/alloy-luau/packages/blob/main/forge/LICENSE).
