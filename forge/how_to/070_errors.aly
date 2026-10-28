@@ -1,0 +1,32 @@
+--[[
+  Each error that Forge raises starts with its kind, so a test or a log
+  filter can match it:
+
+  - `BadArgument:` a value of the wrong type or shape, a broken contract,
+    a module that exports no provider, a second instance of a provider
+    struct, or a listed method that no lifecycle fires.
+  - `BadCall:` a call at the wrong time, such as an add after Start, a
+    second Start, or a lifecycle for the other side.
+  - `NoYield:` an Init, or a trait's Init or Destroy, yielded.
+  - `CyclicDependency:` the uses form a cycle. The message has the path.
+  - `MissingDependency:` a use names a provider that Forge never loaded.
+  - `FrozenModule:` Forge cannot put a dependency into a frozen provider.
+
+  The warnings are `LifecycleError:`, `BadInstance:`, `BadAttribute:`,
+  `TraitError:`, and `DuplicateTrait:`.
+]]
+
+import { Forge } from '@packages/forge'
+
+const forge = new Forge({ Verbose = false })
+forge:Start()
+
+-- A second Start is a BadCall.
+const second = Result.pcall(function() -> ()
+  forge:Start()
+end)
+
+match second with
+  case Ok(_) then print('Forge started twice')
+  case Err(message) then print(message) -- BadCall: ...
+end

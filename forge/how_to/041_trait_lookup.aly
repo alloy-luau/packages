@@ -1,0 +1,26 @@
+--[[
+  Forge keeps every object that a trait binds. Two calls read them:
+
+  - `Forge.trait<<T>>(instance, trait)`: the object that a trait bound to
+    one instance, or nil.
+  - `Forge.traits<<T>>(trait)`: every object that a trait has bound.
+
+  The `<<T>>` gives the type of the object, so the result needs no cast.
+]]
+
+import { Forge } from '@packages/forge'
+import Door from './040_traits'
+
+--- Locks every door in the game.
+export function lock_all() -> ()
+  for _, door in Forge.traits<<Door>>(Door) do
+    door.instance:SetAttribute('Locked', true)
+  end
+end
+
+--- Whether a part is a door that is open to use.
+export function is_open(part: BasePart) -> boolean
+  const door = Forge.trait<<Door>>(part, Door)
+
+  return door ~= nil and not door.locked
+end

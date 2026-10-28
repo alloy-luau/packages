@@ -1,0 +1,37 @@
+--[[
+  A Bin holds connections, instances, threads, and functions. `Empty`
+  disconnects, destroys, cancels, and calls them, newest first, so the
+  teardown unwinds the setup. Forge gives one to every trait object.
+]]
+
+import { Bin } from '@packages/forge'
+
+--- Lights a part while a player touches it, and cleans up after.
+export function glow(part: BasePart) -> Bin
+  const bin = new Bin()
+
+  -- `Add` returns the item, so an add can wrap an assignment.
+  local light = bin:Add(new Instance('PointLight') { Enabled = false, Parent = part })
+
+  bin:Add(part.Touched:Connect(function() -> ()
+    light.Enabled = true
+  end))
+  bin:Add(part.TouchEnded:Connect(function() -> ()
+    light.Enabled = false
+  end))
+  bin:Add(function() -> ()
+    print(`{part.Name} stops glowing`)
+  end)
+
+  return bin
+end
+
+--[[
+  Later, one call undoes all of it:
+
+    const bin = glow(part)
+    bin:Empty()
+
+  `Empty` cleans every item, newest first, and the Bin stays usable. An
+  item of any other kind errors with `BadArgument:` at `Add`.
+]]

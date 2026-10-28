@@ -1,0 +1,57 @@
+--[[
+  A custom lifecycle is a table:
+
+    export type CustomLifecycle = {
+      Method: string,
+      Connect: RBXScriptSignal | (fire: Fire) -> RBXScriptConnection?,
+      Dispatch: Dispatch?,
+    }
+
+  - `Method`: the name that a provider lists and writes.
+  - `Connect`: a signal, or a function that takes `fire` and returns a
+    connection, or nil when nothing stays connected. Call `fire(...)` to
+    give the arguments to each provider that lists the method.
+  - `Dispatch`: how `fire` runs the handlers. `Spawn` when nil.
+]]
+
+import Players from '@game/Players'
+import { Dispatch, Forge, type CustomLifecycle } from '@packages/forge'
+
+--- Each chat message of each player.
+const chatted: CustomLifecycle = {
+  Method = 'PlayerChatted',
+  Connect = function(fire) -> RBXScriptConnection?
+    return Players.PlayerAdded:Connect(function(player: Player) -> ()
+      player.Chatted:Connect(function(message: string) -> ()
+        fire(player, message)
+      end)
+    end)
+  end,
+  Dispatch = Dispatch.Spawn,
+}
+
+new Forge()
+  :AddProviders(script.Parent->'Providers'!:GetChildren())
+  :AddLifecycles([ chatted ])
+  :Start()
+
+--[[
+  The dispatch modes:
+
+  - Spawn: each handler runs on its own thread, and `fire` returns at
+    once. A slow or failing handler cannot hold up the others.
+  - Inline: the handlers run one after another on the event's thread. A
+    slow handler delays the rest, and an error stops the dispatch.
+  - Await: the handlers run at once, and `fire` returns when the last one
+    ends. An error in one does not stop the others. Forge warns with
+    `LifecycleError:`.
+
+  The rules:
+
+  - Two lifecycles can share a method, so one method can listen to two
+    events.
+  - One lifecycle added twice errors, because each copy would fire every
+    handler again.
+  - A provider that lists a method that no lifecycle fires errors with
+    `BadArgument:` at PostInit, because the handler would never run.
+]]

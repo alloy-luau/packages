@@ -1,0 +1,704 @@
+# Forge
+
+OOP providers for [Alloy](https://github.com/alloy-luau/alloy), after
+[Chief](https://github.com/ryancundiff/chief).
+
+A provider is a singleton: a `struct`, an `impl`, and one instance as its
+module's default export. `@Provider` lists the lifecycles the provider
+uses. Its contract makes the compiler check that the impl writes a
+private method for each one. Forge loads the providers, runs `Init` in
+order, wires the lifecycles, and starts them.
+
+Forge has Chief's parts in one package: the core, lifecycles,
+dependencies, traits, and Bin.
+
+Forge needs Alloy 0.1.0-rc.9 or later. Installed with
+[Ember](https://emberpm.dev), it needs Alloy 0.1.3 and embr 0.7.1 or
+later.
+
+## Learn
+
+- [how_to](https://github.com/alloy-luau/packages/tree/main/forge/how_to)
+  is a tour of Forge in numbered steps, from `001_hello_world.aly` to
+  `070_errors.aly`. Read them in order.
+- [examples](https://github.com/alloy-luau/packages/tree/main/forge/examples)
+  holds small games: a coin economy, and doors driven by a trait.
+
+## Quick start
+
+The examples in this file import from `@shared/forge`, the one module of
+the game that brings Forge in. The section "Using Forge from a game"
+sets it up.
+
+A main script only sets up Forge:
+
+```aly
+import { Forge } from '@shared/forge'
+
+new Forge()
+  :AddProviders(script.Parent->'Providers'!:GetChildren())
+  :AddLifecycles([ Forge.every(60, 'Autosave') ])
+  :Start()
+```
+
+A provider is a struct, and an impl that carries `@Provider`:
+
+```aly
+import { HashMap } from '@alloy/std/collections'
+import { Forge, Lifecycle, Provider } from '@shared/forge'
+import type { DataProvider } from './DataProvider'
+
+--- Keeps each player in the game.
+export struct PlayerProvider
+  private data: DataProvider = Forge.use('DataProvider')
+  private players: HashMap<string, Player> = HashMap.new()
+end
+
+@Provider({ lifecycles = [ Lifecycle.Init, Lifecycle.PlayerAdded, 'Autosave' ], priority = 10 })
+impl PlayerProvider
+  private function Init(self) -> ()
+    -- Runs in order, before any Start. It must not yield.
+  end
+
+  private function PlayerAdded(self, player: Player) -> ()
+    self.players:set(player.Name, player)
+  end
+
+  private function Autosave(self, _dt: number) -> ()
+    self.data:save_all()
+  end
+
+  --- A player in the game, by name.
+  function get(self, name: string) -> Player?
+    return self.players:get(name)
+  end
+end
+
+export default new PlayerProvider {}
+```
+
+Other code uses the provider through its module:
+
+```aly
+import PlayerProvider from '../Providers/PlayerProvider'
+
+print(PlayerProvider:get('Builderman'))
+```
+
+## Boot sequence
+
+`Forge:Start()` runs these phases in order:
+
+```text
+PreLoad -> Load -> PostLoad -> PreInit -> Init -> PostInit -> PreStart -> Start -> PostStart
+```
+
+1. `PreLoad`: the extensions hear it.
+2. `Load`: Forge requires each provider module, and each fires `Loaded`.
+3. Forge sorts the providers by priority, higher first. Ties keep the
+   order they were added in.
+4. `PostLoad`: the extensions hear it, and one may call `LoadProvider`.
+   Then Forge loads each provider that a `Forge.use` names by its
+   ModuleScript and that no one added.
+5. `PreInit`: Forge orders the providers so that each one inits after
+   the providers it uses, and puts each provider into the fields that
+   use it. Then the extensions hear it; one may reorder the entries.
+   After this phase the order is final.
+6. `Init`: each listed `Init` runs, in order, on its own thread. An
+   `Init` that yields errors with `NoYield:`. Each provider fires
+   `Initialized`.
+7. `PostInit`: Forge wires the lifecycles, then the extensions hear it.
+8. `PreStart`: the extensions hear it.
+9. `Start`: each listed `Start` is spawned. Each provider fires
+   `Started`.
+10. `PostStart`: Forge starts to watch the trait tags, then the
+    extensions hear it.
+
+With `Verbose` on, which is the default, Forge then prints a summary:
+
+```text
+Forge (Server) started 6 providers in 4ms
+```
+
+## Providers
+
+A provider is one instance of a struct whose impl carries `@Provider`:
+
+```aly
+struct PlayerProvider
+  players: HashMap<string, Player> = HashMap.new()
+end
+
+@Provider({ lifecycles = [ Lifecycle.Init, Lifecycle.Start ] })
+impl PlayerProvider
+  private function Init(self) -> () end
+  private function Start(self) -> () end
+end
+
+export default new PlayerProvider {}
+```
+
+Forge declares the attribute so:
+
+```aly
+export attribute Provider(lifecycles: (Lifecycle | string)[] = [], priority: number = 0) on struct, impl as
+  requires private function each lifecycles
+end
+```
+
+- `lifecycles` lists each method Forge calls: a `Lifecycle`, or the
+  method name of a lifecycle added with `AddLifecycles`, as a string.
+- `priority` orders `Init`. A higher priority inits first. A
+  dependency still inits before the provider that uses it.
+- `@Provider()` with no argument makes a provider that uses no
+  lifecycle.
+
+The contract. The `each` clause writes one `requires private function`
+clause for each entry of the list. A provider that lists `Start` and
+writes no private `Start` method does not compile:
+
+```text
+error(3.11): AttributeContract: `@Provider` requires a private function `Start`; `PlayerProvider` declares none
+```
+
+The contract fixes the names it asks for, so `naming_convention` does
+not report `Init` or `PlayerAdded` in a project that writes methods in
+snake_case.
+
+Forge checks the same contract when it loads a provider, and errors with
+`BadArgument:` when a listed method is missing. It also warns when a
+provider writes `Init` or `Start` and does not list it, since Forge does
+not call a method that the provider does not list.
+
+The singleton. The module's default export is the one instance. Forge
+reads `getmetatable(instance)` to find the struct, and
+`Attributes.get(struct, Provider)` for the options. A second instance of
+the same struct errors with `BadArgument:`.
+
+Where the attribute goes. Put `@Provider` on the impl, beside the
+methods its contract asks for. The struct takes it too, since a struct
+and its impls are one type: the contract reads both, and
+`Attributes.get(struct, Provider)` finds the attribute on either.
+
+Private methods. `private` is a compile-time check in Alloy. At runtime
+the methods sit on the struct's table like any other, so Forge calls
+them through the instance it holds. The user's methods stay private, and
+no other module of the game can call `Init` or `Start`.
+
+## Lifecycles
+
+A lifecycle binds an event to a method. A provider opts in when it lists
+the method in `@Provider`, and the contract makes it write the method.
+Forge wires every lifecycle at `PostInit`, after each `Init` and before
+any `Start`, so a handler may use any provider.
+
+### Built-in lifecycles
+
+A built-in wires itself once a provider lists it. The game does not
+register it.
+
+| Lifecycle | Method | Notes |
+| --- | --- | --- |
+| `Init` | `Init(self)` | Runs in order. It must not yield. |
+| `Start` | `Start(self)` | Spawned once each `Init` has run. |
+| `PlayerAdded` | `PlayerAdded(self, player)` | Also fires for each player in the game at wiring. |
+| `PlayerRemoving` | `PlayerRemoving(self, player)` | |
+| `CharacterAdded` | `CharacterAdded(self, player, character)` | Also fires for each character at wiring. |
+| `CharacterRemoving` | `CharacterRemoving(self, player, character)` | |
+| `AppearanceLoaded` | `AppearanceLoaded(self, player, character)` | |
+| `HumanoidDied` | `HumanoidDied(self, player, character, humanoid)` | |
+| `Closing` | `Closing(self)` | `game:BindToClose`. The server waits for each handler (Await). Server only. |
+| `PreRender` | `PreRender(self, dt)` | Each frame, before it draws. Inline. Client only. |
+| `PreAnimation` | `PreAnimation(self, dt)` | Each frame, before animations step. Inline. |
+| `PreSimulation` | `PreSimulation(self, dt)` | Each frame, before physics. Inline. |
+| `PostSimulation` | `PostSimulation(self, dt)` | Each frame, after physics. Inline. |
+| `Heartbeat` | `Heartbeat(self, dt)` | The old name for `PostSimulation`. Write one of the two. Inline. |
+| `LocalCharacterAdded` | `LocalCharacterAdded(self, player, character)` | The local player. Also fires for the character at wiring. Client only. |
+| `LocalCharacterRemoving` | `LocalCharacterRemoving(self, player, character)` | Client only. |
+| `LocalAppearanceLoaded` | `LocalAppearanceLoaded(self, player, character)` | Client only. |
+| `LocalHumanoidDied` | `LocalHumanoidDied(self, player, character, humanoid)` | Client only. |
+
+A provider that lists a client-only lifecycle on the server errors with
+`BadCall:`, and so does a server-only one on the client.
+
+### every
+
+`Forge.every(seconds, method)` makes a lifecycle that calls
+`method(self, dt)` about every `seconds`, with the real time since the
+last tick. A lag spike gives one late tick, not a burst. Each call makes
+a new lifecycle, so two intervals can drive two methods.
+
+```aly
+new Forge()
+  :AddProviders(providers)
+  :AddLifecycles([ Forge.every(60, 'Autosave'), Forge.every(1, 'Regenerate') ])
+  :Start()
+```
+
+A provider lists the method by its name: `lifecycles = [ 'Autosave' ]`.
+
+### Custom lifecycles
+
+A lifecycle is a table:
+
+```aly
+export type CustomLifecycle = {
+  Method: string,
+  Connect: RBXScriptSignal | (fire: Fire) -> RBXScriptConnection?,
+  Dispatch: Dispatch?,
+}
+```
+
+- `Method`: the name a provider lists and writes.
+- `Connect`: a signal, or a function that takes `fire` and returns a
+  connection, or nil when nothing stays connected. Call `fire(...)` to
+  hand the arguments to each provider that lists the method.
+- `Dispatch`: how `fire` runs the handlers. `Spawn` when nil.
+
+```aly
+import Players from '@game/Players'
+import { Dispatch, type CustomLifecycle } from '@shared/forge'
+
+--- Each chat message of each player.
+const chatted: CustomLifecycle = {
+  Method = 'PlayerChatted',
+  Connect = function(fire) -> RBXScriptConnection?
+    return Players.PlayerAdded:Connect(function(player: Player) -> ()
+      player.Chatted:Connect(function(message: string) -> ()
+        fire(player, message)
+      end)
+    end)
+  end,
+  Dispatch = Dispatch.Spawn,
+}
+
+new Forge():AddProviders(providers):AddLifecycles([ chatted ]):Start()
+```
+
+A string entry in `lifecycles` names a custom method, so the attribute
+takes `(Lifecycle | string)[]`. The contract reads a string entry as the
+method name, the same way it reads an enum variant.
+
+Two lifecycles may share a method, since one method may listen to two
+events. One lifecycle added twice errors, since each copy would fire
+every handler again. A provider that lists a method that no lifecycle
+fires errors with `BadArgument:` at `PostInit`, since the handler would
+never run.
+
+An extension may add a lifecycle up to `PreInit`. After Forge wires them,
+`AddLifecycle` errors with `BadCall:`.
+
+### Dispatch
+
+| Mode | What `fire` does |
+| --- | --- |
+| `Spawn` | Each handler runs on its own thread, and `fire` returns at once. A slow or failing handler cannot hold up the others. The default. |
+| `Inline` | The handlers run one after another on the event's thread. No thread per event, so the per-frame built-ins use it. A slow handler delays the rest, and an error stops the dispatch. |
+| `Await` | The handlers run at once, and `fire` returns when the last one ends. An error in one does not stop the others; Forge warns with `LifecycleError:`. For an event source that must wait, such as `BindToClose`. |
+
+## Dependencies
+
+A provider field holds another provider:
+
+```aly
+import { Forge, Lifecycle, Provider } from '@shared/forge'
+import type { DataProvider } from './DataProvider'
+
+export struct ShopProvider
+  private data: DataProvider = Forge.use('DataProvider')
+end
+
+@Provider({ lifecycles = [ Lifecycle.Init ] })
+impl ShopProvider
+  private function Init(self) -> ()
+    -- self.data is the DataProvider, and its Init has run.
+    print(self.data:coins())
+  end
+end
+
+export default new ShopProvider {}
+```
+
+`Forge.use(target)` returns a marker. The field keeps it until
+`PreInit`, when Forge puts the provider it names there.
+
+- A name, `Forge.use('DataProvider')`, finds a provider the game added
+  by its ModuleScript's name.
+- A ModuleScript, `Forge.use(script.Parent->'DataProvider'!)`, also
+  loads that provider when no one added it.
+
+Forge orders `Init` by the uses (Kahn's algorithm). Among the providers
+whose uses have all run, the higher priority goes first. A cycle errors
+with its path:
+
+```text
+CyclicDependency: Forge cannot order Init: ShopProvider -> DataProvider -> ShopProvider.
+```
+
+A use that names a provider Forge never loaded errors with
+`MissingDependency:`.
+
+Why a marker, not a field attribute. A field attribute such as
+`@use('DataProvider') data: DataProvider` reads well, but
+`new ShopProvider {}` then needs a value for `data`, since a field with
+no default must be set. The marker is that value. It types as the field's
+type, so the field needs no cast.
+
+Why no circular require. The field's type comes from
+`import type { DataProvider }`, and a type-only import emits no require.
+One provider's module never requires another's, so two providers may
+name each other's types.
+
+## Traits
+
+A trait binds behavior to each instance that carries a CollectionService
+tag. Each tagged instance gets an object of its own, so a trait is not a
+singleton, and its module exports the struct.
+
+```aly
+import { Attribute, Bin, Child, Trait, TraitLifecycle } from '@shared/forge'
+
+--- A door that opens on its prompt.
+export default struct Door
+  instance: BasePart
+  bin: Bin
+  @Attribute('Locked', 'boolean') locked: boolean
+  @Attribute('OpenAngle', 'number') open_angle: number = 90
+  @Child('Prompt', 'ProximityPrompt', 5) prompt: ProximityPrompt
+end
+
+@Trait({ tag = 'Door', instance = 'BasePart', lifecycles = [ TraitLifecycle.Init, TraitLifecycle.Destroy ] })
+impl Door
+  private function Init(self) -> ()
+    self.bin:Add(self.prompt.Triggered:Connect(function() -> ()
+      if not self.locked then
+        print(`{self.instance.Name} opens by {self.open_angle} degrees`)
+      end
+    end))
+  end
+
+  private function Destroy(self) -> ()
+    print('the door is gone')
+  end
+end
+```
+
+```aly
+new Forge()
+  :AddProviders(providers)
+  :AddTraits(script.Parent->'Traits'!:GetChildren())
+  :Start()
+```
+
+`@Trait(tag, instance = 'Instance', lifecycles = [])`, on the impl or
+the struct:
+
+- `tag`: the CollectionService tag to watch.
+- `instance`: the class the tagged instance must be.
+- `lifecycles`: the steps the impl writes.
+
+The contract asks for an `instance` field and a `bin` field, which Forge
+fills, and a private method for each listed step.
+
+The field contracts:
+
+- `@Attribute(name, kind)` fills a field from the attribute `name` of the
+  instance, which must be of `typeof` kind `kind`, such as `'number'`.
+- `@Child(name, class_name = 'Instance', wait = 0)` fills a field from
+  the child `name`, which must be a `class_name`. With `wait` above 0,
+  Forge waits that many seconds for it.
+
+A field with a default is optional. Forge writes the default back to the
+instance, so it shows in Studio. An instance that lacks a required
+attribute or child, or that has one of the wrong kind or class, does not
+bind, and Forge warns with `BadInstance:` and the reason.
+
+The steps:
+
+| Step | Method | Notes |
+| --- | --- | --- |
+| `Init` | `Init(self)` | Runs once the object is built. It must not yield. |
+| `Start` | `Start(self)` | Spawned after `Init`. The unbind cancels it. |
+| `AttributeChanged` | `AttributeChanged(self, field, value)` | An `@Attribute` field changed on the instance; the field holds the new value already. |
+| `Destroy` | `Destroy(self)` | Runs on unbind, before the bin empties. It must not yield. |
+
+The binding:
+
+1. Watching starts at `PostStart`, after the whole boot, so a trait may
+   use any provider.
+2. Bind: Forge resolves the children, waiting where `wait` says, reads
+   the attributes, builds the object, runs `Init`, and spawns `Start`.
+3. Unbind: when the tag goes or the instance is destroyed, `Destroy` runs
+   and the `bin` empties, which also cancels a `Start` that still runs.
+
+A failing `Init` or `Destroy` reports `TraitError:` with a traceback, and
+the cleanup still runs. The same trait added to two Forges warns with
+`DuplicateTrait:`. An attribute that changes to the wrong kind warns with
+`BadAttribute:` and the field keeps its value.
+
+`Forge.trait<<Door>>(part, Door)` gives the object a trait bound to an
+instance, or nil. `Forge.traits<<Door>>(Door)` gives every object a trait
+has bound.
+
+Write an attribute through the instance: `self.instance:SetAttribute(...)`.
+The field follows at the next `AttributeChanged`.
+
+## Bin
+
+A Bin holds connections, instances, threads and functions. `Empty`
+disconnects, destroys, cancels and calls them, newest first, so teardown
+unwinds setup. Forge gives one to every trait object.
+
+```aly
+import { Bin } from '@shared/forge'
+
+const bin = Bin.new()
+const touched = bin:Add(part.Touched:Connect(on_touch))
+bin:Add(new Instance('Folder'))
+bin:Add(task.spawn(loop))
+bin:Add(function() -> ()
+  print('emptied')
+end)
+
+bin:Empty()
+```
+
+- `Bin.new()`: an empty Bin.
+- `bin:Add(item)`: adds an item and returns it, so an add can wrap an
+  assignment. Anything else errors with `BadArgument:`.
+- `bin:Empty()`: cleans every item, newest first. The Bin stays usable.
+
+## Extensions
+
+An extension is a table with a name and up to two hooks:
+
+```aly
+export type Extension = {
+  Name: string,
+  onPhase: ((forge: Forge, phase: Phase, entries: { Entry }) -> ())?,
+  onProvider: ((forge: Forge, event: ProviderEvent, entry: Entry) -> ())?,
+}
+```
+
+- `onPhase(forge, phase, entries)` fires at each `Phase`: `PreLoad`,
+  `PostLoad`, `PreInit`, `PostInit`, `PreStart` and `PostStart`, with
+  every entry loaded so far.
+- `onProvider(forge, event, entry)` fires as each provider is `Loaded`,
+  `Initialized` and `Started`.
+
+The rules:
+
+- At `PostLoad` an extension may call `forge:LoadProvider(module)`.
+  Loading closes after `PostLoad`.
+- At `PostLoad` or `PreInit` an extension may reorder `entries` in
+  place. After `PreInit` the order is final.
+- Up to `PreInit` an extension may call `forge:AddLifecycle(...)`.
+
+An entry:
+
+```aly
+export type Entry = {
+  Name: string,
+  ModuleScript: ModuleScript,
+  Provider: ProviderObject,
+  Lifecycles: { string },
+  Priority: number,
+}
+```
+
+```aly
+import { Forge, ProviderEvent, type Extension } from '@shared/forge'
+
+--- Prints each provider as it initializes.
+const logger: Extension = {
+  Name = 'Logger',
+  onProvider = function(_forge, event, entry) -> ()
+    if event == ProviderEvent.Initialized then
+      print(`{entry.Name} initialized`)
+    end
+  end,
+}
+```
+
+## Errors
+
+Each error starts with its kind:
+
+| Kind | When |
+| --- | --- |
+| `BadArgument:` | A call got a value of the wrong type or shape; a provider breaks its contract; a module exports no provider; a second instance of a provider struct; a listed method that no lifecycle fires. |
+| `BadCall:` | A call at the wrong time: an add after `Start`, a second `Start`, `LoadProvider` outside `Load` and `PostLoad`, `AddLifecycle` after the wiring, a lifecycle for the other side. |
+| `NoYield:` | An `Init`, or a trait's `Init` or `Destroy`, yielded. |
+| `CyclicDependency:` | The uses form a cycle; the message has the path. |
+| `MissingDependency:` | A use names a provider Forge never loaded. |
+| `FrozenModule:` | Forge cannot put a dependency into a frozen provider. |
+
+And the warnings: `LifecycleError:` (an Await handler failed),
+`BadInstance:` (an instance fails a trait's contract), `BadAttribute:`
+(an attribute changed to the wrong kind), `TraitError:` (a trait's
+`Init` or `Destroy` failed), and `DuplicateTrait:`.
+
+## API
+
+### Forge
+
+| Call | What it does |
+| --- | --- |
+| `new Forge(options?)` | A new Forge. `options.Verbose`, true when nil, prints the boot summary. |
+| `forge:AddProvider(module)` | Adds a provider module. The same module twice does nothing. Chainable. |
+| `forge:AddProviders(modules)` | Adds an array of provider modules, such as a folder's children. Chainable. |
+| `forge:AddExtension(extension)` | Adds an extension. Chainable. |
+| `forge:AddExtensions(extensions)` | Adds an array of extensions. Chainable. |
+| `forge:AddLifecycle(lifecycle)` | Adds a custom lifecycle, up to `PreInit`. Chainable. |
+| `forge:AddLifecycles(lifecycles)` | Adds an array of custom lifecycles. Chainable. |
+| `forge:AddTrait(module)` | Adds a trait module, and requires it now. Chainable. |
+| `forge:AddTraits(modules)` | Adds an array of trait modules. Chainable. |
+| `forge:LoadProvider(module)` | Loads one provider now and gives its entry. For extensions, during `Load` and `PostLoad`. |
+| `forge:Start()` | Runs the boot. Chainable. |
+| `Forge.every(seconds, method)` | A lifecycle that ticks about every `seconds`. |
+| `Forge.use(target)` | A dependency marker, by provider name or ModuleScript. |
+| `Forge.trait<<T>>(instance, trait)` | The object a trait bound to an instance, or nil. |
+| `Forge.traits<<T>>(trait)` | Every object a trait has bound. |
+
+### Attributes
+
+| Attribute | On | What it does |
+| --- | --- | --- |
+| `@Provider(lifecycles = [], priority = 0)` | impl, struct | Marks a provider. |
+| `@Trait(tag, instance = 'Instance', lifecycles = [])` | impl, struct | Marks a trait. |
+| `@Attribute(name, kind)` | field | Fills a trait field from an attribute. |
+| `@Child(name, class_name = 'Instance', wait = 0)` | field | Fills a trait field from a child. |
+
+### Enums and types
+
+| Name | What it is |
+| --- | --- |
+| `Lifecycle` | The built-in lifecycles, `Init` and `Start` among them. |
+| `TraitLifecycle` | `Init`, `Start`, `AttributeChanged` and `Destroy`. |
+| `Phase` | The phases an extension hears. |
+| `ProviderEvent` | `Loaded`, `Initialized` and `Started`. |
+| `Dispatch` | `Spawn`, `Inline` and `Await`. |
+| `CustomLifecycle` | A lifecycle table. |
+| `Extension` | An extension table. |
+| `Entry` | One loaded provider. |
+| `Options` | The options of `new Forge`. |
+| `Bin`, `BinItem` | The cleanup container and what it holds. |
+
+## Using Forge from a game
+
+Forge is a project of its own. A game imports Forge's source, so the
+compiler reads `@Provider` and checks each contract in the game. The game
+mounts Forge's build output where the require expects it.
+
+### With Ember
+
+Forge is the Ember package `alloy/forge`. In an Alloy game, an
+`ember.toml` with `language = "alloy"` in its `[target]`:
+
+1. Add Forge, and install it:
+
+   ```sh
+   embr add alloy/forge
+   embr install
+   ```
+
+   `embr install` writes two link files in `packages/roblox`:
+   `forge.luau`, which requires Forge's build output, and `forge.aly`,
+   which re-exports Forge's source. Alloy reads `forge.aly`, so the
+   game checks each `@Provider` contract against Forge's source. Ember
+   also runs `alloy build` in the installed Forge, with the game's own
+   `alloy`.
+
+2. Mount the packages folder in the game's `alloy.toml`, or under
+   `mount` in its `.config.aly`:
+
+   ```toml
+   [mount]
+   packages = ["packages/roblox", "@game/ReplicatedStorage/Packages"]
+   ```
+
+   The mount makes `@packages` an alias, and `alloy build` writes each
+   require of it as `@game/ReplicatedStorage/Packages/...`.
+
+3. Write the one module of the game that brings Forge in:
+
+   ```aly
+   -- src/shared/forge.aly
+   export { Forge, Lifecycle, Provider } from '@packages/forge'
+   ```
+
+`alloy check`, `alloy flux`, and `alloy build` then work with no build
+of Forge by hand.
+
+### From a path
+
+With a clone of [alloy-luau/packages](https://github.com/alloy-luau/packages)
+beside the game on disk:
+
+1. Mount Forge's build output in the game's `alloy.toml`, or under
+   `mount` in its `.config.aly`:
+
+   ```toml
+   [mount]
+   forge = ["../packages/forge/build", "@game/ReplicatedStorage/Forge"]
+   ```
+
+   A game that keeps its own Rojo project file puts the same node in
+   its tree instead: `"Forge": { "$path": "../packages/forge/build" }` under
+   `ReplicatedStorage`.
+
+2. Write one module of the game that brings Forge in. Every other
+   module imports from it:
+
+   ```aly
+   -- src/shared/forge.aly
+   export { Forge, Lifecycle, Provider } from '../../../packages/forge/src/index'
+   ```
+
+   The path leads from this module to Forge's source on disk. Add the
+   other names the game uses, such as `Trait` or `Bin`.
+
+`alloy build` in the game then builds Forge first, and `alloy check`
+checks each contract against Forge's source. The built require names
+`@game/ReplicatedStorage/Forge/index`, where the mount puts the output.
+`alloy flux` reads Forge's build output, so run `alloy build` once on a
+fresh clone, and again after a change to Forge, before `alloy flux`.
+
+## Development
+
+```sh
+alloy check          # the compiler and the lints
+alloy flux           # the same, plus luau-lsp
+alloy test --run     # the tests, on lest
+alloy fmt            # the layout
+```
+
+The tests live beside the code, as `@test` functions and `@test`
+namespaces. A `@test` namespace holds the fixture structs a test binds,
+and the ship artifact leaves the whole group out. The tests cover the
+priority sort, the dependency order and its cycles, the dispatch modes,
+the Bin order, the contract, the phase order, the trait contracts, and
+the errors.
+
+Forge lives in [alloy-luau/packages](https://github.com/alloy-luau/packages),
+the repository of the official Alloy packages, in the `forge` folder.
+Each package there is a member of one Ember workspace and keeps its own
+version. Run the commands above from `forge`. `embr publish` from
+`forge` publishes Forge alone.
+
+The `how_to` and `examples` files import `@packages/forge`. To check
+them, copy them into a game that installs Forge, then run `alloy flux`
+there.
+
+## Inspired by Chief
+
+Forge follows [Chief](https://github.com/ryancundiff/chief) by Ryan
+Cundiff: its boot barrier, its extension hooks, its lifecycles and
+dispatch modes, its dependency ordering, its traits and its Bin, and its
+names, so a Chief user finds each call where they expect it. Forge moves
+them to Alloy: a provider is a struct with an attribute, and the
+compiler checks the lifecycles each one lists.
+
+## License
+
+MIT. See [LICENSE](https://github.com/alloy-luau/packages/blob/main/forge/LICENSE).

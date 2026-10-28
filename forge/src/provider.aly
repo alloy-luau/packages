@@ -1,0 +1,168 @@
+--[[
+  What a provider is: a struct whose impl carries `@Provider`, with one
+  instance as its module's default export. The attribute names the
+  lifecycles the provider opts into, and its contract makes the compiler
+  check that the impl writes a private method for each one.
+
+  Forge reads the attribute again at runtime, from the struct behind the
+  instance, for the order and the lifecycles to wire.
+]]
+
+import { Set } from '@alloy/std/collections'
+import { Attributes } from '@alloy/std/roblox'
+
+--- A lifecycle a provider can list in `@Provider`. Init and Start are
+--- the boot barrier; the others are Roblox events that Forge wires at
+--- PostInit, once any provider lists them. The value is the name of the
+--- method it calls.
+export enum Lifecycle
+  --- `Init(self)`: runs in order, before any Start. It must not yield.
+  Init
+  --- `Start(self)`: spawned once every Init has run.
+  Start
+  --- `PlayerAdded(self, player)`: also fires for each player already in
+  --- the game when Forge wires it.
+  PlayerAdded
+  --- `PlayerRemoving(self, player)`.
+  PlayerRemoving
+  --- `CharacterAdded(self, player, character)`: also fires for each
+  --- character that exists when Forge wires it.
+  CharacterAdded
+  --- `CharacterRemoving(self, player, character)`.
+  CharacterRemoving
+  --- `AppearanceLoaded(self, player, character)`.
+  AppearanceLoaded
+  --- `HumanoidDied(self, player, character, humanoid)`.
+  HumanoidDied
+  --- `Closing(self)`: game:BindToClose. The server waits for every
+  --- handler to finish. Server only.
+  Closing
+  --- `PreRender(self, dt)`: each frame, before it draws. Client only.
+  PreRender
+  --- `PreAnimation(self, dt)`: each frame, before animations step.
+  PreAnimation
+  --- `PreSimulation(self, dt)`: each frame, before physics.
+  PreSimulation
+  --- `PostSimulation(self, dt)`: each frame, after physics.
+  PostSimulation
+  --- `Heartbeat(self, dt)`: the old name for PostSimulation. Write one
+  --- of the two, not both.
+  Heartbeat
+  --- `LocalCharacterAdded(self, player, character)`: the local player's
+  --- character. Client only.
+  LocalCharacterAdded
+  --- `LocalCharacterRemoving(self, player, character)`. Client only.
+  LocalCharacterRemoving
+  --- `LocalAppearanceLoaded(self, player, character)`. Client only.
+  LocalAppearanceLoaded
+  --- `LocalHumanoidDied(self, player, character, humanoid)`. Client
+  --- only.
+  LocalHumanoidDied
+end
+
+--[[
+  Marks a provider. `lifecycles` names each method Forge calls: a
+  Lifecycle, or the method name of a lifecycle added with AddLifecycles,
+  such as 'Autosave'. The contract makes the compiler ask the impl for a
+  private method of each name. Higher `priority` inits first.
+
+  Put it on the impl, beside the methods it asks for. The struct takes it
+  too, since a struct and its impls are one type.
+]]
+export attribute Provider(lifecycles: (Lifecycle | string)[] = [], priority: number = 0) on struct, impl as
+  requires private function each lifecycles
+end
+
+--- A provider as Forge holds it, from its module's default export.
+@allow(explicit_any)
+export type ProviderObject = { [string]: any }
+
+--- One loaded provider. Extensions read and reorder these.
+export type Entry = {
+  --- The name of its ModuleScript.
+  Name: string,
+  --- The ModuleScript it came from.
+  ModuleScript: ModuleScript,
+  --- The one instance: the module's default export.
+  Provider: ProviderObject,
+  --- The method names `@Provider` lists, in order.
+  Lifecycles: { string },
+  --- Higher inits first.
+  Priority: number,
+}
+
+--- What `@Provider` says about one struct.
+export type ProviderOptions = { lifecycles: { string }, priority: number }
+
+--- The value of a module: its default export when it has one, as an
+--- Alloy module does, else what it returns, as a Luau module does.
+export function exported(value: unknown) -> unknown
+  if value is table and value.default ~= nil then
+    return value.default
+  end
+
+  return value
+end
+
+--- The options `@Provider` gives a struct, or nil when it carries none.
+--- It gives a copy, so an extension that edits an entry leaves the
+--- attribute as it is.
+export function options_of(struct: unknown) -> ProviderOptions?
+  if const read = Attributes.get(struct, Provider) then
+    return { lifecycles = table.clone(read.lifecycles), priority = read.priority }
+  end
+
+  return nil
+end
+
+--- Errors unless a provider writes a method for each lifecycle it lists.
+--- The compiler checks the same contract; this catches a provider built
+--- outside it, such as a plain Luau module.
+export function check_contract(name: string, provider: ProviderObject, lifecycles: { string }) -> ()
+  for _, method in lifecycles do
+    if provider[method] is not function then
+      error(`BadArgument: {name} lists '{method}' in @Provider but writes no {method} method`, 0)
+    end
+  end
+end
+
+--- The Lifecycle methods a provider writes and does not list. Forge does
+--- not call them, and warns so the omission shows.
+export function unlisted(provider: ProviderObject, lifecycles: { string }) -> { string }
+  const listed = Set.from(lifecycles)
+
+  return [ 'Init', 'Start' ]:filter(function(method: string) -> boolean
+    return not listed:has(method) and provider[method] is function
+  end)
+end
+
+--- Whether Forge calls this lifecycle itself, in the boot barrier.
+export function is_boot(method: string) -> boolean
+  return method == 'Init' or method == 'Start'
+end
+
+@test
+function exported_takes_the_default() -> ()
+  const value = { x = 1 }
+
+  $assert_eq(exported({ default = value }), value)
+  $assert_eq(exported(value), value)
+end
+
+@test
+function the_contract_names_a_missing_method() -> ()
+  const provider = { Init = function(_self: unknown) -> () end }
+
+  check_contract('Data', provider, [ 'Init' ])
+  $expect(function() -> ()
+    check_contract('Data', provider, [ 'Init', 'Start' ])
+  end):toThrow('BadArgument: Data lists \'Start\'')
+end
+
+@test
+function unlisted_finds_a_start_that_is_not_listed() -> ()
+  const provider = { Start = function(_self: unknown) -> () end }
+
+  $assert_eq(#unlisted(provider, []), 1)
+  $assert_eq(#unlisted(provider, [ 'Start' ]), 0)
+end

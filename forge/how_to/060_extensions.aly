@@ -1,0 +1,55 @@
+--[[
+  An extension is a table with a name and up to two hooks:
+
+    export type Extension = {
+      Name: string,
+      onPhase: ((forge: Forge, phase: Phase, entries: { Entry }) -> ())?,
+      onProvider: ((forge: Forge, event: ProviderEvent, entry: Entry) -> ())?,
+    }
+
+  - `onPhase` fires at PreLoad, PostLoad, PreInit, PostInit, PreStart, and
+    PostStart, with every entry loaded so far.
+  - `onProvider` fires as each provider is Loaded, Initialized, and
+    Started.
+]]
+
+import { Forge, Phase, ProviderEvent, type Entry, type Extension } from '@packages/forge'
+
+--- Prints the boot, phase by phase, and each provider as it starts.
+const logger: Extension = {
+  Name = 'Logger',
+  onPhase = function(_forge, phase, entries) -> ()
+    print(`{phase}: {#entries} providers`)
+  end,
+  onProvider = function(_forge, event, entry) -> ()
+    if event == ProviderEvent.Started then
+      print(`{entry.Name} started`)
+    end
+  end,
+}
+
+--- Puts the providers in the order of their names, at PreInit.
+const alphabetical: Extension = {
+  Name = 'Alphabetical',
+  onPhase = function(_forge, phase, entries) -> ()
+    if phase == Phase.PreInit then
+      table.sort(entries, function(a: Entry, b: Entry) return a.Name < b.Name end)
+    end
+  end,
+}
+
+new Forge()
+  :AddExtensions([ logger, alphabetical ])
+  :AddProviders(script.Parent->'Providers'!:GetChildren())
+  :Start()
+
+--[[
+  The rules:
+
+  - At PostLoad an extension can call `forge:LoadProvider(module)`.
+    Loading closes after PostLoad.
+  - At PostLoad or PreInit an extension can reorder `entries` in place.
+    Forge still puts each provider after the providers that it uses.
+    After PreInit the order is final.
+  - Up to PreInit an extension can call `forge:AddLifecycle(...)`.
+]]

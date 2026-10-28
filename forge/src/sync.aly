@@ -1,0 +1,64 @@
+--[[
+  The synchronous steps: a provider's Init, and a trait's Init and
+  Destroy. A step that yields would break the barrier: the steps after it
+  would run first, and a trait's Destroy could race its own cleanup.
+]]
+
+--- Runs a step on a thread of its own. It gives false and a traceback
+--- when the step errors or yields, and true when it runs through.
+@allow(explicit_any)
+export function run_sync(step: string, callback: (...any) -> (), ...: unknown) -> (boolean, string?)
+  const thread = coroutine.create(callback)
+  const ok, problem = coroutine.resume(thread, ...)
+
+  -- The traceback comes first: close clears the thread's stack.
+  if not ok then
+    const traceback = debug.traceback(thread, tostring(problem))
+    coroutine.close(thread)
+
+    return false, traceback
+  end
+
+  if coroutine.status(thread) ~= 'dead' then
+    const traceback = debug.traceback(
+      thread,
+      `NoYield: {step} yielded; a synchronous Forge step must not`
+    )
+    coroutine.close(thread)
+
+    return false, traceback
+  end
+
+  return true, nil
+end
+
+@test
+function a_step_that_runs_through_passes() -> ()
+  local ran = false
+  const ok = run_sync('Init', function() -> ()
+    ran = true
+  end)
+
+  $assert(ok)
+  $assert(ran)
+end
+
+@test
+function a_step_that_yields_fails_with_no_yield() -> ()
+  const ok, problem = run_sync('Init', function() -> ()
+    coroutine.yield()
+  end)
+
+  $assert(not ok)
+  $assert(string.find(problem ?? '', 'NoYield', 1, true) ~= nil)
+end
+
+@test
+function a_step_that_errors_fails_with_its_message() -> ()
+  const ok, problem = run_sync('Init', function() -> ()
+    error('boom')
+  end)
+
+  $assert(not ok)
+  $assert(string.find(problem ?? '', 'boom', 1, true) ~= nil)
+end

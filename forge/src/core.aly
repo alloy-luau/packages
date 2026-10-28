@@ -1,0 +1,753 @@
+--[[
+  The core of Forge: it loads the providers, runs the Init and Start
+  barrier, and tells extensions at each step. Lifecycles, dependencies
+  and traits hook into the same steps; an extension of the game's own
+  can hook into them too.
+
+    new Forge()
+      :AddProviders(script.Parent->'Providers'!:GetChildren())
+      :AddLifecycles([ Forge.every(60, 'Autosave') ])
+      :Start()
+
+  The boot runs these phases in order:
+
+    PreLoad -> Load -> PostLoad -> PreInit -> Init -> PostInit
+      -> PreStart -> Start -> PostStart
+]]
+
+import { HashMap, Set } from '@alloy/std/collections'
+import { type CustomLifecycle, check_lifecycle, every, wire } from './lifecycles'
+import { type Target, cycle_path, inject, link, links_of, order, use } from './dependencies'
+import {
+  type Entry,
+  Lifecycle,
+  Provider,
+  check_contract,
+  exported,
+  options_of,
+  unlisted,
+} from './provider'
+import { run_sync } from './sync'
+import { type TraitInfo, get, get_all, info_of, watch } from './traits'
+
+--- A boot phase an extension hears. Load, Init and Start run between
+--- them, and no hook fires for those three.
+export enum Phase
+  PreLoad
+  PostLoad
+  PreInit
+  PostInit
+  PreStart
+  PostStart
+end
+
+--- A step of one provider that an extension hears.
+export enum ProviderEvent
+  Loaded
+  Initialized
+  Started
+end
+
+--- Options for `new Forge(options)`. `Verbose`, true when nil, prints
+--- the boot summary: `Forge (Server) started 12 providers in 3ms`.
+export type Options = { Verbose: boolean? }
+
+--- The Forge class: one boot of a set of providers.
+export struct Forge
+  private verbose: boolean
+  private modules: { ModuleScript } = {}
+  private added: Set<ModuleScript> = new Set()
+  private entries: { Entry } = {}
+  private by_module: HashMap<ModuleScript, Entry> = new HashMap()
+  private structs: Set<unknown> = new Set()
+  private extensions: { Extension } = {}
+  private lifecycles: { CustomLifecycle } = {}
+  private trait_infos: { TraitInfo } = {}
+  --- Where the boot is: Idle, a Phase, Load, Init, or Start.
+  private phase: string = 'Idle'
+  private wired: boolean = false
+  private started: boolean = false
+end
+
+--[[
+  An extension: a name and up to two hooks.
+
+  - `onPhase(forge, phase, entries)` fires at each Phase with every entry
+    loaded so far. At PostLoad an extension may call LoadProvider; at
+    PostLoad or PreInit it may reorder `entries` in place. Past PreInit
+    the order is final.
+  - `onProvider(forge, event, entry)` fires as each provider loads,
+    initializes, and starts.
+]]
+export type Extension = {
+  Name: string,
+  onPhase: ((forge: Forge, phase: Phase, entries: { Entry }) -> ())?,
+  onProvider: ((forge: Forge, event: ProviderEvent, entry: Entry) -> ())?,
+}
+
+--- Errors unless a value is a ModuleScript.
+local function check_module(value: unknown, index: number, call: string) -> ()
+  if value is not ModuleScript then
+    error(
+      `BadArgument: Bad argument #{index} for {call} (expected ModuleScript, got {typeof(value)})`,
+      0
+    )
+  end
+end
+
+--- Errors unless a value is an array.
+local function check_array(value: unknown, call: string) -> ()
+  if value is not table then
+    error(`BadArgument: Bad argument #1 for {call} (expected an array, got {typeof(value)})`, 0)
+  end
+
+  for key in value do
+    if key is not number then
+      error(
+        `BadArgument: Bad argument #1 for {call} (expected an array, got a key of type {typeof(key)})`,
+        0
+      )
+    end
+  end
+end
+
+--- Errors unless a value is an Extension.
+local function check_extension(value: unknown, index: number, call: string) -> ()
+  const bad = `BadArgument: Bad argument #{index} for {call}`
+
+  if value is not table then
+    error(`{bad} (expected Extension, got {typeof(value)})`, 0)
+  end
+
+  if value.Name is not string then
+    error(`{bad} (Name: expected string, got {typeof(value.Name)})`, 0)
+  end
+
+  for _, hook in [ 'onPhase', 'onProvider' ] do
+    if value[hook] ~= nil and value[hook] is not function then
+      error(`{bad} ({hook}: expected function or nil, got {typeof(value[hook])})`, 0)
+    end
+  end
+end
+
+--- Builds the entry of a provider from its module's value. Errors with
+--- BadArgument when the value is no provider, or breaks its contract.
+local function entry_of(module: ModuleScript, value: unknown) -> (Entry, unknown)
+  const name = module.Name
+  const provider = exported(value)
+
+  if provider is not table then
+    error(
+      `BadArgument: {name} exports no provider (expected a struct instance, got {typeof(provider)})`,
+      0
+    )
+  end
+
+  const struct = getmetatable(provider)
+  const options = options_of(struct)
+
+  if options == nil then
+    error(`BadArgument: {name} carries no @Provider; mark the struct of its default export`, 0)
+  end
+
+  check_contract(name, provider, options.lifecycles)
+
+  for _, method in unlisted(provider, options.lifecycles) do
+    warn(
+      `Forge: {name} writes {method} but does not list it in @Provider, so Forge does not call it`
+    )
+  end
+
+  const entry: Entry = {
+    Name = name,
+    ModuleScript = module,
+    Provider = provider,
+    Lifecycles = options.lifecycles,
+    Priority = options.priority,
+  }
+
+  return entry, struct
+end
+
+--- Sorts entries by priority, higher first, in place. Ties keep the order
+--- they were added in, since table.sort is not stable.
+export function sort_by_priority(entries: { Entry }) -> ()
+  local index_of: { [Entry]: number } = {}
+
+  for index, entry in entries do
+    index_of[entry] = index
+  end
+
+  table.sort(entries, function(a: Entry, b: Entry) -> boolean
+    if a.Priority ~= b.Priority then
+      return a.Priority > b.Priority
+    end
+
+    return index_of[a] < index_of[b]
+  end)
+end
+
+--- Whether an entry lists a lifecycle.
+local function lists(entry: Entry, method: string) -> boolean
+  return table.find(entry.Lifecycles, method) ~= nil
+end
+
+--- Whether this runs on the server. Forge asks when a provider lists a
+--- lifecycle of one side, and for the boot summary.
+local function on_server() -> boolean
+  local server = false
+
+  -- A statement, not a `@cfg` return, which unreachable_code misreads:
+  -- Strata's docs/LANG_BUGS.md, entry 79.
+  @cfg(server)
+  server = true
+
+  return server
+end
+
+impl Forge
+  --- A new Forge.
+  function new(options: Options?) -> Forge
+    if options ~= nil and options is not table then
+      error(
+        `BadArgument: Bad argument #1 for new (expected Options or nil, got {typeof(options)})`,
+        0
+      )
+    end
+
+    const verbose = options?.Verbose
+
+    if verbose ~= nil and verbose is not boolean then
+      error(
+        `BadArgument: Bad argument #1 for new (Verbose: expected boolean or nil, got {typeof(verbose)})`,
+        0
+      )
+    end
+
+    return new Forge { verbose = verbose ?? true }
+  end
+
+  --- Errors once the boot has begun.
+  private function CheckIdle(self, call: string) -> ()
+    if self.started then
+      error(`BadCall: Bad call for {call} (Forge has started)`, 0)
+    end
+  end
+
+  --- Tells each extension that the boot reached a phase.
+  private function FirePhase(self, phase: Phase) -> ()
+    self.phase = phase
+
+    for _, extension in self.extensions do
+      if const hook = extension.onPhase then
+        hook(self, phase, self.entries)
+      end
+    end
+  end
+
+  --- Tells each extension that one provider took a step.
+  private function FireProvider(self, event: ProviderEvent, entry: Entry) -> ()
+    for _, extension in self.extensions do
+      if const hook = extension.onProvider then
+        hook(self, event, entry)
+      end
+    end
+  end
+
+  --- Adds a provider module. Adding one ModuleScript twice does nothing.
+  function AddProvider(self, module: ModuleScript) -> Forge
+    self:CheckIdle('AddProvider')
+    check_module(module, 1, 'AddProvider')
+
+    if not self.added:has(module) then
+      self.added:add(module)
+      table.insert(self.modules, module)
+    end
+
+    return self
+  end
+
+  --- Adds an array of provider modules, such as a folder's children.
+  function AddProviders(self, modules: { Instance }) -> Forge
+    self:CheckIdle('AddProviders')
+    check_array(modules, 'AddProviders')
+
+    for _, module in modules do
+      self:AddProvider(module :: ModuleScript)
+    end
+
+    return self
+  end
+
+  --- Adds an extension.
+  function AddExtension(self, extension: Extension) -> Forge
+    self:CheckIdle('AddExtension')
+    check_extension(extension, 1, 'AddExtension')
+    table.insert(self.extensions, extension)
+
+    return self
+  end
+
+  --- Adds an array of extensions.
+  function AddExtensions(self, extensions: { Extension }) -> Forge
+    self:CheckIdle('AddExtensions')
+    check_array(extensions, 'AddExtensions')
+
+    for _, extension in extensions do
+      self:AddExtension(extension)
+    end
+
+    return self
+  end
+
+  --[[
+    Adds a lifecycle, such as `Forge.every(60, 'Autosave')`. A provider
+    that lists its method gets its events. An extension may add one up to
+    PreInit; Forge wires them all at PostInit. Two lifecycles may share a
+    method, but one lifecycle added twice errors, since each copy would
+    fire every handler again.
+  ]]
+  function AddLifecycle(self, lifecycle: CustomLifecycle) -> Forge
+    if self.wired then
+      error('BadCall: Bad call for AddLifecycle (Forge has wired the lifecycles)', 0)
+    end
+
+    check_lifecycle(lifecycle, 1, 'AddLifecycle')
+
+    if table.find(self.lifecycles, lifecycle) then
+      error(
+        `BadArgument: Bad argument #1 for AddLifecycle (the lifecycle '{lifecycle.Method}' is added already)`,
+        0
+      )
+    end
+
+    table.insert(self.lifecycles, lifecycle)
+
+    return self
+  end
+
+  --- Adds an array of lifecycles.
+  function AddLifecycles(self, lifecycles: { CustomLifecycle }) -> Forge
+    check_array(lifecycles, 'AddLifecycles')
+
+    for _, lifecycle in lifecycles do
+      self:AddLifecycle(lifecycle)
+    end
+
+    return self
+  end
+
+  --- Adds a trait module. Forge requires it now, so a bad trait fails
+  --- here and not later as a tag that does nothing.
+  function AddTrait(self, module: ModuleScript) -> Forge
+    self:CheckIdle('AddTrait')
+    check_module(module, 1, 'AddTrait')
+    table.insert(self.trait_infos, info_of(module.Name, import<<unknown>>(module)))
+
+    return self
+  end
+
+  --- Adds an array of trait modules, such as a folder's children.
+  function AddTraits(self, modules: { Instance }) -> Forge
+    self:CheckIdle('AddTraits')
+    check_array(modules, 'AddTraits')
+
+    for _, module in modules do
+      self:AddTrait(module :: ModuleScript)
+    end
+
+    return self
+  end
+
+  --[[
+    Loads one provider now and fires Loaded, or gives the entry of one
+    loaded already. For extensions: it works during Load and PostLoad
+    only. An entry loaded at PostLoad goes last, whatever its priority;
+    reorder `entries` in onPhase when the order matters.
+  ]]
+  function LoadProvider(self, module: ModuleScript) -> Entry
+    if self.phase ~= 'Load' and self.phase ~= Phase.PostLoad then
+      error(
+        'BadCall: Bad call for LoadProvider (Forge loads providers during Load and PostLoad only)',
+        0
+      )
+    end
+
+    check_module(module, 1, 'LoadProvider')
+
+    if const loaded = self.by_module:get(module) then
+      return loaded
+    end
+
+    const entry, struct = entry_of(module, import<<unknown>>(module))
+
+    if self.structs:has(struct) then
+      error(
+        `BadArgument: {entry.Name} is a second instance of a provider struct; a provider is one instance`,
+        0
+      )
+    end
+
+    self.structs:add(struct)
+    self.by_module:set(module, entry)
+    table.insert(self.entries, entry)
+    self:FireProvider(ProviderEvent.Loaded, entry)
+
+    return entry
+  end
+
+  --- Loads each provider that a `use` names by its ModuleScript and that
+  --- no one added. LoadProvider adds to the entries, so the walk reaches
+  --- the whole graph.
+  private function LoadDependencies(self) -> ()
+    local index = 1
+
+    while index <= #self.entries do
+      for _, found in links_of(self.entries[index].Provider) do
+        const target: Target = found.target
+
+        if target is not string and not self.by_module:has(target) then
+          self:LoadProvider(target)
+        end
+      end
+
+      index += 1
+    end
+  end
+
+  --- Orders the entries so each inits after what it uses, and puts each
+  --- provider into the fields that use it.
+  private function OrderDependencies(self) -> ()
+    const links = link(self.entries)
+    const sorted = order(self.entries, links.uses)
+
+    if sorted == nil then
+      error(
+        `CyclicDependency: Forge cannot order Init: {cycle_path(self.entries, links.uses)}. Move the calls out of Init, or turn one use around`,
+        0
+      )
+    end
+
+    table.clear(self.entries)
+    table.move(sorted, 1, #sorted, 1, self.entries)
+    inject(self.entries, links)
+  end
+
+  --- Runs every listed Init, in order. An Init that yields errors with
+  --- NoYield.
+  private function RunInit(self) -> ()
+    self.phase = 'Init'
+
+    for _, entry in self.entries do
+      if lists(entry, 'Init') then
+        const ok, problem = run_sync(`{entry.Name}.Init`, entry.Provider.Init, entry.Provider)
+
+        if not ok then
+          error(problem, 0)
+        end
+      end
+
+      self:FireProvider(ProviderEvent.Initialized, entry)
+    end
+  end
+
+  --- Spawns every listed Start.
+  private function RunStart(self) -> ()
+    self.phase = 'Start'
+
+    for _, entry in self.entries do
+      if lists(entry, 'Start') then
+        task.spawn(entry.Provider.Start, entry.Provider)
+      end
+
+      self:FireProvider(ProviderEvent.Started, entry)
+    end
+  end
+
+  --- Runs the boot. A second call errors.
+  function Start(self) -> Forge
+    if self.started then
+      error('BadCall: Bad call for Start (Forge has started)', 0)
+    end
+
+    self.started = true
+    const began = os.clock()
+
+    self:FirePhase(Phase.PreLoad)
+    self.phase = 'Load'
+
+    for _, module in self.modules do
+      self:LoadProvider(module)
+    end
+
+    sort_by_priority(self.entries)
+    self:FirePhase(Phase.PostLoad)
+    -- After the extensions, so a provider an extension loads gets its
+    -- dependencies too.
+    self:LoadDependencies()
+
+    self.phase = Phase.PreInit
+    self:OrderDependencies()
+    self:FirePhase(Phase.PreInit)
+
+    self:RunInit()
+    wire(self.entries, self.lifecycles, on_server)
+    self.wired = true
+    self:FirePhase(Phase.PostInit)
+
+    self:FirePhase(Phase.PreStart)
+    self:RunStart()
+
+    for _, trait in self.trait_infos do
+      watch(trait)
+    end
+
+    self:FirePhase(Phase.PostStart)
+
+    if self.verbose then
+      const side = on_server() ? 'Server' : 'Client'
+      const ms = math.round((os.clock() - began) * 1000)
+      print(`Forge ({side}) started {#self.entries} providers in {ms}ms`)
+    end
+
+    return self
+  end
+
+  --- A lifecycle that calls `method(self, dt)` about every `seconds`.
+  function every(seconds: number, method: string) -> CustomLifecycle
+    return every(seconds, method)
+  end
+
+  --[[
+    Declares a dependency: put it in a provider field, and Forge puts the
+    provider it names there before any Init. A name finds a provider the
+    game added; a ModuleScript loads one no one added.
+
+      data: DataProvider = Forge.use('DataProvider')
+  ]]
+  @allow(explicit_any)
+  function use(target: Target) -> any
+    return use(target)
+  end
+
+  --- The object a trait has bound to an instance, or nil:
+  --- `Forge.trait<<Door>>(part, Door)`.
+  function trait<T>(instance: Instance, trait: unknown) -> T?
+    return get(instance, trait)
+  end
+
+  --- Every object a trait has bound: `Forge.traits<<Door>>(Door)`.
+  function traits<T>(trait: unknown) -> { T }
+    return get_all(trait)
+  end
+end
+
+--- The tests of the core, with the fixture providers they load. The ship
+--- artifact leaves the whole group out.
+@test
+namespace CoreTests
+  --- A provider in the form to write: `@Provider` on the impl, by key.
+  private struct Keyed
+    saves: number = 0
+  end
+
+  @Provider({ lifecycles = [ Lifecycle.Init, 'Autosave' ], priority = 10 })
+  impl Keyed
+    private function Init(self) -> ()
+      self.saves = 0
+    end
+
+    private function Autosave(self) -> ()
+      self.saves += 1
+    end
+  end
+
+  --- A provider with `@Provider` on the struct, by position.
+  @Provider([ Lifecycle.PlayerAdded ], 3)
+  private struct Positional
+    greeted: number = 0
+  end
+
+  impl Positional
+    private function PlayerAdded(self, _player: Player) -> ()
+      self.greeted += 1
+    end
+  end
+
+  --- A provider with no options at all.
+  @Provider()
+  private struct Plain
+    x: number = 0
+  end
+
+  --- A provider that lists Start and writes no Start method.
+  private struct Broken
+    x: number = 0
+  end
+
+  --@alloy-expect-error the contract asks the impl for a private Start
+  @Provider({ lifecycles = [ Lifecycle.Start ] })
+  impl Broken
+  end
+
+  --- A ModuleScript named for a test.
+  private function module(name: string) -> ModuleScript
+    return new Instance('ModuleScript') { Name = name }
+  end
+
+  --- An entry with a priority, for the sort.
+  private function ranked(name: string, priority: number) -> Entry
+    return {
+      Name = name,
+      ModuleScript = module(name),
+      Provider = {},
+      Lifecycles = [],
+      Priority = priority,
+    }
+  end
+
+  --- A Forge that prints nothing.
+  private function quiet() -> Forge
+    return new Forge({ Verbose = false })
+  end
+
+  --- Sorts by priority, and keeps ties in the order they came.
+  public function sorts_by_priority_and_keeps_ties() -> ()
+    const entries = [ ranked('A', 0), ranked('B', 5), ranked('C', 0), ranked('D', 5) ]
+    sort_by_priority(entries)
+
+    const names = entries:map(function(entry: Entry) -> string
+      return entry.Name
+    end)
+
+    $assert_eq(names:join(','), 'B,D,A,C')
+  end
+
+  --- Reads `@Provider` from an impl, by key.
+  public function reads_the_options_of_an_impl() -> ()
+    const entry = entry_of(module('KeyedProvider'), { default = new Keyed {} })
+
+    $assert_eq(entry.Name, 'KeyedProvider')
+    $assert_eq(entry.Priority, 10)
+    $assert_eq(table.concat(entry.Lifecycles, ','), 'Init,Autosave')
+  end
+
+  --- Reads `@Provider` from a struct, by position.
+  public function reads_the_options_of_a_struct() -> ()
+    const entry = entry_of(module('PositionalProvider'), { default = new Positional {} })
+
+    $assert_eq(entry.Priority, 3)
+    $assert_eq(table.concat(entry.Lifecycles, ','), 'PlayerAdded')
+  end
+
+  --- Reads an empty @Provider().
+  public function reads_empty_options() -> ()
+    const entry = entry_of(module('PlainProvider'), { default = new Plain {} })
+
+    $assert_eq(entry.Priority, 0)
+    $assert_eq(#entry.Lifecycles, 0)
+  end
+
+  --- Refuses a value with no @Provider.
+  public function refuses_a_value_with_no_provider() -> ()
+    $expect(function() -> ()
+      entry_of(module('Nothing'), { default = {} })
+    end):toThrow('BadArgument')
+  end
+
+  --- Refuses a provider that breaks its contract, as the compiler does.
+  public function refuses_a_broken_contract() -> ()
+    $expect(function() -> ()
+      entry_of(module('Broken'), { default = new Broken {} })
+    end):toThrow('BadArgument: Broken lists \'Start\'')
+  end
+
+  --- Fires the phases in order.
+  public function fires_the_phases_in_order() -> ()
+    const heard: { string } = {}
+    const forge = quiet():AddExtension({
+      Name = 'Recorder',
+      onPhase = function(_forge: Forge, phase: Phase, _entries: { Entry }) -> ()
+        table.insert(heard, phase)
+      end,
+    })
+
+    forge:Start()
+
+    $assert_eq(table.concat(heard, ','), 'PreLoad,PostLoad,PreInit,PostInit,PreStart,PostStart')
+  end
+
+  --- Errors on a second Start.
+  public function refuses_a_second_start() -> ()
+    const forge = quiet():Start()
+
+    $expect(function() -> ()
+      forge:Start()
+    end):toThrow('BadCall')
+  end
+
+  --- Errors on an add after Start.
+  public function refuses_an_add_after_start() -> ()
+    const forge = quiet():Start()
+
+    $expect(function() -> ()
+      forge:AddProvider(module('Late'))
+    end):toThrow('BadCall')
+  end
+
+  --- Errors on an add of something that is no ModuleScript.
+  public function refuses_a_provider_that_is_no_module() -> ()
+    $expect(function() -> ()
+      quiet():AddProvider((new Instance('Folder') :: unknown) :: ModuleScript)
+    end):toThrow('BadArgument')
+  end
+
+  --- Ignores a second add of one ModuleScript.
+  public function ignores_a_second_add() -> ()
+    const shared = module('Shared')
+
+    quiet():AddProvider(shared):AddProvider(shared)
+  end
+
+  --- Errors on LoadProvider outside the load window.
+  public function refuses_a_load_outside_the_window() -> ()
+    $expect(function() -> ()
+      quiet():LoadProvider(module('Early'))
+    end):toThrow('BadCall')
+  end
+
+  --- Errors on one lifecycle added twice.
+  public function refuses_a_lifecycle_added_twice() -> ()
+    const tick = Forge.every(1, 'Tick')
+
+    $expect(function() -> ()
+      quiet():AddLifecycles([ tick, tick ])
+    end):toThrow('BadArgument')
+  end
+
+  --- Lets an extension add a lifecycle before the wiring, and refuses one
+  --- after it.
+  public function takes_a_lifecycle_until_the_wiring() -> ()
+    local late: string? = nil
+    const forge = quiet():AddExtension({
+      Name = 'Adder',
+      onPhase = function(given: Forge, phase: Phase, _entries: { Entry }) -> ()
+        if phase == Phase.PreLoad then
+          given:AddLifecycle(Forge.every(1, 'Early'))
+        elseif phase == Phase.PostInit then
+          const added = Result.pcall(function() -> ()
+            given:AddLifecycle(Forge.every(1, 'Late'))
+          end)
+
+          if local Err(problem) = added then
+            late = problem
+          end
+        end
+      end,
+    })
+
+    forge:Start()
+
+    $assert(string.find(late ?? '', 'BadCall', 1, true) ~= nil)
+  end
+end

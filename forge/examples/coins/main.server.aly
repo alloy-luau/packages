@@ -1,0 +1,11 @@
+--[[
+  A coin economy on the server. DataProvider holds the coins, and
+  ShopProvider spends them. The autosave runs every 60 seconds.
+]]
+
+import { Forge } from '@packages/forge'
+
+new Forge()
+  :AddProviders(script.Parent->'Providers'!:GetChildren())
+  :AddLifecycles([ Forge.every(60, 'Autosave') ])
+  :Start()

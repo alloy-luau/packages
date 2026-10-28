@@ -1,0 +1,145 @@
+--[[
+  A small cleanup container. A Bin holds connections, instances, threads
+  and functions. Empty disconnects, destroys, cancels and calls them in
+  reverse order, so teardown unwinds setup. Forge gives one to every
+  bound trait object as its `bin` field.
+]]
+
+--- An item a Bin cleans up: a connection (disconnected), an instance
+--- (destroyed), a thread (cancelled), or a function (called).
+export type BinItem = RBXScriptConnection | Instance | thread | () -> ()
+
+--- A cleanup container. Empty cleans the items newest first, and the Bin
+--- stays usable after it.
+export struct Bin
+  private items: { unknown } = {}
+end
+
+impl Bin
+  --- An empty Bin.
+  function new() -> Bin
+    return new Bin {}
+  end
+
+  --- Adds an item to clean up when the Bin empties. It returns the item,
+  --- so an add can wrap an assignment:
+  ---
+  ---     const touched = bin:Add(part.Touched:Connect(on_touch))
+  function Add<T>(self, item: T) -> T
+    const kind = typeof(item)
+
+    if
+      kind ~= 'RBXScriptConnection'
+      and kind ~= 'Instance'
+      and kind ~= 'thread'
+      and kind ~= 'function'
+    then
+      error(
+        `BadArgument: Bad argument #1 for Add (expected RBXScriptConnection, Instance, thread, or function, got {kind})`,
+        2
+      )
+    end
+
+    table.insert(self.items, item)
+
+    return item
+  end
+
+  --- Cleans every item, newest first, and clears the Bin.
+  function Empty(self) -> ()
+    const items = self.items
+    self.items = {}
+
+    for index = #items, 1, -1 do
+      const item = items[index]
+
+      if item is RBXScriptConnection then
+        item:Disconnect()
+      elseif item is Instance then
+        item:Destroy()
+      elseif item is thread then
+        task.cancel(item)
+      elseif item is function then
+        item()
+      end
+    end
+  end
+end
+
+@test
+function add_returns_the_item() -> ()
+  const bin = new Bin()
+  const cleanup = function() -> () end
+
+  $assert_eq(bin:Add(cleanup), cleanup)
+end
+
+@test
+function add_rejects_what_it_cannot_clean() -> ()
+  const bin = new Bin()
+
+  $expect(function() -> ()
+    bin:Add(5)
+  end):toThrow('BadArgument')
+end
+
+@test
+function empty_runs_the_newest_item_first() -> ()
+  const bin = new Bin()
+  const order: { number } = []
+
+  bin:Add(function() -> ()
+    table.insert(order, 1)
+  end)
+  bin:Add(function() -> ()
+    table.insert(order, 2)
+  end)
+  bin:Add(function() -> ()
+    table.insert(order, 3)
+  end)
+  bin:Empty()
+
+  $assert_eq(table.concat(order, ','), '3,2,1')
+end
+
+@test
+function empty_cancels_a_thread() -> ()
+  const bin = new Bin()
+  const thread = coroutine.create(function() -> ()
+    coroutine.yield()
+  end)
+  coroutine.resume(thread)
+
+  bin:Add(thread)
+  bin:Empty()
+
+  $assert_eq(coroutine.status(thread), 'dead')
+end
+
+@test
+function a_second_empty_runs_nothing_again() -> ()
+  const bin = new Bin()
+  local calls = 0
+
+  bin:Add(function() -> ()
+    calls += 1
+  end)
+  bin:Empty()
+  bin:Empty()
+
+  $assert_eq(calls, 1)
+end
+
+@test
+function the_bin_stays_usable_after_empty() -> ()
+  const bin = new Bin()
+  local calls = 0
+
+  bin:Empty()
+  bin:Add(function() -> ()
+    calls += 1
+  end)
+  bin:Empty()
+
+  $assert_eq(calls, 1)
+end

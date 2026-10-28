@@ -1,0 +1,61 @@
+--[[
+  A lifecycle binds an event to a method. A provider opts in when it
+  lists the method in `@Provider`, and the contract makes it write the
+  method. Forge wires every lifecycle at PostInit, after each Init and
+  before any Start, so a handler can use any provider.
+
+  The built-in lifecycles wire themselves. The game does not register
+  them:
+
+    Init, Start
+    PlayerAdded(player), PlayerRemoving(player)
+    CharacterAdded(player, character), CharacterRemoving(player, character)
+    AppearanceLoaded(player, character)
+    HumanoidDied(player, character, humanoid)
+    Closing()                     server only, the server waits for it
+    PreRender(dt)                 client only
+    PreAnimation(dt), PreSimulation(dt), PostSimulation(dt), Heartbeat(dt)
+    LocalCharacterAdded(player, character)      client only
+    LocalCharacterRemoving(player, character)   client only
+    LocalAppearanceLoaded(player, character)    client only
+    LocalHumanoidDied(player, character, humanoid)  client only
+
+  A provider that lists a client-only lifecycle on the server errors with
+  `BadCall:`, and so does a server-only one on the client.
+]]
+
+import { Lifecycle, Provider } from '@packages/forge'
+
+--- Gives each character a spawn shield, and counts the deaths.
+export struct SpawnProvider
+  private deaths: number = 0
+end
+
+@Provider({
+  lifecycles = [ Lifecycle.CharacterAdded, Lifecycle.HumanoidDied, Lifecycle.Closing ],
+})
+impl SpawnProvider
+  -- Also fires for each character in the game when Forge wires it.
+  private function CharacterAdded(self, _player: Player, character: Model) -> ()
+    new Instance('ForceField') { Parent = character }
+  end
+
+  private function HumanoidDied(self, player: Player, _character: Model, _humanoid: Humanoid) -> ()
+    self.deaths += 1
+    print(`{player.Name} died. Deaths so far: {self.deaths}`)
+  end
+
+  -- `game:BindToClose`. The server waits for each Closing handler.
+  private function Closing(self) -> ()
+    print(`The server closes after {self.deaths} deaths`)
+  end
+end
+
+export default new SpawnProvider {}
+
+--[[
+  The per-frame lifecycles (PreRender, PreAnimation, PreSimulation,
+  PostSimulation, Heartbeat) run their handlers inline, one after
+  another, so they make no thread per frame. `Heartbeat` is the old name
+  for `PostSimulation`. Write one of the two.
+]]
