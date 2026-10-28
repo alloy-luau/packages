@@ -1,0 +1,15 @@
+# The workspace of the official Alloy packages. Each member is a package
+# of its own, with its own version, and publishes on its own.
+
+[package]
+name = "alloy/packages"
+version = "0.0.0"
+authors = ["savruun"]
+repository = "alloy-luau/packages"
+license = "MIT"
+private = true
+
+[target]
+environment = "roblox"
+language = "alloy"
+workspace = ["forge"]
