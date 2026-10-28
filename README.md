@@ -7,6 +7,7 @@ a version of its own.
 | Package | Ember | What it is |
 | --- | --- | --- |
 | [Forge](forge) | `alloy/forge` | OOP providers, after Chief: lifecycles, dependencies, traits, and Bin. |
+| [Bevel](bevel) | `alloy/bevel` | Components, services, injectors, and signals, after Angular. |
 
 Each package folder holds:
 
