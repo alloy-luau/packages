@@ -1,164 +1,29 @@
-import { Attributes } from '@alloy/std/roblox'
-import { source, derive, context, root } from '../packages/roblox/vide'
-import type { Source } from '../packages/roblox/vide'
 --[[
-  Bevel: Angular's components, services, and injectors in Alloy, on Vide.
+  Bevel: components, services, and signals for Alloy, after Angular.
+  This module sends out the public API; each part lives in its own
+  module beside it.
 
-  The attributes are checked metadata. Their contracts make the compiler
-  hold each component and service to its shape. A few small functions
-  do the runtime work.
-
-  The Vide import is relative, because a package cannot rely on the
-  mounts of the game that installs it. Ember puts Vide in this
-  package's own `packages/roblox`.
+  - reactive: signal, computed, effect, untracked, batch, root, on_destroy
+  - template: create, each, when, model
+  - component: @component, mount, bootstrap
+  - inject: @injectable, inject, provide
 ]]
 
--- A component is a struct and an impl. The contract asks the impl for a
--- constructor that takes the inputs, and a template.
-export attribute component on impl as
-  requires public function new
-  requires public function template(self)
-end
-
--- A service that an injector builds. It takes nothing to construct,
--- because the injector calls `new()` itself. `scope = 'root'` lets the
--- root injector build it; any other scope needs a `provide` above it.
-export attribute injectable(scope: string = 'root') on struct as
-  requires public function new()
-end
-
--- A signal: call it with no argument to read, with one to write.
-export type Signal<T> = Source<T>
-
--- Angular's `signal()`: Vide's `source()`.
-export const signal = source
-
--- Angular's `computed()`: Vide's `derive()`. It runs again when a
--- signal that it reads changes.
-export const computed = derive
-
--- The root injector: one instance per service class.
-local instances: { [unknown]: unknown } = {}
-
--- The services that the nearest `provide` holds. Each map reads through
--- to the map of the `provide` above it, so a lookup walks up the tree.
-const providers = context(nil :: { [unknown]: unknown }?)
-
--- Angular's inject(): the instance that the nearest `provide` holds, or
--- else the one root instance, built on first use.
-export function inject<T>(class: { new: () -> T }): T
-  const provided = providers()
-  if provided ~= nil and provided[class] ~= nil then
-    return provided[class] :: T
-  end
-
-  const scope = Attributes.get(class, injectable)
-  assert(scope ~= nil, 'inject(): this class is not marked @injectable')
-  assert(scope == 'root', `inject(): this class has scope '{scope}', and no provide() holds it`)
-
-  const existing = instances[class]
-  if existing ~= nil then
-    return existing :: T
-  end
-
-  const instance = class.new()
-  instances[class] = instance
-  return instance
-end
-
--- Angular's `providers: [...]`: a new instance of each class, for each
--- inject() in what `build` makes. It must run inside a Vide scope, such
--- as a template or a `root`. The list is `{ any }`: Luau tables are
--- invariant, so a typed list of classes would refuse `[ TodoStore ]`.
-export function provide<T ...>(classes: { any }, build: () -> T ...): T ...
-  local map: { [unknown]: unknown } = setmetatable({}, { __index = providers() })
-  for _, class in classes do
-    map[class] = class.new()
-  end
-  -- Vide types the setter's result as one value. A template returns one
-  -- Instance, but a `build` may return none, so the cast keeps the pack.
-  const set = (providers :: unknown) :: ({ [unknown]: unknown }, () -> T ...) -> T ...
-  return set(map, build)
-end
-
--- Turns a component class into what a tag calls: a function from inputs
--- to an Instance. `<TodoItem todo={t} />` builds the class and runs its
--- template.
-export function mount<P, C>(class: { new: (P) -> C, template: (C) -> Instance }): (P) -> Instance
-  return function(props: P): Instance
-    return class.template(class.new(props))
-  end
-end
-
-@test
-namespace BevelTests
-  @injectable
-  struct Counter
-    count: number = 0
-  end
-
-  impl Counter
-    function new(): Counter
-      return new Counter {}
-    end
-  end
-
-  @injectable('form')
-  struct Draft
-    text: string = ''
-  end
-
-  impl Draft
-    function new(): Draft
-      return new Draft {}
-    end
-  end
-
-  --- The root injector builds a service once.
-  public function inject_builds_one_root_instance() -> ()
-    $assert_eq(inject(Counter), inject(Counter))
-  end
-
-  --- A class with no @injectable has no injector.
-  public function inject_refuses_a_class_that_is_not_injectable() -> ()
-    const plain = { new = function() return {} end }
-
-    $expect(function() -> ()
-      inject(plain)
-    end):toThrow('not marked @injectable')
-  end
-
-  --- A service outside the root scope needs a provide.
-  public function inject_refuses_a_scoped_class_with_no_provider() -> ()
-    $expect(function() -> ()
-      inject(Draft)
-    end):toThrow('no provide')
-  end
-
-  --- A provide holds its own instance, and the root keeps its own.
-  public function provide_gives_its_own_instance_inside_and_the_root_one_outside() -> ()
-    const outer = inject(Counter)
-
-    root(function() -> ()
-      provide([ Counter ], function() -> ()
-        $assert(inject(Counter) ~= outer)
-        $assert_eq(inject(Counter), inject(Counter))
-      end)
-    end)
-
-    $assert_eq(inject(Counter), outer)
-  end
-
-  --- An inner provide reads the services of the provide above it.
-  public function a_nested_provide_reads_the_services_above_it() -> ()
-    root(function() -> ()
-      provide([ Draft ], function() -> ()
-        const draft = inject(Draft)
-
-        provide([ Counter ], function() -> ()
-          $assert_eq(inject(Draft), draft)
-        end)
-      end)
-    end)
-  end
-end
+export {
+  signal,
+  computed,
+  effect,
+  untracked,
+  batch,
+  root,
+  on_destroy,
+  read,
+  type Signal,
+  type WritableSignal,
+  type Readable,
+  type EffectRef,
+  type OnCleanup,
+} from './reactive'
+export { create, each, when, model, type Directive, type Model } from './template'
+export { component, mount, bootstrap } from './component'
+export { injectable, inject, provide } from './inject'

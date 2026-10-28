@@ -1,0 +1,48 @@
+--[[
+  A signal holds a value that can change, as in Angular:
+
+  - `count()` reads it.
+  - `count:set(4)` writes it.
+  - `count:update(function(n) return n + 1 end)` writes from the old value.
+
+  `computed` derives a value from signals, and `effect` runs code when
+  the signals that it reads change.
+]]
+
+import { computed, effect, signal, type WritableSignal } from '@packages/bevel'
+
+const count: WritableSignal<number> = signal(0)
+
+-- A computed value runs again only when a signal that it read changed,
+-- and only when something reads it.
+const double = computed(function() return count() * 2 end)
+
+count:set(4)
+print(double()) -- 8
+
+-- An effect runs at once, and again each time a signal that it read
+-- changes. `on_cleanup` keeps a function for the next run.
+const ref = effect(function(on_cleanup)
+  print(`count is {count()}`)
+  on_cleanup(function() print('the next run, or the end') end)
+end)
+
+count:update(function(n) return n + 1 end) -- prints "count is 5"
+
+-- An equal value changes nothing, and runs nothing.
+count:set(5)
+
+-- `destroy` stops the effect.
+ref.destroy()
+
+--[[
+  `count:readonly()` gives a signal that reads `count` and cannot write
+  it, as Angular's `asReadonly()` does. Its type is `Signal<number>`.
+
+  In a template, a property bound to a signal or to a function follows
+  the value:
+
+    <TextLabel Text={function() return `{count()} clicks` end} />
+
+  Text with holes in it does the same: `<TextLabel>{count()} clicks</TextLabel>`.
+]]

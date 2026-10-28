@@ -1,0 +1,117 @@
+--[[
+  Components: a struct, and an impl that carries `@component`. `mount`
+  turns the class into a tag, and `bootstrap` puts the root component
+  into the game.
+]]
+
+import { current_owner, dispose, new_owner, on_destroy, root, run_in } from './reactive'
+
+--- Marks a component impl. The contract asks for `new(props)`, which
+--- builds the component from the props of its tag, and `template(self)`,
+--- which gives the Instance that it shows.
+export attribute component on impl as
+  requires public function new
+  requires public function template(self)
+end
+
+-- The lifecycle hooks that a component may write: Angular's `ngOnInit`
+-- and `ngOnDestroy`.
+type Hooks<C> = { on_init: ((C) -> ())?, on_destroy: ((C) -> ())? }
+
+--- Turns a component class into a tag: a function from props to an
+--- Instance. Each call builds a component in an owner of its own, runs
+--- `on_init`, then `template`. The owner goes with the view, and
+--- `on_destroy` runs then.
+export function mount<P, C>(class: { new: (P) -> C, template: (C) -> Instance }) -> (P) -> Instance
+  const hooks = (class :: unknown) :: Hooks<C>
+
+  return function(props: P) -> Instance
+    const owner = new_owner(current_owner())
+
+    return run_in(owner, function()
+      const instance = class.new(props)
+      const on_init, destroyed = hooks.on_init, hooks.on_destroy
+
+      if on_init ~= nil then
+        on_init(instance)
+      end
+
+      if destroyed ~= nil then
+        on_destroy(function() destroyed(instance) end)
+      end
+
+      const view = class.template(instance)
+      view.Destroying:Connect(function() dispose(owner) end)
+
+      return view
+    end)
+  end
+end
+
+--- Angular's `bootstrapApplication()`. It builds the root component under
+--- `target`, and gives the function that takes it all down.
+export function bootstrap(component: ({}) -> Instance, target: Instance) -> () -> ()
+  return root(function(dispose_root)
+    local view = component({})
+    view.Parent = target
+
+    return function() -> ()
+      dispose_root()
+      view:Destroy()
+    end
+  end)
+end
+
+@test
+namespace ComponentTests
+  const log: { string } = {}
+
+  struct Probe
+    read name: string
+  end
+
+  @component
+  impl Probe
+    function new(props: { name: string }) -> Probe
+      return new Probe { name = props.name }
+    end
+
+    function on_init(self) -> ()
+      table.insert(log, `init {self.name}`)
+    end
+
+    function on_destroy(self) -> ()
+      table.insert(log, `destroy {self.name}`)
+    end
+
+    function template(self) -> Instance
+      local label = new Instance('TextLabel')
+      label.Name = self.name
+      return label
+    end
+  end
+
+  --- mount runs on_init before template, and on_destroy when the view goes.
+  public function mount_runs_the_lifecycle_hooks() -> ()
+    table.clear(log)
+    const probe = mount(Probe)
+    const view = probe({ name = 'a' })
+
+    $assert_eq(view.Name, 'a')
+    view:Destroy()
+    $assert_eq(table.concat(log, ','), 'init a,destroy a')
+  end
+
+  --- bootstrap parents the root view, and its stop takes it down.
+  public function bootstrap_mounts_and_stops() -> ()
+    table.clear(log)
+    const target = new Instance('Folder')
+    const app = mount(Probe)
+    const stop = bootstrap(function(_props) return app({ name = 'app' }) end, target)
+
+    $assert(target->app ~= nil)
+    stop()
+    $assert(target->app == nil)
+    $assert_eq(table.concat(log, ','), 'init app,destroy app')
+  end
+end

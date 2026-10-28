@@ -1,0 +1,42 @@
+--[[
+  `@component` and `@injectable` have contracts, so the compiler checks
+  the shape of each class where it is declared. Bevel declares them so:
+
+    export attribute component on impl as
+      requires public function new
+      requires public function template(self)
+    end
+
+    export attribute injectable(scope: string = 'root') on struct as
+      requires public function new()
+    end
+
+  A component with no template does not compile:
+
+    error(3.11): AttributeContract: `@component` requires a public function `template(self)`; `Badge` declares none
+
+  A service whose `new` takes a parameter does not compile either:
+
+    error(3.11): AttributeContract: `@injectable` requires `new()`; `Settings` declares `new(volume: number)`
+]]
+
+import { injectable } from '@packages/bevel'
+
+--- The settings of the local player. `new()` takes nothing, so the
+--- injector can build it.
+@injectable
+export struct Settings
+  volume: number = 0.5
+end
+
+impl Settings
+  function new() -> Settings
+    return new Settings {}
+  end
+end
+
+--[[
+  The check is structural: it reads the members, not a base class. A
+  struct and its impl are one type, so a clause on the struct reads the
+  methods of its impl too.
+]]

@@ -1,0 +1,49 @@
+--[[
+  A service holds state that more than one component reads. It is a
+  struct marked `@injectable`. `inject(Class)` gives the one instance of
+  the service, as Angular's `inject()` does.
+]]
+
+import { inject, injectable, signal, type WritableSignal } from '@packages/bevel'
+
+--- The coins of the local player.
+@injectable
+export struct Wallet
+  read coins: WritableSignal<number>
+end
+
+impl Wallet
+  -- The contract asks for `new()` with no parameters, because the
+  -- injector calls it itself.
+  function new() -> Wallet
+    return new Wallet { coins = signal(0) }
+  end
+
+  --- Adds coins.
+  function earn(self, amount: number) -> ()
+    self.coins:update(function(n) return n + amount end)
+  end
+end
+
+-- The root injector builds the instance on the first call and keeps it.
+-- `<<Wallet>>` names the type that comes back.
+const wallet = inject<<Wallet>>(Wallet)
+wallet:earn(10)
+
+print(inject<<Wallet>>(Wallet) == wallet) -- true
+print(wallet.coins()) -- 10
+
+--[[
+  A component reads the service in its `new`, into a field. The field's
+  type gives the type, so no `<<Wallet>>` is needed there:
+
+    struct ShopComponent
+      read wallet: Wallet
+    end
+
+    function new(_props: {}) -> ShopComponent
+      return new ShopComponent { wallet = inject(Wallet) }
+    end
+
+  `inject` stops with an error when the class has no `@injectable`.
+]]

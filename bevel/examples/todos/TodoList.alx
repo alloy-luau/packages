@@ -1,0 +1,65 @@
+import {
+  component,
+  create,
+  each,
+  inject,
+  model,
+  mount,
+  signal,
+  when,
+  type WritableSignal,
+} from '@packages/bevel'
+import TodoItem from './TodoItem'
+import { TodoStore } from './TodoStore'
+
+struct TodoListComponent
+  read store: TodoStore
+  read draft: WritableSignal<string>
+end
+
+@component
+impl TodoListComponent
+  function new(_props: {}) -> TodoListComponent
+    return new TodoListComponent { store = inject(TodoStore), draft = signal('') }
+  end
+
+  function add(self) -> ()
+    if self.draft() == '' then
+      return
+    end
+
+    self.store:add(self.draft())
+    self.draft:set('')
+  end
+
+  function template(self) -> Instance
+    return (
+      <Frame Size={UDim2.fromScale(1, 1)} BackgroundTransparency={1}>
+        <UIListLayout SortOrder={Enum.SortOrder.LayoutOrder} />
+
+        <TextBox
+          Size={new UDim2(1, 0, 0, 32)}
+          Text={model(self.draft)}
+          FocusLost={function(enter: boolean)
+            if enter then
+              self:add()
+            end
+          end}
+        />
+
+        <!-- A toggle makes a new todo table, so the key is the id -->
+        {each(self.store.todos, function(todo)
+          return <TodoItem todo={todo} toggled={function() self.store:toggle(todo.id) end} />
+        end, function(todo) return `{todo.id}:{todo.done}` end)}
+
+        {when(function() return #self.store.todos() == 0 end, function()
+          return <TextLabel Size={new UDim2(1, 0, 0, 24)}>Nothing to do</TextLabel>
+        end)}
+
+        <TextLabel Size={new UDim2(1, 0, 0, 24)}>{self.store.remaining()} left</TextLabel>
+      </Frame>
+    )
+  end
+end
+
+return mount(TodoListComponent)

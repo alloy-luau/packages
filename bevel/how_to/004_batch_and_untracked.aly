@@ -1,0 +1,31 @@
+--[[
+  Two tools change how a write runs the effects.
+
+  - `batch(fn)` runs the effects that the writes in `fn` mark once, at
+    the end, in place of once for each write.
+  - `untracked(fn)` reads signals without a link, so a change of them
+    does not run the reader again.
+]]
+
+import { batch, effect, signal, untracked } from '@packages/bevel'
+
+const first = signal('Ada')
+const last = signal('Lovelace')
+
+effect(function()
+  print(`{first()} {last()}`)
+end)
+
+-- One run with both names, not one run for each.
+batch(function() -> ()
+  first:set('Grace')
+  last:set('Hopper')
+end)
+
+const clicks = signal(0)
+const label = signal('clicks')
+
+effect(function()
+  -- A change of `label` does not run this effect again.
+  print(`{clicks()} {untracked(function() return label() end)}`)
+end)

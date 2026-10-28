@@ -1,0 +1,47 @@
+import { computed, injectable, signal, type Signal, type WritableSignal } from '@packages/bevel'
+
+export interface Todo
+  id: number
+  title: string
+  done: boolean
+end
+
+--- Holds the todo list. Any component gets the one instance with inject().
+@injectable
+export struct TodoStore
+  read todos: WritableSignal<Todo[]>
+  read remaining: Signal<number>
+  private next_id: number = 1
+end
+
+impl TodoStore
+  function new() -> TodoStore
+    const todos = signal([] :: Todo[])
+    const remaining = computed(function()
+      return #todos():filter(function(t) return not t.done end)
+    end)
+
+    return new TodoStore { todos = todos, remaining = remaining }
+  end
+
+  --- Adds a todo at the end of the list.
+  function add(self, title: string) -> ()
+    const id = self.next_id
+    self.next_id += 1
+
+    self.todos:update(function(list)
+      const copy = table.clone(list)
+      copy:push({ id = id, title = title, done = false })
+      return copy
+    end)
+  end
+
+  --- Turns a todo done, or not done again.
+  function toggle(self, id: number) -> ()
+    self.todos:update(function(list)
+      return list:map(function(t)
+        return if t.id == id then { id = t.id, title = t.title, done = not t.done } else t
+      end)
+    end)
+  end
+end

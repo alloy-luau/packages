@@ -1,0 +1,35 @@
+import { component, create, inject, model, mount, type WritableSignal } from '@packages/bevel'
+import { FormState } from './FormState'
+
+interface FieldProps
+  -- Which field of the form this box edits.
+  pick: (form: FormState) -> WritableSignal<string>
+  placeholder: string
+end
+
+struct FieldComponent
+  read value: WritableSignal<string>
+  read placeholder: string
+end
+
+@component
+impl FieldComponent
+  function new(props: FieldProps) -> FieldComponent
+    return new FieldComponent {
+      value = props.pick(inject(FormState)),
+      placeholder = props.placeholder,
+    }
+  end
+
+  function template(self) -> Instance
+    return (
+      <TextBox
+        Size={new UDim2(1, 0, 0, 32)}
+        PlaceholderText={self.placeholder}
+        Text={model(self.value)}
+      />
+    )
+  end
+end
+
+return mount(FieldComponent)

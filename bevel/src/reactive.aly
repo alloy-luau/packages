@@ -1,0 +1,600 @@
+--[[
+  The reactive core of Bevel: signals, computed values, effects, and the
+  owners that clean them up.
+
+  A signal holds a value. A computed value derives one from signals, and
+  an effect runs code when the signals that it reads change. A read
+  inside a computed value or an effect links the reader to the signal,
+  so a write knows what to run again.
+
+  A write marks each reader dirty. A dirty computed value runs again
+  when something reads it. A dirty effect waits in a queue, and the
+  queue runs at the end of the write, or at the end of the outer batch.
+
+  An owner is a scope. An effect, a computed value, and a cleanup join
+  the owner that is current when code makes them. Disposing an owner
+  undoes all of it: its child owners first, then its cleanups, newest
+  first.
+]]
+
+-- A signal is a table that calls: `count()` reads it. A type that is a
+-- function and a table at once breaks the struct types that Alloy
+-- writes, so both types are tables with a `__call`.
+
+--- A value that changes. Call it to read it: `count()`.
+export type Signal<T> = typeof(setmetatable({}, {} :: { __call: (self: unknown) -> T }))
+
+--- A signal that code can write: `:set(value)`, or `:update(fn)` to
+--- write a value from the old one. It fits where a `Signal<T>` goes.
+export type WritableSignal<T> = typeof(
+  setmetatable(
+    {} :: {
+      set: (self: unknown, value: T) -> (),
+      update: (self: unknown, fn: (T) -> T) -> (),
+      readonly: (self: unknown) -> Signal<T>,
+    },
+    {} :: { __call: (self: unknown) -> T }
+  )
+)
+
+--- What a Bevel call reads: a signal, or a function that reads signals.
+--- `WritableSignal` is a member of its own, so a generic call infers `T`
+--- from it.
+export type Readable<T> = Signal<T> | WritableSignal<T> | () -> T
+
+--- What `effect` gives back. `destroy()` stops the effect.
+export type EffectRef = { destroy: () -> () }
+
+--- The argument of an effect. It keeps a cleanup for the next run.
+export type OnCleanup = (cleanup: () -> ()) -> ()
+
+--- A scope that holds what code made, so that one call undoes it.
+export type Owner = {
+  parent: Owner?,
+  children: { [Owner]: boolean },
+  cleanups: { () -> () },
+  services: { [unknown]: unknown }?,
+  alive: boolean,
+}
+
+--- One node of the graph: a signal, a computed value, or an effect.
+struct Node
+  value: unknown = nil
+  observers: { [Node]: boolean } = {}
+  sources: { [Node]: boolean } = {}
+  compute: ((OnCleanup) -> unknown)? = nil
+  effect: boolean = false
+  dirty: boolean = false
+  alive: boolean = true
+  cleanups: { () -> () } = {}
+  owner: Owner? = nil
+  run: Owner? = nil
+end
+
+-- The computed value or effect that runs now. A read links to it.
+local observer: Node? = nil
+
+-- The owner that new effects, computed values, and cleanups join.
+local current: Owner? = nil
+
+-- The effects that wait to run.
+local queue: { Node } = {}
+
+-- How deep the batches go, and whether the queue runs now.
+local batching = 0
+local flushing = false
+
+-- An effect that writes a signal that it reads would run forever. Past
+-- this many runs in one flush, Bevel stops with an error.
+const MAX_RUNS = 10000
+
+--- A new owner inside `parent`. Disposing the parent disposes it too.
+export function new_owner(parent: Owner?) -> Owner
+  const owner: Owner = { parent = parent, children = {}, cleanups = {}, alive = true }
+
+  if parent ~= nil then
+    parent.children[owner] = true
+  end
+
+  return owner
+end
+
+--- Disposes an owner once: its child owners, then its cleanups, newest
+--- first.
+export function dispose(owner: Owner) -> ()
+  if not owner.alive then
+    return
+  end
+
+  owner.alive = false
+
+  for child in table.clone(owner.children) do
+    dispose(child)
+  end
+
+  const cleanups = owner.cleanups
+  owner.cleanups = {}
+
+  for i = #cleanups, 1, -1 do
+    cleanups[i]()
+  end
+
+  if owner.parent ~= nil then
+    owner.parent.children[owner] = nil
+  end
+end
+
+--- The owner that is current now, or nil outside every owner.
+export function current_owner() -> Owner?
+  return current
+end
+
+--- Runs `fn` with `owner` as the current owner, and with no reader, so
+--- the reads inside link to nothing.
+export function run_in<T>(owner: Owner?, fn: () -> T) -> T
+  const previous_owner, previous_observer = current, observer
+  current, observer = owner, nil
+
+  const result = Result.pcall(fn)
+  current, observer = previous_owner, previous_observer
+
+  match result with
+    case Ok(value) then return value
+    case Err(message) then error(message, 0)
+  end
+end
+
+-- Links the node to the reader that runs now.
+local function link(node: Node) -> ()
+  const reader = observer
+
+  if reader ~= nil and reader.alive then
+    node.observers[reader] = true
+    reader.sources[node] = true
+  end
+end
+
+-- Takes the node off each signal that it read.
+local function unlink(node: Node) -> ()
+  for source in node.sources do
+    source.observers[node] = nil
+  end
+
+  node.sources = {}
+end
+
+-- Marks each reader of the node dirty. A computed value passes the mark
+-- on; an effect waits in the queue.
+local function mark(node: Node) -> ()
+  for reader in node.observers do
+    if not reader.dirty then
+      reader.dirty = true
+
+      if reader.effect then
+        table.insert(queue, reader)
+      else
+        mark(reader)
+      end
+    end
+  end
+end
+
+-- A computed value takes no cleanup.
+local function no_cleanup(_cleanup: () -> ()) -> () end
+
+-- Runs a computed value again, and links it to what it reads now.
+local function recompute(node: Node) -> ()
+  const compute = node.compute :: (OnCleanup) -> unknown
+
+  unlink(node)
+
+  const previous = observer
+  observer = node
+
+  const result = Result.pcall(compute, no_cleanup)
+  observer = previous
+
+  match result with
+    case Ok(value) then
+      node.value = value
+      node.dirty = false
+    case Err(message) then error(message, 0)
+  end
+end
+
+-- Runs the cleanups that the last run of an effect kept.
+local function run_cleanups(node: Node) -> ()
+  const cleanups = node.cleanups
+  node.cleanups = {}
+
+  for i = #cleanups, 1, -1 do
+    cleanups[i]()
+  end
+end
+
+-- Runs an effect again. What its last run made goes first.
+local function run_effect(node: Node) -> ()
+  if node.run ~= nil then
+    dispose(node.run)
+  end
+
+  run_cleanups(node)
+  unlink(node)
+  node.dirty = false
+
+  const run = new_owner(node.owner)
+  node.run = run
+
+  const previous_observer, previous_owner = observer, current
+  observer, current = node, run
+
+  const compute = node.compute :: (OnCleanup) -> unknown
+  const result = Result.pcall(compute, function(cleanup: () -> ()) -> ()
+    table.insert(node.cleanups, cleanup)
+  end)
+
+  observer, current = previous_observer, previous_owner
+
+  match result with
+    case Ok(_) then return
+    case Err(message) then error(message, 0)
+  end
+end
+
+-- Stops a computed value or an effect for good.
+local function stop_node(node: Node) -> ()
+  node.alive = false
+
+  if node.run ~= nil then
+    dispose(node.run)
+    node.run = nil
+  end
+
+  run_cleanups(node)
+  unlink(node)
+end
+
+-- Runs the effects in the queue, until it is empty.
+local function flush() -> ()
+  if batching > 0 or flushing then
+    return
+  end
+
+  flushing = true
+  local runs = 0
+
+  while #queue > 0 do
+    const pending = queue
+    queue = {}
+
+    for _, node in pending do
+      if node.alive and node.dirty then
+        runs += 1
+
+        if runs > MAX_RUNS then
+          queue = {}
+          flushing = false
+          error(
+            'Bevel: the effects ran more than 10000 times in one write; an effect writes a signal that it reads',
+            0
+          )
+        end
+
+        match Result.pcall(run_effect, node) with
+          case Ok(_) then continue
+          case Err(message) then
+            queue = {}
+            flushing = false
+            error(message, 0)
+        end
+      end
+    end
+  end
+
+  flushing = false
+end
+
+-- `readonly` builds a computed value, which this module defines below.
+local computed_of: (fn: () -> unknown) -> unknown
+
+impl Node
+  --- Reads the value, and links the reader that runs now.
+  function __call(self) -> unknown
+    if self.compute ~= nil and not self.effect and self.dirty then
+      recompute(self)
+    end
+
+    link(self)
+    return self.value
+  end
+
+  --- Writes a value. An equal value changes nothing and runs nothing.
+  function set(self, value: unknown) -> ()
+    if value == self.value then
+      return
+    end
+
+    self.value = value
+    mark(self)
+    flush()
+  end
+
+  --- Writes a value from the old one.
+  function update(self, fn: (unknown) -> unknown) -> ()
+    self:set(fn(self.value))
+  end
+
+  --- A signal that reads this one and cannot write it.
+  function readonly(self) -> unknown
+    return computed_of(function() return self:__call() end)
+  end
+end
+
+--- Angular's `signal()`. Call it to read; `:set(value)` and
+--- `:update(fn)` write it.
+-- Luau cannot cast a table to a type that is also a function, so the
+-- cast goes through `any`. A Node is callable through `__call`.
+@allow(explicit_any)
+export function signal<T>(value: T) -> WritableSignal<T>
+  return (new Node { value = value } :: any) :: WritableSignal<T>
+end
+
+--- Whether a value is a signal: what `signal()` or `computed()` made.
+export function is_signal(value: unknown) -> boolean
+  return value is table and getmetatable(value) == Node
+end
+
+--- Reads a signal, or calls a function that reads signals.
+@allow(explicit_any)
+export function read < T > (value: Readable<T>) -> T
+  return (value :: any)()
+end
+
+--- Angular's `computed()`. It runs `fn` when something reads it and a
+--- signal that `fn` read has changed since the last run.
+@allow(explicit_any)
+export function computed<T>(fn: () -> T) -> Signal<T>
+  const node = new Node { compute = function(_cleanup) return fn() end, dirty = true }
+
+  if current ~= nil then
+    table.insert(current.cleanups, function() stop_node(node) end)
+  end
+
+  return (node :: any) :: Signal<T>
+end
+
+computed_of = computed
+
+--- Angular's `effect()`. It runs `fn` now, and again each time a signal
+--- that `fn` read changes. `fn` gets `on_cleanup`, which keeps a function
+--- that runs before the next run and when the effect stops.
+export function effect(fn: (on_cleanup: OnCleanup) -> ()) -> EffectRef
+  const node = new Node {
+    compute = function(on_cleanup: OnCleanup) -> unknown
+      fn(on_cleanup)
+      return nil
+    end,
+    effect = true,
+    owner = current,
+  }
+  const destroy = function() stop_node(node) end
+
+  if current ~= nil then
+    table.insert(current.cleanups, destroy)
+  end
+
+  run_effect(node)
+  return { destroy = destroy }
+end
+
+--- Angular's `untracked()`. It runs `fn`, and the reads inside link to
+--- nothing.
+export function untracked<T>(fn: () -> T) -> T
+  const previous = observer
+  observer = nil
+
+  const result = Result.pcall(fn)
+  observer = previous
+
+  match result with
+    case Ok(value) then return value
+    case Err(message) then error(message, 0)
+  end
+end
+
+--- Runs `fn`, and runs the effects that its writes mark once, at the
+--- end, in place of once for each write.
+export function batch(fn: () -> ()) -> ()
+  batching += 1
+
+  const result = Result.pcall(fn)
+  batching -= 1
+
+  if batching == 0 then
+    flush()
+  end
+
+  match result with
+    case Ok(_) then return
+    case Err(message) then error(message, 0)
+  end
+end
+
+--- Runs `fn` in a new owner that no other owner holds. `fn` gets the
+--- function that disposes the owner.
+export function root<T>(fn: (dispose: () -> ()) -> T) -> T
+  const owner = new_owner(nil)
+
+  return run_in(owner, function() return fn(function() dispose(owner) end) end)
+end
+
+--- Angular's `DestroyRef.onDestroy`. `fn` runs when the current owner
+--- goes: a component, a run of an effect, or a root.
+export function on_destroy(fn: () -> ()) -> ()
+  const owner = current
+  assert(
+    owner ~= nil,
+    'on_destroy(): there is no owner; call it in a component, an effect, or a root'
+  )
+
+  table.insert(owner.cleanups, fn)
+end
+
+@test
+namespace ReactiveTests
+  --- A signal reads what was written last.
+  public function a_signal_reads_its_last_write() -> ()
+    const count = signal(1)
+    count:set(4)
+    count:update(function(n) return n + 1 end)
+
+    $assert_eq(count(), 5)
+    $assert_eq(count:readonly()(), 5)
+  end
+
+  --- A computed value runs again only after a signal that it read changes.
+  public function a_computed_value_runs_when_its_signal_changes() -> ()
+    const count = signal(2)
+    local runs = 0
+    const double = computed(function()
+      runs += 1
+      return count() * 2
+    end)
+
+    $assert_eq(double(), 4)
+    $assert_eq(double(), 4)
+    $assert_eq(runs, 1)
+
+    count:set(5)
+    $assert_eq(double(), 10)
+    $assert_eq(runs, 2)
+  end
+
+  --- An effect runs at once, and again after each change.
+  public function an_effect_runs_again_after_a_change() -> ()
+    const name = signal('a')
+    const seen: { string } = {}
+
+    effect(function() table.insert(seen, name()) end)
+    name:set('b')
+    name:set('b')
+
+    $assert_eq(table.concat(seen, ','), 'a,b')
+  end
+
+  --- The cleanup of a run goes before the next run and at destroy.
+  public function an_effect_cleans_up_before_each_run() -> ()
+    const count = signal(0)
+    const log: { string } = {}
+    const ref = effect(function(on_cleanup)
+      const n = count()
+      table.insert(log, `run {n}`)
+      on_cleanup(function() table.insert(log, `clean {n}`) end)
+    end)
+
+    count:set(1)
+    ref.destroy()
+    count:set(2)
+
+    $assert_eq(table.concat(log, ','), 'run 0,clean 0,run 1,clean 1')
+  end
+
+  --- An effect reads a computed value that is up to date.
+  public function an_effect_sees_no_stale_value() -> ()
+    const count = signal(1)
+    const double = computed(function() return count() * 2 end)
+    const seen: { string } = {}
+
+    effect(function() table.insert(seen, `{count()}:{double()}`) end)
+    count:set(3)
+
+    $assert_eq(table.concat(seen, ','), '1:2,3:6')
+  end
+
+  --- A read in untracked links to nothing.
+  public function untracked_reads_link_to_nothing() -> ()
+    const a = signal(1)
+    const b = signal(1)
+    local runs = 0
+
+    effect(function()
+      runs += 1
+      a()
+      untracked(function() return b() end)
+    end)
+    b:set(2)
+
+    $assert_eq(runs, 1)
+  end
+
+  --- A batch runs a marked effect once.
+  public function a_batch_runs_an_effect_once() -> ()
+    const a = signal(1)
+    const b = signal(1)
+    local runs = 0
+
+    effect(function()
+      runs += 1
+      a()
+      b()
+    end)
+    batch(function() -> ()
+      a:set(2)
+      b:set(2)
+    end)
+
+    $assert_eq(runs, 2)
+  end
+
+  --- An effect inside an effect goes when the outer one runs again.
+  public function an_inner_effect_goes_with_the_outer_run() -> ()
+    const outer = signal(0)
+    const inner = signal(0)
+    local inner_runs = 0
+
+    effect(function()
+      outer()
+      effect(function()
+        inner()
+        inner_runs += 1
+      end)
+    end)
+
+    outer:set(1)
+    inner:set(1)
+
+    -- One inner effect from each outer run, and one run for the write.
+    $assert_eq(inner_runs, 3)
+  end
+
+  --- Disposing a root stops its effects and runs on_destroy.
+  public function a_root_disposes_its_effects() -> ()
+    const count = signal(0)
+    local runs = 0
+    local destroyed = false
+
+    const stop = root(function(dispose_root)
+      effect(function()
+        count()
+        runs += 1
+      end)
+      on_destroy(function() destroyed = true end)
+      return dispose_root
+    end)
+
+    stop()
+    count:set(1)
+
+    $assert_eq(runs, 1)
+    $assert(destroyed)
+  end
+
+  --- An effect that writes what it reads stops with an error.
+  public function an_effect_that_feeds_itself_stops() -> ()
+    const count = signal(0)
+
+    $expect(function() -> ()
+      effect(function() count:set(count() + 1) end)
+    end):toThrow('ran more than')
+  end
+end

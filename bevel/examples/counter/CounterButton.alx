@@ -1,0 +1,23 @@
+import { component, create, inject, mount } from '@packages/bevel'
+import { Counter } from './Counter'
+
+struct CounterButtonComponent
+  read counter: Counter
+end
+
+@component
+impl CounterButtonComponent
+  function new(_props: {}) -> CounterButtonComponent
+    return new CounterButtonComponent { counter = inject(Counter) }
+  end
+
+  function template(self) -> Instance
+    return (
+      <TextButton Size={new UDim2(0, 200, 0, 50)} Activated={function() self.counter:bump() end}>
+        {self.counter.count()} clicks
+      </TextButton>
+    )
+  end
+end
+
+return mount(CounterButtonComponent)

@@ -1,0 +1,46 @@
+--[[
+  Angular's `input()` and `output()`. The props of a tag are a plain
+  shape, so they are an interface: an input is a field, and an output is
+  a callback.
+]]
+
+import { component, create, mount } from '@packages/bevel'
+
+interface ButtonProps
+  -- An input: the text on the button.
+  label: string
+  -- An output: the parent hears each click.
+  clicked: () -> ()
+end
+
+struct ButtonComponent
+  read props: ButtonProps
+end
+
+@component
+impl ButtonComponent
+  function new(props: ButtonProps) -> ButtonComponent
+    return new ButtonComponent { props = props }
+  end
+
+  -- Angular's `ngOnInit`: it runs after `new`, before the template.
+  -- `on_destroy` runs when the view goes. Both are optional.
+  function on_init(self) -> ()
+    print(`a button: {self.props.label}`)
+  end
+
+  function template(self) -> Instance
+    return (
+      <TextButton
+        Size={new UDim2(0, 200, 0, 40)}
+        Text={self.props.label}
+        Activated={function() self.props.clicked() end}
+      />
+    )
+  end
+end
+
+-- The module's value is the tag. A file that imports it writes:
+--
+--   <Button label='Play' clicked={function() print('play') end} />
+return mount(ButtonComponent)

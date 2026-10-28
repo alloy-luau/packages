@@ -1,0 +1,41 @@
+import { component, create, inject, mount, provide } from '@packages/bevel'
+import Field from './Field'
+import { FormState } from './FormState'
+
+interface FormProps
+  title: string
+end
+
+struct FormComponent
+  read title: string
+end
+
+@component
+impl FormComponent
+  function new(props: FormProps) -> FormComponent
+    return new FormComponent { title = props.title }
+  end
+
+  function template(self) -> Instance
+    -- A new FormState for this form. The fields inside read it.
+    return provide([ FormState ], function()
+      const state = inject<<FormState>>(FormState)
+
+      return (
+        <Frame Size={new UDim2(1, 0, 0, 140)}>
+          <UIListLayout />
+          <TextLabel Size={new UDim2(1, 0, 0, 24)} Text={self.title} />
+          <Field pick={function(form: FormState) return form.name end} placeholder="Name" />
+          <Field pick={function(form: FormState) return form.email end} placeholder="Email" />
+          <TextButton
+            Size={new UDim2(1, 0, 0, 32)}
+            Text="Send"
+            Activated={function() print(`{self.title}: {state.name()} <{state.email()}>`) end}
+          />
+        </Frame>
+      )
+    end)
+  end
+end
+
+return mount(FormComponent)

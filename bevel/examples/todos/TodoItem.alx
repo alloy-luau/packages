@@ -1,0 +1,34 @@
+import { component, create, mount } from '@packages/bevel'
+import type { Todo } from './TodoStore'
+
+-- One row of the list. An input is a field of the props, and an output
+-- is a callback.
+interface TodoItemProps
+  todo: Todo
+  toggled: () -> ()
+end
+
+struct TodoItemComponent
+  read props: TodoItemProps
+end
+
+@component
+impl TodoItemComponent
+  function new(props: TodoItemProps) -> TodoItemComponent
+    return new TodoItemComponent { props = props }
+  end
+
+  function template(self) -> Instance
+    return (
+      <TextButton
+        Size={new UDim2(1, 0, 0, 28)}
+        TextTransparency={if self.props.todo.done then 0.5 else 0}
+        Activated={function() self.props.toggled() end}
+      >
+        {self.props.todo.title}
+      </TextButton>
+    )
+  end
+end
+
+return mount(TodoItemComponent)
