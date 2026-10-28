@@ -1,0 +1,50 @@
+--[[
+  It all starts with one component. A component is a struct, and an impl
+  that carries `@component`. Its template builds the Instance that the
+  component shows. This tour builds on it in every step.
+
+  These files import Bevel from `@packages/bevel`, where `embr install`
+  puts it. A tag in an `.alx` file calls Bevel's `create`, so each `.alx`
+  file imports it. The game's `alloy.toml` points the markup at it:
+
+    [alx.factory]
+    backend = "table"
+    create = "create"
+    interpolate = "wrap"
+]]
+
+import Players from '@game/Players'
+import { bootstrap, component, create, mount } from '@packages/bevel'
+
+struct HelloComponent
+end
+
+@component
+impl HelloComponent
+  -- `new` takes the inputs of the tag. This one takes none.
+  function new(_props: {}) -> HelloComponent
+    return new HelloComponent {}
+  end
+
+  function template(self) -> Instance
+    return (
+      <ScreenGui>
+        <TextLabel Size={UDim2.fromScale(1, 1)} Text="Hello, Bevel" />
+      </ScreenGui>
+    )
+  end
+end
+
+-- `mount` turns the class into a tag: a function from inputs to an
+-- Instance. A module that returns `mount(HelloComponent)` is a tag that
+-- another `.alx` file writes as `<Hello />`.
+--
+-- Angular's `bootstrapApplication`: `bootstrap` builds the root
+-- component under the PlayerGui, and gives a function that takes it all
+-- down again.
+bootstrap(mount(HelloComponent), Players.LocalPlayer->'PlayerGui'!)
+
+--[[
+  To run it: put this file in StarterPlayerScripts as a LocalScript, with
+  Bevel in ReplicatedStorage.Packages.
+]]

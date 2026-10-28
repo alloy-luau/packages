@@ -1,0 +1,15 @@
+import { injectable, signal, type WritableSignal } from '@packages/bevel'
+
+--- The fields of one form. The scope keeps it out of the root injector,
+--- so each form must provide its own.
+@injectable('form')
+export struct FormState
+  read name: WritableSignal<string>
+  read email: WritableSignal<string>
+end
+
+impl FormState
+  function new() -> FormState
+    return new FormState { name = signal(''), email = signal('') }
+  end
+end

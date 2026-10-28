@@ -1,0 +1,13 @@
+[package]
+name = "alloy/bevel"
+version = "0.1.0"
+description = "Components, services, injectors, and signals for Alloy, after Angular"
+authors = ["savruun"]
+repository = "alloy-luau/packages"
+license = "MIT"
+
+[target]
+environment = "roblox"
+language = "alloy"
+main = "build/index.luau"
+includes = ["src", "build", ".config.aly", "README.md", "CHANGELOG.md", "LICENSE"]

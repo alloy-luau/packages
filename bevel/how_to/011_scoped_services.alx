@@ -1,0 +1,82 @@
+--[[
+  Angular's element injectors. `provide(classes, build)` builds a new
+  instance of each class, then runs `build`. Each `inject` in what
+  `build` makes reads those instances first. An inner `provide` reads
+  through to the one above it, so the lookup walks up the tree.
+
+  `@injectable('form')`, or any scope other than `'root'`, keeps a
+  service out of the root injector. Such a service needs a `provide`
+  above it, and `inject` stops with an error without one.
+]]
+
+import {
+  component,
+  create,
+  inject,
+  injectable,
+  model,
+  mount,
+  provide,
+  signal,
+  type WritableSignal,
+} from '@packages/bevel'
+
+--- The text of one form. Each form gets its own.
+@injectable('form')
+struct FormState
+  read name: WritableSignal<string>
+end
+
+impl FormState
+  function new() -> FormState
+    return new FormState { name = signal('') }
+  end
+
+  -- Angular's `ngOnDestroy` on a service: it runs when the provide goes.
+  function on_destroy(self) -> ()
+    print(`a form with '{self.name()}' goes`)
+  end
+end
+
+struct NameFieldComponent
+  read form: FormState
+end
+
+@component
+impl NameFieldComponent
+  function new(_props: {}) -> NameFieldComponent
+    -- The FormState of the nearest provide.
+    return new NameFieldComponent { form = inject(FormState) }
+  end
+
+  function template(self) -> Instance
+    -- `model` binds the Text both ways: Angular's `[(ngModel)]`.
+    return <TextBox Size={new UDim2(1, 0, 0, 32)} Text={model(self.form.name)} />
+  end
+end
+
+const NameField = mount(NameFieldComponent)
+
+struct FormComponent
+end
+
+@component
+impl FormComponent
+  function new(_props: {}) -> FormComponent
+    return new FormComponent {}
+  end
+
+  function template(self) -> Instance
+    -- Each form provides its own FormState, so two forms on one screen
+    -- keep their text apart.
+    return provide([ FormState ], function()
+      return (
+        <Frame Size={new UDim2(1, 0, 0, 32)}>
+          <NameField />
+        </Frame>
+      )
+    end)
+  end
+end
+
+return mount(FormComponent)

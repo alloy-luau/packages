@@ -1,0 +1,28 @@
+--[[
+  A todo list on the client. TodoStore is a root service, so every
+  component that injects it reads one list.
+]]
+
+import Players from '@game/Players'
+import { bootstrap, component, create, mount } from '@packages/bevel'
+import TodoList from './TodoList'
+
+struct AppComponent
+end
+
+@component
+impl AppComponent
+  function new(_props: {}) -> AppComponent
+    return new AppComponent {}
+  end
+
+  function template(self) -> Instance
+    return (
+      <ScreenGui>
+        <TodoList />
+      </ScreenGui>
+    )
+  end
+end
+
+bootstrap(mount(AppComponent), Players.LocalPlayer->'PlayerGui'!)

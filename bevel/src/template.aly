@@ -1,0 +1,350 @@
+--[[
+  The factory that `.alx` tags call, and the control flow of a template.
+
+  With `[alx.factory] backend = "table"` and `create = "create"`, the tag
+  `<Frame Size={size}>...</Frame>` lowers to
+  `create('Frame')({ Size = size, ... })`. A key sets a property; each
+  numbered entry is a child.
+]]
+
+import {
+  dispose,
+  effect,
+  is_signal,
+  new_owner,
+  current_owner,
+  read,
+  run_in,
+  signal,
+  type Owner,
+  type Readable,
+  type WritableSignal,
+} from './reactive'
+
+-- The key of a value that a child or a property hands to `create`.
+const DIRECTIVE = '__bevel_directive'
+const MODEL = '__bevel_model'
+
+--- A child that runs against its parent: what `each` and `when` give.
+export type Directive = { __bevel_directive: (parent: Instance) -> () }
+
+--- A property value that binds both ways: what `model` gives.
+export type Model = { __bevel_model: WritableSignal<unknown> }
+
+-- Sets one property. A function or a signal binds it; a function on an
+-- event connects to it; a model binds it both ways.
+@allow(explicit_any)
+local function apply(instance: Instance, key: string, value: unknown) -> ()
+  local target = instance :: any
+
+  if value is table and value[MODEL] ~= nil then
+    const source = value[MODEL] :: WritableSignal<unknown>
+
+    effect(function() target[key] = source() end)
+    instance.Changed:Connect(function(name: string)
+      if name == key then
+        source:set(target[key])
+      end
+    end)
+  elseif value is function and typeof(target[key]) == 'RBXScriptSignal' then
+    target[key]:Connect(value)
+  elseif value is function or is_signal(value) then
+    const getter = value :: () -> unknown
+
+    effect(function() target[key] = getter() end)
+  else
+    target[key] = value
+  end
+end
+
+-- Gathers the Instances in what a child function gives: one Instance,
+-- a list of them, or nil.
+local function collect(value: unknown, into: { Instance }) -> ()
+  if value is Instance then
+    table.insert(into, value)
+  elseif value is table then
+    for _, item in value do
+      collect(item, into)
+    end
+  end
+end
+
+-- Puts one child under its parent.
+local function attach(parent: Instance, child: unknown) -> ()
+  if child is Instance then
+    child.Parent = parent
+  elseif child is function or is_signal(child) then
+    -- A child that depends on signals: it builds again when they change,
+    -- and what it built before goes.
+    const build = child :: () -> unknown
+
+    effect(function(on_cleanup)
+      const made: { Instance } = {}
+      collect(build(), made)
+
+      for _, item in made do
+        item.Parent = parent
+      end
+
+      on_cleanup(function()
+        for _, item in made do
+          item:Destroy()
+        end
+      end)
+    end)
+  elseif child is table then
+    if child[DIRECTIVE] ~= nil then
+      (child[DIRECTIVE] :: (Instance) -> ())(parent)
+    else
+      for _, item in child do
+        attach(parent, item)
+      end
+    end
+  end
+end
+
+--- The factory of `.alx` tags. `create('TextLabel')(props)` makes the
+--- Instance, sets and binds the properties, puts the children under it,
+--- and sets `Parent` last.
+export function create(class_name: string) -> (props: { [unknown]: unknown }) -> Instance
+  return function(props)
+    local instance = new Instance(class_name)
+    local parent: Instance? = nil
+
+    for key, value in props do
+      if key == 'Parent' then
+        parent = value :: Instance
+      elseif key is string then
+        apply(instance, key, value)
+      end
+    end
+
+    for key, child in props do
+      if key is number then
+        attach(instance, child)
+      end
+    end
+
+    if parent ~= nil then
+      instance.Parent = parent
+    end
+
+    return instance
+  end
+end
+
+-- Builds a view in an owner of its own under `scope`. Disposing the owner
+-- destroys the view.
+local function build_in(scope: Owner?, build: () -> Instance) -> (Instance, Owner)
+  const owner = new_owner(scope)
+  const view = run_in(owner, build)
+
+  table.insert(owner.cleanups, function() view:Destroy() end)
+  return view, owner
+end
+
+-- One view of `each`, with its owner and its place in the list.
+type Row = { view: Instance, owner: Owner, index: WritableSignal<number> }
+
+--- Angular's `@for (item of items; track key)`. One view for each item
+--- of the list. `track` gives the key of an item; the item itself is the
+--- key when it is nil. A view stays while its key is in the list, and
+--- `index` follows its place. A view that is a GuiObject gets its place
+--- as `LayoutOrder`.
+-- `index` is a WritableSignal, and a signal is a table that calls. The
+-- render takes it as a plain function, so a callback with no types infers
+-- it, and the cast goes through `any`.
+@allow(explicit_any)
+export function each<T>(
+  items: Readable<{ T }> | Readable<T[]>,
+  render: (item: T, index: () -> number) -> Instance,
+  track: ((item: T) -> unknown)?
+) -> Directive
+  return {
+    __bevel_directive = function(parent: Instance) -> ()
+      const scope = current_owner()
+      const key_of: (item: T) -> unknown = track or function(item: T) -> unknown return item end
+      local rows: { [unknown]: Row } = {}
+
+      effect(function()
+        local seen: { [unknown]: boolean } = {}
+
+        for i, item in read(items :: Readable<{ T }>) do
+          const key = key_of(item)
+          seen[key] = true
+
+          local row = rows[key]
+
+          if row == nil then
+            const index = signal(i)
+            local view, owner = build_in(scope, function() return render(item, index :: any) end)
+
+            view.Parent = parent
+            row = { view = view, owner = owner, index = index }
+            rows[key] = row
+          else
+            row.index:set(i)
+          end
+
+          if row.view:IsA('GuiObject') then
+            (row.view :: GuiObject).LayoutOrder = i
+          end
+        end
+
+        for key, row in table.clone(rows) do
+          if not seen[key] then
+            dispose(row.owner)
+            rows[key] = nil
+          end
+        end
+      end)
+    end,
+  }
+end
+
+--- Angular's `@if (condition) { ... } @else { ... }`. It shows `render`
+--- while `condition` is truthy and `otherwise` while it is not. It builds
+--- again only when the truth changes, not on each change of the signals
+--- that `condition` reads.
+export function when<T>(
+  condition: Readable<T>,
+  render: () -> Instance,
+  otherwise: (() -> Instance)?
+) -> Directive
+  return {
+    __bevel_directive = function(parent: Instance) -> ()
+      const scope = current_owner()
+      local shown: boolean? = nil
+      local shown_owner: Owner? = nil
+
+      effect(function()
+        const on = if read(condition) then true else false
+
+        if on == shown then
+          return
+        end
+
+        shown = on
+
+        if shown_owner ~= nil then
+          dispose(shown_owner)
+          shown_owner = nil
+        end
+
+        const build = if on then render else otherwise
+
+        if build ~= nil then
+          local view, owner = build_in(scope, build)
+
+          view.Parent = parent
+          shown_owner = owner
+        end
+      end)
+    end,
+  }
+end
+
+--- Angular's `[(ngModel)]`. `Text={model(name)}` writes the signal into
+--- the property, and a change of the property writes the signal back.
+@allow(explicit_any)
+export function model<T>(value: WritableSignal<T>) -> Model
+  return { __bevel_model = (value :: any) :: WritableSignal<unknown> }
+end
+
+@test
+namespace TemplateTests
+  --- A plain value sets a property, and a signal binds it.
+  public function create_sets_and_binds_properties() -> ()
+    const name = signal('Ada')
+    const label = create('TextLabel')({ Name = 'Label', Text = name })
+
+    $assert_eq(label.Name, 'Label')
+    $assert_eq((label :: TextLabel).Text, 'Ada')
+
+    name:set('Grace')
+    $assert_eq((label :: TextLabel).Text, 'Grace')
+  end
+
+  --- A function on an event connects to it. The test shim's signals
+  --- can fire; the engine's cannot, so the call goes through `any`.
+  @allow(explicit_any)
+  public function create_connects_an_event() -> ()
+    local clicks = 0
+    const button = create('TextButton')({ Activated = function() clicks += 1 end }) :: TextButton
+
+    (button.Activated :: any):Fire()
+    $assert_eq(clicks, 1)
+  end
+
+  --- A numbered entry is a child, and Parent comes last.
+  public function create_parents_the_children() -> ()
+    const folder = create('Folder')({})
+    const frame = create('Frame')({ Parent = folder, create('TextLabel')({ Name = 'A' }) })
+
+    $assert(frame->A ~= nil)
+    $assert_eq(frame.Parent, folder)
+  end
+
+  --- A child function builds again when its signal changes.
+  public function a_child_function_builds_again() -> ()
+    const open = signal(false)
+    const frame = create('Frame')({
+      function() return if open() then create('TextLabel')({ Name = 'Menu' }) else nil end,
+    })
+
+    $assert(frame->Menu == nil)
+    open:set(true)
+    $assert(frame->Menu ~= nil)
+    open:set(false)
+    $assert(frame->Menu == nil)
+  end
+
+  --- each keeps one view for each key, and drops the views that go.
+  public function each_keeps_a_view_for_each_key() -> ()
+    const items = signal([ 'a', 'b' ])
+    const list = create('Frame')({
+      each(items, function(item) return create('TextLabel')({ Name = item }) end),
+    })
+
+    const first = list->a
+    items:set([ 'b', 'a', 'c' ])
+
+    $assert_eq(list->a, first)
+    $assert(list->c ~= nil)
+    $assert_eq((list->a :: TextLabel).LayoutOrder, 2)
+
+    items:set([ 'c' ])
+    $assert(list->a == nil)
+    $assert(list->b == nil)
+  end
+
+  --- when builds again only when the truth changes.
+  public function when_builds_on_a_change_of_truth() -> ()
+    const count = signal(1 :: number?)
+    local builds = 0
+    const frame = create('Frame')({
+      when(count, function()
+        builds += 1
+        return create('TextLabel')({ Name = 'Yes' })
+      end, function() return create('TextLabel')({ Name = 'No' }) end),
+    })
+
+    count:set(2)
+    $assert_eq(builds, 1)
+    $assert(frame->Yes ~= nil)
+
+    count:set(nil)
+    $assert(frame->Yes == nil)
+    $assert(frame->No ~= nil)
+  end
+
+  --- model binds a property both ways.
+  public function model_binds_both_ways() -> ()
+    const text = signal('hi')
+    local box = create('TextBox')({ Text = model(text) }) :: TextBox
+
+    $assert_eq(box.Text, 'hi')
+    box.Text = 'typed'
+    $assert_eq(text(), 'typed')
+  end
+end

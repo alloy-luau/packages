@@ -1,0 +1,29 @@
+--[[
+  Bevel: components, services, and signals for Alloy, after Angular.
+  This module sends out the public API; each part lives in its own
+  module beside it.
+
+  - reactive: signal, computed, effect, untracked, batch, root, on_destroy
+  - template: create, each, when, model
+  - component: @component, mount, bootstrap
+  - inject: @injectable, inject, provide
+]]
+
+export {
+  signal,
+  computed,
+  effect,
+  untracked,
+  batch,
+  root,
+  on_destroy,
+  read,
+  type Signal,
+  type WritableSignal,
+  type Readable,
+  type EffectRef,
+  type OnCleanup,
+} from './reactive'
+export { create, each, when, model, type Directive, type Model } from './template'
+export { component, mount, bootstrap } from './component'
+export { injectable, inject, provide } from './inject'

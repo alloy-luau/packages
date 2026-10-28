@@ -1,0 +1,75 @@
+--[[
+  Angular's control flow in a template:
+
+  - `@for (item of items; track item.id)` is `each(items, render, track)`.
+  - `@if (cond) { } @else { }` is `when(cond, render, otherwise)`.
+  - `[(ngModel)]="draft"` is `Text={model(draft)}`.
+
+  `each` keeps one view for each key while the key stays in the list,
+  and gives the view its place as `LayoutOrder`. `when` builds again only
+  when the truth of the condition changes.
+]]
+
+import {
+  component,
+  create,
+  each,
+  model,
+  mount,
+  signal,
+  when,
+  type WritableSignal,
+} from '@packages/bevel'
+
+struct ShoppingListComponent
+  read items: WritableSignal<{ string }>
+  read draft: WritableSignal<string>
+end
+
+@component
+impl ShoppingListComponent
+  function new(_props: {}) -> ShoppingListComponent
+    return new ShoppingListComponent { items = signal([] :: { string }), draft = signal('') }
+  end
+
+  function add(self) -> ()
+    if self.draft() == '' then
+      return
+    end
+
+    self.items:update(function(list)
+      const copy = table.clone(list)
+      table.insert(copy, self.draft())
+      return copy
+    end)
+    self.draft:set('')
+  end
+
+  function template(self) -> Instance
+    return (
+      <Frame Size={UDim2.fromScale(1, 1)} BackgroundTransparency={1}>
+        <UIListLayout SortOrder={Enum.SortOrder.LayoutOrder} />
+
+        <TextBox
+          Size={new UDim2(1, 0, 0, 32)}
+          Text={model(self.draft)}
+          FocusLost={function(enter: boolean)
+            if enter then
+              self:add()
+            end
+          end}
+        />
+
+        {each(self.items, function(item, index)
+          return <TextLabel Size={new UDim2(1, 0, 0, 24)}>{index()}. {item}</TextLabel>
+        end)}
+
+        {when(function() return #self.items() == 0 end, function()
+          return <TextLabel Size={new UDim2(1, 0, 0, 24)}>The list is empty</TextLabel>
+        end)}
+      </Frame>
+    )
+  end
+end
+
+return mount(ShoppingListComponent)
