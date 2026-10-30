@@ -1,0 +1,17 @@
+--[[
+  Movement with velocity: balls fall, bounce on the floor, and slow
+  down. Four systems, one in each phase of the server's frame:
+
+    Startup         spawn     makes the balls
+    PreSimulation   gravity   pulls each velocity down
+    Simulation      movement  moves by the velocity, and bounces
+    PostSimulation  sync      puts each part at its position
+]]
+
+import { Scheduler, world } from '@packages/lattice'
+import gravity from './systems/gravity'
+import movement from './systems/movement'
+import spawn from './systems/spawn'
+import sync from './systems/sync'
+
+new Scheduler(world()):add(spawn, gravity, movement, sync):start()

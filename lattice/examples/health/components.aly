@@ -1,0 +1,20 @@
+--[[
+  The components of the health example. The systems import this table
+  as `ct`.
+]]
+
+import { component, tag } from '@packages/lattice'
+import type { Health } from './health'
+
+export default {
+  --- The dummy's model, which shows its state.
+  Body = component<<BasePart>>('Body'),
+  --- How much life the entity has, and its most.
+  Health = component<<Health>>('Health'),
+  --- The damage it takes each second while it burns.
+  Burning = component<<number>>('Burning'),
+  --- The health it gets back each second while it does not burn.
+  Regen = component<<number>>('Regen'),
+  --- On each entity whose health ran out.
+  Dead = tag('Dead'),
+}

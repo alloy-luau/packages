@@ -1,0 +1,36 @@
+--[[
+  Counts down each lifetime, and deletes each entity whose time ran
+  out. A spawner's delete takes its coins with it, through ChildOf. Those
+  coins may sit in the tables that the loop walks, so the deletes wait
+  for the end of the loop.
+]]
+
+import { Phase, query, system, type Entity, type World } from '@packages/lattice'
+import ct from '../components'
+
+const mortal = query(ct.Lifetime)
+
+-- The entities whose time ran out this frame.
+const expired: { Entity } = {}
+
+--- Ages each entity, and deletes the ones whose time is up.
+function lifetimes(world: World, dt: number) -> ()
+  for entity, left in mortal:of(world) do
+    if left <= dt then
+      table.insert(expired, entity)
+    else
+      world:set(entity, ct.Lifetime, left - dt)
+    end
+  end
+
+  for _, entity in expired do
+    -- A coin of a spawner that went before it in this list is gone.
+    if world:contains(entity) then
+      world:delete(entity)
+    end
+  end
+
+  table.clear(expired)
+end
+
+export default system(lifetimes, Phase.PostSimulation)

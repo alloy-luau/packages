@@ -1,0 +1,28 @@
+--[[
+  Lattice: a typed ECS for Alloy over jecs. This module sends out the
+  public API; each part lives in its own module beside it.
+
+  - world: world, component, tag, pair, targets, and jecs's built-in ids
+  - query: query, with, without, of
+  - scheduler: Phase, system, Scheduler
+]]
+
+export {
+  world,
+  component,
+  tag,
+  pair,
+  targets,
+  ChildOf,
+  Wildcard,
+  Exclusive,
+  OnDelete,
+  OnDeleteTarget,
+  Delete,
+  Remove,
+  Name,
+  type World,
+  type Entity,
+} from './world'
+export { query, type Query } from './query'
+export { Phase, system, Scheduler, type System } from './scheduler'

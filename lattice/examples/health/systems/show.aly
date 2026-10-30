@@ -1,0 +1,36 @@
+--[[
+  Shows each dummy's state on its part, from observers: the color
+  follows the health, and a dead dummy turns black. The observers start
+  in Startup, since that system gets the world.
+]]
+
+import { Phase, system, type World } from '@packages/lattice'
+import ct from '../components'
+import type { Health } from '../health'
+
+-- The colors from no health to full health.
+const EMPTY = Color3.fromRGB(200, 40, 40)
+const FULL = Color3.fromRGB(40, 200, 40)
+
+--- Starts the observers that color the parts.
+function show(world: World, _dt: number) -> ()
+  world:changed(ct.Health, function(entity, _id, health: Health)
+    local body = world:get(entity, ct.Body)
+
+    if body ~= nil then
+      body.Color = EMPTY:Lerp(FULL, health.current / health.max)
+    end
+  end)
+
+  world:added(ct.Dead, function(entity)
+    local body = world:get(entity, ct.Body)
+
+    if body ~= nil then
+      body.Color = new Color3()
+    end
+
+    print(`dummy {entity} died`)
+  end)
+end
+
+export default system(show, Phase.Startup)

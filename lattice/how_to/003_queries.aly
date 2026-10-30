@@ -1,0 +1,63 @@
+--[[
+  A query finds each entity that holds a set of components, and yields
+  their values. `query` needs no world: a system module makes its query
+  once, at the top, and reads it from the world that the system gets.
+
+    const moving = query(ct.Position, ct.Velocity):without(ct.Frozen)
+
+    for entity, position, velocity in moving:of(world) do ... end
+
+  `of(world)` builds a jecs cached query on the first call for each
+  world, and keeps it. A cached query finds new entities by itself, so
+  the loop costs no search each frame.
+]]
+
+import { component, query, tag, world } from '@packages/lattice'
+
+const ct = {
+  Position = component<<Vector3>>('Position'),
+  Velocity = component<<Vector3>>('Velocity'),
+  Frozen = tag('Frozen'),
+  Visible = tag('Visible'),
+}
+
+-- Each entity that moves and is not frozen. The loop yields the values
+-- in the order the query names them, typed: two `Vector3`s here.
+const moving = query(ct.Position, ct.Velocity):without(ct.Frozen)
+
+-- `with` keeps the entities that also hold a tag, and yields no value
+-- for it.
+const shown = query(ct.Position):with(ct.Visible)
+
+const w = world()
+
+for i = 1, 3 do
+  const e = w:entity()
+  w:set(e, ct.Position, Vector3.zero)
+  w:set(e, ct.Velocity, new Vector3(i, 0, 0))
+  w:add(e, i == 3 ? ct.Frozen : ct.Visible)
+end
+
+for entity, position, velocity in moving:of(w) do
+  w:set(entity, ct.Position, position + velocity)
+end
+
+-- The third entity is frozen, so it did not move, and it is not shown.
+for _, position in shown:of(w) do
+  print(position) -- 1, 0, 0 and 2, 0, 0, in some order
+end
+
+--[[
+  The rules:
+
+  - `query` takes one to eight components.
+  - `with` and `without` each add to the filters, in any order. Call
+    them where the query is made, before the first `of`.
+  - The loop walks the entities from the last to the first, so a `set`
+    of a component that the entity holds, or a `delete` of the entity of
+    this turn, is safe. An `add` or a `remove` moves the entity to
+    another table of jecs, so keep those for after the loop.
+  - `moving:of(w):has(entity)` tells whether an entity matches.
+  - For a query that runs once, the jecs one needs no cache:
+    `for e, p in w:query(ct.Position) do ... end`.
+]]

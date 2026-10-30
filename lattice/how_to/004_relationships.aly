@@ -1,0 +1,72 @@
+--[[
+  A tag is an id that holds no value, such as `Dead`. A pair joins two
+  ids into one: `pair(Likes, bob)` is the id "likes bob", and an entity
+  holds it as it holds a tag. The first id is the relationship and the
+  second its target. jecs calls these relationships.
+
+  A pair holds a value when its first id is a component:
+  `pair(Owes, bank)` with `Owes = component<<number>>()` holds the sum.
+]]
+
+import {
+  ChildOf,
+  Exclusive,
+  Wildcard,
+  component,
+  pair,
+  query,
+  tag,
+  targets,
+  world,
+} from '@packages/lattice'
+
+const ct = {
+  Likes = tag('Likes'),
+  Owes = component<<number>>('Owes'),
+  -- A trait after the name goes on the id in each world. Exclusive
+  -- keeps one target: a new `pair(MarriedTo, x)` replaces the old one.
+  MarriedTo = tag('MarriedTo', Exclusive),
+}
+
+const w = world()
+const alice = w:entity()
+const bob = w:entity()
+const bank = w:entity()
+
+w:add(alice, pair(ct.Likes, bob))
+w:add(alice, pair(ct.Likes, bank))
+w:set(alice, pair(ct.Owes, bank), 250)
+
+print(w:has(alice, pair(ct.Likes, bob))) -- true
+print(w:get(alice, pair(ct.Owes, bank))) -- 250
+print(#targets(w, alice, ct.Likes)) -- 2
+
+-- Wildcard stands for any target, in a query or in `has`.
+for entity in query(pair(ct.Likes, Wildcard)):of(w) do
+  print(entity, 'likes someone')
+end
+
+-- ChildOf is built in. A child goes when its parent goes.
+const house = w:entity()
+const door = w:entity()
+w:add(door, pair(ChildOf, house))
+print(w:parent(door) == house) -- true
+
+w:delete(house)
+print(w:contains(door)) -- false
+
+--[[
+  The rules:
+
+  - `targets(w, e, relation)` lists each target of a relationship, and
+    `w:target(e, relation)` gives the first.
+  - The traits come from jecs: `Exclusive`, and the cleanup pairs
+    `pair(OnDelete, Delete)`, `pair(OnDelete, Remove)`,
+    `pair(OnDeleteTarget, Delete)`, and `pair(OnDeleteTarget, Remove)`.
+    `tag('OwnedBy', pair(OnDeleteTarget, Delete))` makes an id whose
+    holders go when their owner goes. ChildOf has that trait.
+  - Wildcard is for queries and `has` only. `add` and `set` need a real
+    target.
+  - Each pair with a new target makes a new table in jecs. Thousands of
+    targets in one relationship cost memory.
+]]

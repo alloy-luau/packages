@@ -1,0 +1,70 @@
+--[[
+  A system takes its world as an argument, so a test gives it a new
+  world and checks what it did. `step(dt)` runs one frame by hand, and
+  `run(phase, dt)` runs one phase. Neither needs RunService, so the test
+  runs on lest, with `alloy test --run`.
+
+  A real game keeps the test beside the system: a `@test namespace` at
+  the end of the system's module.
+]]
+
+import { Phase, Scheduler, component, query, system, world, type World } from '@packages/lattice'
+
+const ct = {
+  Position = component<<Vector3>>('Position'),
+  Velocity = component<<Vector3>>('Velocity'),
+}
+
+const moving = query(ct.Position, ct.Velocity)
+
+--- Moves each entity by its velocity.
+function movement(w: World, dt: number) -> ()
+  for entity, position, velocity in moving:of(w) do
+    w:set(entity, ct.Position, position + velocity * dt)
+  end
+end
+
+system(movement, Phase.Simulation)
+
+@test
+namespace MovementTests
+  --- An entity moves by its velocity times dt.
+  public function movement_follows_the_velocity() -> ()
+    const w = world()
+    const e = w:entity()
+    w:set(e, ct.Position, Vector3.zero)
+    w:set(e, ct.Velocity, new Vector3(2, 0, 0))
+
+    const scheduler = new Scheduler(w):add(movement)
+    scheduler:step(0.5)
+    scheduler:step(0.5)
+
+    $assert_eq(w:get(e, ct.Position), new Vector3(2, 0, 0))
+  end
+
+  --- run runs one phase: here no system is in PostSimulation.
+  public function a_run_of_another_phase_moves_nothing() -> ()
+    const w = world()
+    const e = w:entity()
+    w:set(e, ct.Position, Vector3.zero)
+    w:set(e, ct.Velocity, Vector3.one)
+
+    new Scheduler(w):add(movement):run(Phase.PostSimulation, 1)
+
+    $assert_eq(w:get(e, ct.Position), Vector3.zero)
+  end
+end
+
+--[[
+  The rules:
+
+  - Each test makes its own world, so no test sees another's entities.
+    A query's `of` keeps one cached query for each world.
+  - Make the components at the top of the module, not in a test. The
+    first `world()` closes the list of ids.
+  - `step` runs Startup on its first call, then PreSimulation,
+    Simulation, PostSimulation, and Render, in that order.
+  - In `step` and `run`, an error in a system goes to the test, so the
+    test fails. Only a scheduler that `start` runs turns errors into
+    warnings.
+]]

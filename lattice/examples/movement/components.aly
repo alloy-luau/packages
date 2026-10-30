@@ -1,0 +1,15 @@
+--[[
+  The components of the movement example. The systems import this table
+  as `ct`, and it loads before the world, as Lattice asks.
+]]
+
+import { component } from '@packages/lattice'
+
+export default {
+  --- The part that shows the entity.
+  Body = component<<BasePart>>('Body'),
+  --- Where the entity is, in studs.
+  Position = component<<Vector3>>('Position'),
+  --- How fast it moves, in studs a second.
+  Velocity = component<<Vector3>>('Velocity'),
+}

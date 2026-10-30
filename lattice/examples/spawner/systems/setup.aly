@@ -1,0 +1,30 @@
+--[[
+  Puts two spawners in the world. Each one has a lifetime of its own:
+  when it goes, its coins go with it, since each coin is its ChildOf.
+]]
+
+import Workspace from '@game/Workspace'
+import { Phase, system, type World } from '@packages/lattice'
+import ct from '../components'
+
+--- Makes each spawner: its part, its clock, and its lifetime.
+function setup(world: World, _dt: number) -> ()
+  for i, lifetime in [ 20, 40 ] do
+    const spawner = world:entity()
+
+    world:set(spawner, ct.Spawner, { every = 1, left = 1 })
+    world:set(spawner, ct.Lifetime, lifetime)
+    world:set(
+      spawner,
+      ct.Body,
+      new Instance('Part') {
+        Size = new Vector3(4, 1, 4),
+        Anchored = true,
+        Position = new Vector3(i * 20, 0.5, 0),
+        Parent = Workspace,
+      }
+    )
+  end
+end
+
+export default system(setup, Phase.Startup)

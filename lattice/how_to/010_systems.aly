@@ -1,0 +1,65 @@
+--[[
+  A system is a named function that takes the world and `dt`, the
+  seconds since the last frame. `system(fn, phase)` names the phase that
+  it runs in. A game keeps one system in each module of a `systems`
+  folder, with its queries at the top and its export at the bottom:
+
+    export default system(movement, Phase.Simulation)
+
+  The phases of a frame, and the RunService event of each:
+
+    Startup         once, before the first frame
+    PreSimulation   RunService.PreSimulation, before Roblox's physics
+    Simulation      RunService.PostSimulation, after the physics
+    PostSimulation  RunService.PostSimulation, after Simulation
+    Render          RunService.PreRender, on a client only
+
+  A system that `system` does not name runs in Simulation.
+]]
+
+import { Phase, component, query, system, type World } from '@packages/lattice'
+
+const ct = {
+  Position = component<<Vector3>>('Position'),
+  Velocity = component<<Vector3>>('Velocity'),
+}
+
+const moving = query(ct.Position, ct.Velocity)
+
+--- Moves each entity by its velocity.
+function movement(world: World, dt: number) -> ()
+  for entity, position, velocity in moving:of(world) do
+    world:set(entity, ct.Position, position + velocity * dt)
+  end
+end
+
+--- Puts one entity in the world, once.
+function spawn(world: World, _dt: number) -> ()
+  const e = world:entity()
+  world:set(e, ct.Position, Vector3.zero)
+  world:set(e, ct.Velocity, new Vector3(0, 1, 0))
+end
+
+-- `system` gives the function back. A module of the `systems` folder
+-- ends with one export of it. This file holds two systems, so it names
+-- the phases first and exports both by name.
+system(movement, Phase.Simulation)
+system(spawn, Phase.Startup)
+
+export { movement, spawn }
+
+--[[
+  The rules:
+
+  - A system's type is `System`: `(world: World, dt: number) -> ()`. A
+    Startup system gets 0 for `dt`.
+  - A system has one phase. A second `system` call with another phase
+    stops with an error.
+  - The world comes in as an argument, so the same system runs on the
+    game's world and on a test's world (step 030).
+  - Inside a phase, the systems run in the order the scheduler gets
+    them (step 011).
+  - Put the work that writes to parts before the physics step in
+    PreSimulation, and the work that reads what the physics did in
+    Simulation or PostSimulation. Put the camera and the view in Render.
+]]

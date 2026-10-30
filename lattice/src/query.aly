@@ -1,0 +1,198 @@
+--[[
+  Typed queries that need no world to make. A system module makes its
+  query once, beside the system, and the system reads it from the world
+  that it gets:
+
+    const moving = query(ct.Position, ct.Velocity):without(ct.Dead)
+
+    function movement(world: World, dt: number) -> ()
+      for entity, position, velocity in moving:of(world) do ... end
+    end
+
+  `of(world)` builds a jecs cached query on the first call for each
+  world and keeps it, so a test world and the game's world each get
+  their own.
+]]
+
+import jecs from '../packages/roblox/jecs'
+import type { Id, World } from './world'
+
+--- A query over the components `T...`. `with` and `without` add filters,
+--- and `of(world)` gives the cached jecs query of one world.
+export type Query<T...> = {
+  --- Keeps the entities that also have each id. A filter yields no value.
+  with: (self: Query<T...>, ...Id) -> Query<T...>,
+  --- Drops the entities that have any of the ids.
+  without: (self: Query<T...>, ...Id) -> Query<T...>,
+  --- The cached query of this world, which a `for` loop walks.
+  of: (self: Query<T...>, world: World) -> jecs.Cached_Query<T...>,
+}
+
+-- What a query holds. The public type is `Query<T...>`, since a struct
+-- takes no type pack.
+struct Terms
+  read ids: { Id }
+  read included: { Id } = {}
+  read excluded: { Id } = {}
+  -- Weak keys: a world that goes takes its cached query with it.
+  read worlds: { [World]: jecs.Cached_Query<...unknown> } = setmetatable({}, { __mode = 'k' })
+end
+
+impl Terms
+  -- jecs's with and without replace the earlier filter; these add to it,
+  -- so a query reads the same in any order of calls.
+  function with(self, ...: Id) -> Terms
+    for _, id in { ... } do
+      table.insert(self.included, id)
+    end
+
+    return self
+  end
+
+  function without(self, ...: Id) -> Terms
+    for _, id in { ... } do
+      table.insert(self.excluded, id)
+    end
+
+    return self
+  end
+
+  -- jecs types `query` for each count of ids, which an unpacked list does
+  -- not match, so the call goes through `any`.
+  @allow(explicit_any)
+  function of(self, world: World) -> jecs.Cached_Query<...unknown>
+    const found = self.worlds[world]
+
+    if found ~= nil then
+      return found
+    end
+
+    local raw: any = (world.query :: any)(world, table.unpack(self.ids))
+
+    if #self.included > 0 then
+      raw = raw:with(table.unpack(self.included))
+    end
+
+    if #self.excluded > 0 then
+      raw = raw:without(table.unpack(self.excluded))
+    end
+
+    const cached = raw:cached()
+    self.worlds[world] = cached
+    return cached
+  end
+end
+
+--- A query over up to eight components. Each one yields its value in the
+--- loop, in order, and a tag yields nil. Each component left out yields
+--- nothing, so a loop binds only the ones the query names.
+@allow(explicit_any, too_many_arguments)
+export function query<A, B, C, D, E, F, G, H>(
+  a: jecs.Id<A>,
+  b: jecs.Id<B>?,
+  c: jecs.Id<C>?,
+  d: jecs.Id<D>?,
+  e: jecs.Id<E>?,
+  f: jecs.Id<F>?,
+  g: jecs.Id<G>?,
+  h: jecs.Id<H>?
+) -> Query<A, B, C, D, E, F, G, H>
+  -- jecs's own query takes up to eight ids, so the count stops there. The
+  -- typed face goes through `any`, since Terms holds no type pack.
+  assert(a ~= nil, 'lattice: query() needs at least one component')
+  const ids: { Id } = {}
+
+  for _, id in [ a, b, c, d, e, f, g, h ] :: { Id? } do
+    if id ~= nil then
+      table.insert(ids, id)
+    end
+  end
+
+  return (new Terms { ids = ids } :: any) :: Query<A, B, C, D, E, F, G, H>
+end
+
+@test
+namespace QueryTests
+  import { component, tag, world } from './world'
+
+  const position = component<<Vector3>>('Position')
+  const velocity = component<<Vector3>>('Velocity')
+  const frozen = tag('Frozen')
+  const visible = tag('Visible')
+  const moving = query(position, velocity):without(frozen)
+
+  -- Counts what a query finds in a world.
+  private function count<T...>(q: jecs.Cached_Query<T...>) -> number
+    local n = 0
+
+    for _ in q do
+      n += 1
+    end
+
+    return n
+  end
+
+  --- A query yields each component's value, typed.
+  public function a_query_yields_the_values() -> ()
+    const w = world()
+    const e = w:entity()
+    w:set(e, position, Vector3.zero)
+    w:set(e, velocity, new Vector3(1, 0, 0))
+
+    for entity, p, v in moving:of(w) do
+      w:set(entity, position, p + v)
+    end
+
+    $assert_eq(w:get(e, position), new Vector3(1, 0, 0))
+  end
+
+  --- without drops an entity, and with keeps only the ones that match.
+  public function with_and_without_filter() -> ()
+    const w = world()
+    const still = w:entity()
+    const seen = w:entity()
+
+    for _, e in [ still, seen ] do
+      w:set(e, position, Vector3.zero)
+      w:set(e, velocity, Vector3.zero)
+    end
+
+    w:add(still, frozen)
+    w:add(seen, visible)
+
+    $assert_eq(count(moving:of(w)), 1)
+    $assert_eq(count(query(position):with(visible):of(w)), 1)
+    $assert_eq(count(query(position):with(visible):with(frozen):of(w)), 0)
+  end
+
+  --- of() keeps one cached query for each world, and each sees its own.
+  public function of_caches_one_query_for_each_world() -> ()
+    const a = world()
+    const b = world()
+    a:set(a:entity(), position, Vector3.zero)
+    a:set(a:entity(), velocity, Vector3.zero)
+
+    $assert_eq(moving:of(a), moving:of(a))
+    $assert(moving:of(a) ~= moving:of(b))
+    $assert_eq(count(query(position):of(a)), 1)
+    $assert_eq(count(query(position):of(b)), 0)
+  end
+
+  --- A cached query sees an entity that comes after the first walk.
+  public function a_cached_query_sees_new_entities() -> ()
+    const w = world()
+    const q = query(position)
+    $assert_eq(count(q:of(w)), 0)
+
+    w:set(w:entity(), position, Vector3.zero)
+    $assert_eq(count(q:of(w)), 1)
+  end
+
+  --- A query with no component stops with an error.
+  @allow(explicit_any)
+  public function a_query_needs_a_component() -> ()
+    $expect(function() -> ()
+      (query :: any)()
+    end):toThrow('at least one component')
+  end
+end

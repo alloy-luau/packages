@@ -1,0 +1,59 @@
+--[[
+  A component holds any type: a number, a Roblox datatype, an Instance,
+  or an Alloy struct. A game keeps its components in one table, `ct`, in
+  a module of its own, and the systems import that table:
+
+    import ct from '@shared/components'
+    world:get(entity, ct.Health)
+
+  This step writes that table.
+]]
+
+import { component, world } from '@packages/lattice'
+
+--- A struct is a component that groups its fields, with methods.
+struct Health
+  current: number
+  max: number
+end
+
+impl Health
+  --- Takes `amount` away, down to 0.
+  function take(self, amount: number) -> ()
+    self.current = math.max(self.current - amount, 0)
+  end
+end
+
+-- The game's components. A real game exports this table as the default
+-- of `components.aly`.
+const ct = {
+  Health = component<<Health>>('Health'),
+  Speed = component<<number>>('Speed'),
+  Body = component<<BasePart>>('Body'),
+}
+
+const w = world()
+const hero = w:entity()
+w:set(hero, ct.Health, new Health { current = 100, max = 100 })
+w:set(hero, ct.Speed, 16)
+
+-- `get` gives the struct itself, so a method call changes it in place.
+const health = w:get(hero, ct.Health)
+health?:take(30)
+print(w:get(hero, ct.Health)?.current) -- 70
+
+-- A change in place tells no observer (step 020). `set` does.
+w:set(hero, ct.Health, new Health { current = 50, max = 100 })
+
+--[[
+  The rules:
+
+  - Make each component, and each tag, before the first `world()`. jecs
+    gives each world the ids that exist when it starts. An id made later
+    is not in that world, so `component` and `tag` stop with an error
+    after the first world. A components module that loads first, as
+    `ct` does, keeps to this rule.
+  - jecs has room for 256 components in all. A tag takes no room there.
+  - The name is optional, but jabby shows it, and replecs needs it to
+    send the component.
+]]

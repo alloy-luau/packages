@@ -1,0 +1,17 @@
+--[[
+  A spawner with lifetimes: two spawners make a coin each second, each
+  coin lives 5 seconds, and each spawner lives 20 or 40 seconds. When a
+  spawner goes, its coins go with it.
+
+    Startup         bodies, setup  start the observer, make the spawners
+    Simulation      spawn          make the coins that are due
+    PostSimulation  lifetimes      delete what ran out of time
+]]
+
+import { Scheduler, world } from '@packages/lattice'
+import bodies from './systems/bodies'
+import lifetimes from './systems/lifetimes'
+import setup from './systems/setup'
+import spawn from './systems/spawn'
+
+new Scheduler(world()):add(bodies, setup, spawn, lifetimes):start()

@@ -1,0 +1,53 @@
+--[[
+  Counts down each spawner's clock, and makes a coin when it runs out.
+  A coin lives 5 seconds, above its spawner, and is the spawner's
+  ChildOf. New entities can join the query's tables, so the system notes
+  the spawners in the loop and makes the coins after it.
+]]
+
+import Workspace from '@game/Workspace'
+import { ChildOf, Phase, pair, query, system, type Entity, type World } from '@packages/lattice'
+import ct from '../components'
+
+-- The seconds a coin lives.
+const COIN_LIFETIME = 5
+
+const spawners = query(ct.Spawner, ct.Body)
+
+-- Each spawner that makes a coin this frame, and where.
+const due: { { spawner: Entity, above: Vector3 } } = {}
+
+--- Makes the coins that are due.
+function spawn(world: World, dt: number) -> ()
+  for entity, clock, body in spawners:of(world) do
+    clock.left -= dt
+
+    if clock.left <= 0 then
+      clock.left += clock.every
+      table.insert(due, { spawner = entity, above = body.Position + new Vector3(0, 3, 0) })
+    end
+  end
+
+  for _, coin in due do
+    const e = world:entity()
+
+    world:add(e, pair(ChildOf, coin.spawner))
+    world:set(e, ct.Lifetime, COIN_LIFETIME)
+    world:set(
+      e,
+      ct.Body,
+      new Instance('Part') {
+        Shape = Enum.PartType.Cylinder,
+        Size = new Vector3(0.4, 2, 2),
+        Color = Color3.fromRGB(255, 200, 0),
+        Anchored = true,
+        Position = coin.above + new Vector3(math.random(-2, 2), 0, math.random(-2, 2)),
+        Parent = Workspace,
+      }
+    )
+  end
+
+  table.clear(due)
+end
+
+export default system(spawn, Phase.Simulation)

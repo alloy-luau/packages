@@ -1,0 +1,79 @@
+--[[
+  The scheduler runs the systems of one world. `add` puts each system in
+  the phase that `system` named for it, and `start` runs them on their
+  RunService events. A side of the game makes one scheduler, in its
+  startup script, after it loads its systems.
+]]
+
+import {
+  Phase,
+  Scheduler,
+  component,
+  system,
+  world,
+  type System,
+  type World,
+} from '@packages/lattice'
+
+const ct = {
+  Age = component<<number>>('Age'),
+}
+
+--- Counts each entity's age in seconds. It runs in Simulation.
+function aging(w: World, dt: number) -> ()
+  for entity, age in w:query(ct.Age) do
+    w:set(entity, ct.Age, age + dt)
+  end
+end
+
+--- Shows the oldest age, after the frame's work.
+function report(w: World, _dt: number) -> ()
+  local oldest = 0
+
+  for _, age in w:query(ct.Age) do
+    oldest = math.max(oldest, age)
+  end
+
+  print(`oldest: {oldest}`)
+end
+
+-- A game loads each module of its `systems` folder. The systems that
+-- must run first in their phase go in before the folder: a system that
+-- the scheduler holds keeps its first place.
+local function load(folder: Instance) -> { System }
+  const systems: { System } = {}
+
+  for _, module in folder:GetChildren() where module is ModuleScript do
+    table.insert(systems, import<<System>>(module))
+  end
+
+  return systems
+end
+
+-- Load the systems before the world: their modules make components, and
+-- the world must come after those.
+const loaded = load(script.Parent->'systems'!)
+const scheduler = new Scheduler(world()):add(aging, system(report, Phase.PostSimulation))
+scheduler:add(table.unpack(loaded))
+
+-- Startup runs now. Then each phase runs on its event.
+scheduler:start()
+
+-- `stop` ends the events. A later `start` goes on with no second
+-- Startup.
+scheduler:stop()
+
+--[[
+  The rules:
+
+  - `add` returns the scheduler, so the calls chain.
+  - `start` runs Startup once, then connects the events. A second
+    `start` while it runs stops with an error.
+  - An error in a system of a running scheduler shows as a warning that
+    names the system, with its traceback. The next system runs, and the
+    failed one runs again in the next frame.
+  - `step(dt)` and `run(phase, dt)` run the systems by hand, with no
+    RunService. Step 030 uses them in a test.
+  - One scheduler serves one world. A game with a server world and a
+    client world makes one on each side.
+]]

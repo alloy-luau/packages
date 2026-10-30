@@ -1,0 +1,20 @@
+--[[
+  Health and damage: five dummies burn or heal, and the ones whose
+  health runs out die. A struct holds the health, and observers color
+  each dummy.
+
+    Startup         show, spawn  start the observers, make the dummies
+    Simulation      damage       burn and heal
+    PostSimulation  death        tag the dead
+
+  `show` goes first in Startup, so its observers exist before the first
+  dummy does.
+]]
+
+import { Scheduler, world } from '@packages/lattice'
+import damage from './systems/damage'
+import death from './systems/death'
+import show from './systems/show'
+import spawn from './systems/spawn'
+
+new Scheduler(world()):add(show, spawn, damage, death):start()

@@ -1,0 +1,19 @@
+[package]
+name = "alloy/lattice"
+version = "0.1.0"
+description = "A typed ECS for Alloy over jecs: components, queries, systems in phases, and a scheduler"
+authors = ["savruun"]
+repository = "alloy-luau/packages"
+license = "MIT"
+
+[target]
+environment = "roblox"
+language = "alloy"
+main = "build/index.luau"
+includes = ["src", "build", ".config.aly", "README.md", "CHANGELOG.md", "LICENSE"]
+
+[dependencies]
+jecs = { name = "ukendio/jecs", version = "^0.11.0", index = "wally" }
+
+[indices]
+wally = "https://github.com/UpliftGames/wally-index"

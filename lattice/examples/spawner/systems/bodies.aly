@@ -1,0 +1,18 @@
+--[[
+  Destroys an entity's part when the entity goes. The observer starts in
+  Startup, since that system gets the world.
+]]
+
+import { Phase, system, type World } from '@packages/lattice'
+import ct from '../components'
+
+--- Starts the observer that destroys the parts.
+function bodies(world: World, _dt: number) -> ()
+  -- It runs before jecs takes the component away, so `get` still reads
+  -- the part.
+  world:removed(ct.Body, function(entity)
+    world:get(entity, ct.Body)?:Destroy()
+  end)
+end
+
+export default system(bodies, Phase.Startup)

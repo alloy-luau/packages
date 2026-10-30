@@ -13,6 +13,7 @@ a version of its own.
 | [Foundry](foundry) | `alloy/foundry` | Worker pools on Roblox actors, with typed jobs and a serial fallback. |
 | [Anvil](anvil) | `alloy/anvil` | Console commands typed from their remote functions: arguments, permissions, and help. |
 | [Gloss](gloss) | `alloy/gloss` | Localization from TOML, with keys that the type check holds to the base language. |
+| [Lattice](lattice) | `alloy/lattice` | A typed ECS over jecs: components, queries, systems in phases, and a scheduler. |
 
 Each package folder holds:
 

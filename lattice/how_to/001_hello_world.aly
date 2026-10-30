@@ -1,0 +1,50 @@
+--[[
+  An ECS keeps the game's state in a world. An entity is a number, and a
+  component is a typed value that an entity holds. Systems, from step
+  010 on, read and write the components each frame.
+
+  Lattice makes the components typed and the systems Alloy functions.
+  Its world is a jecs world, so each jecs method works on it.
+
+  These files import Lattice from `@packages/lattice`, where `embr
+  install` puts it.
+]]
+
+import { component, world } from '@packages/lattice'
+
+-- A component names the type of the value it holds. The name in the
+-- call is the one that jabby shows.
+const position = component<<Vector3>>('Position')
+
+-- Make each component before the first world. Step 002 says why.
+const w = world()
+
+-- An entity starts with no components.
+const box = w:entity()
+
+-- `set` gives the entity a component, or a new value for it.
+w:set(box, position, new Vector3(0, 10, 0))
+
+-- `get` reads the value back. Its type is `Vector3?`: the entity may not
+-- hold the component.
+print(w:get(box, position)) -- 0, 10, 0
+
+-- `delete` takes the entity and all its components out of the world.
+w:delete(box)
+print(w:contains(box)) -- false
+
+--[[
+  A wrong value does not compile: `w:set(box, position, 'up')` is a type
+  error, since `position` holds a `Vector3`.
+
+  The world methods that this tour uses:
+
+    w:entity()                   a new entity
+    w:set(e, component, value)   give or change a value
+    w:add(e, tag)                give a tag (step 004)
+    w:get(e, a, b?, c?, d?)      up to four values
+    w:has(e, a, b?, c?, d?)      whether it holds all of them
+    w:remove(e, component)       take one component away
+    w:delete(e)                  take the entity away
+    w:contains(e)                whether the entity is alive
+]]

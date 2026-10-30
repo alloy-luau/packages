@@ -1,0 +1,30 @@
+--[[
+  Tags each entity whose health ran out with `Dead`. The tag moves the
+  entity to another table of jecs, so the system notes the dead in the
+  loop and tags them after it.
+]]
+
+import { Phase, query, system, type Entity, type World } from '@packages/lattice'
+import ct from '../components'
+
+const living = query(ct.Health):without(ct.Dead)
+
+-- The entities that died this frame.
+const died: { Entity } = {}
+
+--- Tags each entity with no health left.
+function death(world: World, _dt: number) -> ()
+  for entity, health in living:of(world) do
+    if health:empty() then
+      table.insert(died, entity)
+    end
+  end
+
+  for _, entity in died do
+    world:add(entity, ct.Dead)
+  end
+
+  table.clear(died)
+end
+
+export default system(death, Phase.PostSimulation)

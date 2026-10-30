@@ -1,0 +1,36 @@
+--[[
+  Puts the balls in the world, once. Each one starts at a random place
+  above the floor, with a random push to a side.
+]]
+
+import Workspace from '@game/Workspace'
+import { Phase, system, type World } from '@packages/lattice'
+import ct from '../components'
+
+const BALLS = 12
+
+--- Makes each ball: its part, its place, and its speed.
+function spawn(world: World, _dt: number) -> ()
+  const random = new Random()
+
+  for _ = 1, BALLS do
+    const start = new Vector3(random:NextNumber(-20, 20), random:NextNumber(10, 30), 0)
+    const ball = world:entity()
+
+    world:set(ball, ct.Position, start)
+    world:set(ball, ct.Velocity, new Vector3(random:NextNumber(-8, 8), 0, 0))
+    world:set(
+      ball,
+      ct.Body,
+      new Instance('Part') {
+        Shape = Enum.PartType.Ball,
+        Size = new Vector3(2, 2, 2),
+        Anchored = true,
+        Position = start,
+        Parent = Workspace,
+      }
+    )
+  end
+end
+
+export default system(spawn, Phase.Startup)

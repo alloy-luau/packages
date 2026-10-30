@@ -1,0 +1,90 @@
+--[[
+  An observer is a function that runs when an entity gets a component,
+  changes it, or loses it. jecs gives three, and each one is typed by
+  the component:
+
+    world:added(ct.Health, function(entity, id, value) end)
+    world:changed(ct.Health, function(entity, id, value) end)
+    world:removed(ct.Health, function(entity, id, deleted) end)
+
+  Each call returns a function that stops the observer. A component
+  takes any number of observers. A Startup system is the place to start
+  them, since it gets the world.
+]]
+
+import {
+  Phase,
+  Scheduler,
+  component,
+  system,
+  tag,
+  world,
+  type Entity,
+  type World,
+} from '@packages/lattice'
+
+const ct = {
+  Health = component<<number>>('Health'),
+  Dead = tag('Dead'),
+}
+
+-- The entities that died this frame. An observer runs in the middle of
+-- a change, so it only notes the entity, and a system acts on it later.
+const died: { Entity } = {}
+
+--- Starts the observers.
+function watch(w: World, _dt: number) -> ()
+  w:changed(ct.Health, function(entity, _id, health)
+    if health <= 0 then
+      table.insert(died, entity)
+    end
+  end)
+
+  -- `deleted` is true when the whole entity goes, and nil when only
+  -- the component goes.
+  w:removed(ct.Health, function(entity, _id, deleted)
+    if not deleted then
+      print(entity, 'lost its health')
+    end
+  end)
+end
+
+--- Tags each entity that died, after the frame's work.
+function bury(w: World, _dt: number) -> ()
+  for _, entity in died do
+    w:add(entity, ct.Dead)
+  end
+
+  table.clear(died)
+end
+
+const w = world()
+const scheduler = new Scheduler(w):add(
+  system(watch, Phase.Startup),
+  system(bury, Phase.PostSimulation)
+)
+scheduler:step()
+
+const hero = w:entity()
+w:set(hero, ct.Health, 10)
+w:set(hero, ct.Health, 0)
+scheduler:step()
+print(w:has(hero, ct.Dead)) -- true
+
+--[[
+  The rules:
+
+  - `added` runs on the first `set` or `add`. `changed` runs on each
+    later `set`. A change in place, as `health:take(5)` on a struct,
+    runs no observer.
+  - An observer runs inside the change that started it, in the middle
+    of a system's loop. Keep it small: note the entity, as `died` does,
+    and let a system change the world.
+  - For a component that holds a table or a struct, write the type of
+    the value: `function(entity, _id, health: Health)`. Luau does not
+    find it from the component there, and the value reads as unknown.
+  - jecs also has hooks: `world:set(ct.Health, OnAdd, fn)`. A component
+    takes one hook of each kind, and only before its first use. Their
+    type is generic, so an Alloy function with a typed value does not
+    fit them. Use the observers above.
+]]

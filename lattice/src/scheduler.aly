@@ -1,0 +1,315 @@
+--[[
+  Systems and the scheduler. A system is a named function that takes the
+  world and the seconds since the last frame. `system` names its phase,
+  at the end of the system's module:
+
+    function movement(world: World, dt: number) -> ()
+      ...
+    end
+
+    export default system(movement, Phase.Simulation)
+
+  The scheduler runs each phase on its RunService event:
+
+    Startup         once, before the first frame
+    PreSimulation   RunService.PreSimulation, before Roblox's physics
+    Simulation      RunService.PostSimulation, after the physics
+    PostSimulation  RunService.PostSimulation, after Simulation
+    Render          RunService.PreRender, on a client only
+
+  Inside a phase, the systems run in the order the scheduler got them.
+  `step` runs one frame by hand, so a test needs no RunService.
+
+  An attribute, `@system(Phase.Simulation)`, would read better. Alloy 0.1
+  keeps a function's attributes in the runtime copy of the module that
+  declares the function, and a package has a runtime copy of its own,
+  so Lattice could not read them. `system` keeps the phase here instead.
+]]
+
+import RunService from '@game/RunService'
+import type { World } from './world'
+
+--- The phases of a frame. A system that `system` does not name runs in
+--- Simulation.
+export enum Phase
+  Startup
+  PreSimulation
+  Simulation
+  PostSimulation
+  Render
+end
+
+--- A system: it reads and writes the world, and `dt` is the seconds
+--- since the last frame. A Startup system gets 0.
+export type System = (world: World, dt: number) -> ()
+
+-- The phase that `system` named for each system. Weak keys: a system
+-- that goes takes its phase with it.
+local named: { [System]: Phase } = setmetatable({}, { __mode = 'k' })
+
+-- The frame's phases after Startup, in the order `step` runs them.
+const FRAME = [ Phase.PreSimulation, Phase.Simulation, Phase.PostSimulation, Phase.Render ]
+
+--- Names the phase of a system, and gives the system back, so a system
+--- module ends with `export default system(movement, Phase.Simulation)`.
+--- A second call with another phase stops with an error.
+export function system(run: System, phase: Phase) -> System
+  const had = named[run]
+  assert(had == nil or had == phase, `lattice: this system runs in {had} already`)
+  named[run] = phase
+  return run
+end
+
+-- A system's name for a warning: its function name, or its place.
+local function name_of(run: System) -> string
+  const name = debug.info(run, 'n')
+  return (name == nil or name == '') ? tostring(run) : name
+end
+
+--- Runs the systems of one world, phase by phase.
+export struct Scheduler
+  --- The world that each system gets.
+  read world: World
+  -- The systems of each phase, in the order they run.
+  private phases: { [Phase]: { System } } = {}
+  -- Each system that the scheduler holds, so a second add keeps its place.
+  private known: { [System]: boolean } = {}
+  -- Whether Startup ran.
+  private started: boolean = false
+  private connections: { RBXScriptConnection } = {}
+end
+
+impl Scheduler
+  --- A scheduler for `world`, with no systems.
+  function new(world: World) -> Scheduler
+    const scheduler = new Scheduler { world = world }
+
+    scheduler.phases[Phase.Startup] = {}
+
+    for _, phase in FRAME do
+      scheduler.phases[phase] = {}
+    end
+
+    return scheduler
+  end
+
+  --- Adds systems. Each one goes to the phase that `system` named for
+  --- it. A system that the scheduler holds keeps its first place, so a
+  --- caller can add the systems that must run first, then the rest.
+  function add(self, ...: System) -> Scheduler
+    for _, run in { ... } do
+      if not self.known[run] then
+        self.known[run] = true
+        table.insert(self.phases[named[run] ?? Phase.Simulation], run)
+      end
+    end
+
+    return self
+  end
+
+  --- Runs the systems of one phase by hand. An error stops the run and
+  --- goes to the caller, as a test wants.
+  function run(self, phase: Phase, dt: number = 0) -> ()
+    for _, run in self.phases[phase] do
+      run(self.world, dt)
+    end
+  end
+
+  --- Runs one frame by hand: Startup on the first call, then
+  --- PreSimulation, Simulation, PostSimulation, and Render.
+  function step(self, dt: number = 1 / 60) -> ()
+    self:startup()
+
+    for _, phase in FRAME do
+      self:run(phase, dt)
+    end
+  end
+
+  --- Runs Startup, then each phase on its RunService event. An error in
+  --- a system shows as a warning with the system's name, and the next
+  --- system runs.
+  function start(self) -> ()
+    assert(#self.connections == 0, 'lattice: this scheduler runs already')
+    self:startup()
+
+    table.insert(
+      self.connections,
+      RunService.PreSimulation:Connect(function(dt) self:guarded(Phase.PreSimulation, dt) end)
+    )
+    table.insert(self.connections, RunService.PostSimulation:Connect(function(dt)
+      self:guarded(Phase.Simulation, dt)
+      self:guarded(Phase.PostSimulation, dt)
+    end))
+
+    @cfg(client)
+    table.insert(
+      self.connections,
+      RunService.PreRender:Connect(function(dt) self:guarded(Phase.Render, dt) end)
+    )
+  end
+
+  --- Stops the RunService events. `start` runs them again, with no
+  --- second Startup.
+  function stop(self) -> ()
+    for _, connection in self.connections do
+      connection:Disconnect()
+    end
+
+    table.clear(self.connections)
+  end
+
+  -- Runs Startup once.
+  private function startup(self) -> ()
+    if not self.started then
+      self.started = true
+      self:run(Phase.Startup)
+    end
+  end
+
+  -- Runs one phase. A system that fails cannot stop the systems after it.
+  private function guarded(self, phase: Phase, dt: number) -> ()
+    for _, run in self.phases[phase] do
+      const result = Result.pcall(run, self.world, dt)
+
+      if local Err(message) = result then
+        warn(`lattice: the system {name_of(run)} failed: {result.trace ?? message}`)
+      end
+    end
+  end
+end
+
+@test
+namespace SchedulerTests
+  import { world as new_world } from './world'
+
+  -- The order the systems below ran in, by name.
+  const ran: { string } = {}
+
+  private function spawn(_world: World, dt: number) -> ()
+    table.insert(ran, `spawn {dt}`)
+  end
+
+  private function input(_world: World, _dt: number) -> ()
+    table.insert(ran, 'input')
+  end
+
+  -- `system` does not name this one, so it runs in Simulation.
+  private function movement(_world: World, _dt: number) -> ()
+    table.insert(ran, 'movement')
+  end
+
+  private function damage(_world: World, _dt: number) -> ()
+    table.insert(ran, 'damage')
+  end
+
+  private function cleanup(_world: World, _dt: number) -> ()
+    table.insert(ran, 'cleanup')
+  end
+
+  private function draw(_world: World, dt: number) -> ()
+    table.insert(ran, `draw {dt}`)
+  end
+
+  private function broken(_world: World, _dt: number) -> ()
+    error('boom')
+  end
+
+  -- A scheduler with each system above, added out of order.
+  private function make() -> Scheduler
+    table.clear(ran)
+    system(spawn, Phase.Startup)
+    system(input, Phase.PreSimulation)
+    system(damage, Phase.Simulation)
+    system(cleanup, Phase.PostSimulation)
+    system(draw, Phase.Render)
+    return new Scheduler(new_world()):add(draw, cleanup, movement, damage, input, spawn)
+  end
+
+  --- A step runs Startup once, then the phases in frame order.
+  public function step_runs_the_phases_in_order() -> ()
+    const scheduler = make()
+    scheduler:step(0.5)
+    scheduler:step(0.5)
+
+    $assert_eq(
+      table.concat(ran, ', '),
+      'spawn 0, input, movement, damage, cleanup, draw 0.5, input, movement, damage, cleanup, draw 0.5'
+    )
+  end
+
+  --- system gives the system back, and refuses a second phase.
+  public function system_names_one_phase() -> ()
+    $assert_eq(system(input, Phase.PreSimulation), input)
+
+    $expect(function() -> ()
+      system(input, Phase.Render)
+    end):toThrow('runs in PreSimulation already')
+  end
+
+  --- run runs one phase, and each system gets the world.
+  public function run_runs_one_phase_with_the_world() -> ()
+    const w = new_world()
+    local got: World? = nil
+    const scheduler = new Scheduler(w):add(function(given: World, _dt: number) got = given end)
+
+    scheduler:run(Phase.Simulation)
+    $assert_eq(got, w)
+  end
+
+  --- start runs Startup, then each phase on its event. A system that
+  --- fails warns, and the next one runs. stop ends the events.
+  @allow(explicit_any)
+  public function start_runs_the_phases_on_their_events() -> ()
+    -- The test shim has no frame events and no IsClient, so the test
+    -- gives RunService its own. A write to a service goes through `any`.
+    const pre = new Instance('BindableEvent')
+    const post = new Instance('BindableEvent')
+    const render = new Instance('BindableEvent')
+    local service: any = RunService
+    service.PreSimulation = pre.Event
+    service.PostSimulation = post.Event
+    service.PreRender = render.Event
+    service.IsClient = function() return true end
+
+    make()
+    const scheduler = new Scheduler(new_world()):add(spawn, broken, movement, cleanup, input, draw)
+    scheduler:start()
+    pre:Fire(0.1)
+    post:Fire(0.1)
+    render:Fire(0.1)
+
+    $expect(function() -> ()
+      scheduler:start()
+    end):toThrow('runs already')
+
+    scheduler:stop()
+    post:Fire(0.1)
+    scheduler:start()
+    post:Fire(0.1)
+    scheduler:stop()
+
+    $assert_eq(
+      table.concat(ran, ', '),
+      'spawn 0, input, movement, cleanup, draw 0.1, movement, cleanup'
+    )
+  end
+
+  --- A second add of a system keeps its first place.
+  public function a_second_add_keeps_the_first_place() -> ()
+    const scheduler = make():add(input)
+    scheduler:run(Phase.PreSimulation)
+
+    $assert_eq(#ran, 1)
+  end
+
+  --- In a run by hand, an error goes to the caller.
+  public function an_error_in_run_goes_to_the_caller() -> ()
+    const scheduler = new Scheduler(new_world()):add(function(_world: World, _dt: number)
+      error('boom')
+    end)
+
+    $expect(function() -> ()
+      scheduler:step()
+    end):toThrow('boom')
+  end
+end

@@ -1,0 +1,27 @@
+--[[
+  The health of an entity, as a struct. Its methods keep the value
+  between 0 and the most.
+]]
+
+--- How much life an entity has, and the most it can have.
+export struct Health
+  current: number
+  max: number
+end
+
+impl Health
+  --- Takes `amount` away, down to 0.
+  function take(self, amount: number) -> ()
+    self.current = math.max(self.current - amount, 0)
+  end
+
+  --- Gives `amount` back, up to the most.
+  function heal(self, amount: number) -> ()
+    self.current = math.min(self.current + amount, self.max)
+  end
+
+  --- Whether the life ran out.
+  function empty(self) -> boolean
+    return self.current <= 0
+  end
+end

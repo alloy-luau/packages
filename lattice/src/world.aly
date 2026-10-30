@@ -1,0 +1,175 @@
+--[[
+  The world, its components, and its tags. A Lattice world is a jecs
+  world, so each jecs method works on it, and replecs and jabby take it
+  as it is.
+
+  `component` and `tag` preregister their ids with jecs. Each world that
+  `world()` makes after them knows them, so a module of components can
+  load before any world and serve all of them. An id that comes after
+  the first world is not in that world, so `world()` closes the list.
+]]
+
+import jecs from '../packages/roblox/jecs'
+
+export {
+  ChildOf,
+  Wildcard,
+  Exclusive,
+  OnDelete,
+  OnDeleteTarget,
+  Delete,
+  Remove,
+  Name,
+  pair,
+} from '../packages/roblox/jecs'
+
+--- A jecs world: entities, their components, and the queries over them.
+export type World = jecs.World
+
+--- An entity, or the id of a component that holds a `T`.
+export type Entity<T = nil> = jecs.Entity<T>
+
+--- Any id: a component, a tag, or a pair. jecs's `Entity<T>` is
+--- invariant in `T`, so a list of mixed ids takes this read-only face.
+export type Id = { read __T: unknown }
+
+-- Whether a world exists. After that, a new id is not in it.
+local closed = false
+
+-- Gives the id its name and its traits, in each world to come.
+local function register<T>(id: Entity<T>, name: string?, traits: { Id }) -> Entity<T>
+  if name ~= nil then
+    jecs.meta(id, jecs.Name, name)
+  end
+
+  for _, trait in traits do
+    jecs.meta(id, (trait :: unknown) :: Entity)
+  end
+
+  return id
+end
+
+-- Stops an id that comes after the first world, which would not know it.
+local function check_open(name: string?) -> ()
+  if closed then
+    error(
+      `lattice: make '{name ?? 'this id'}' before the first world(); that world does not know it`,
+      3
+    )
+  end
+end
+
+--- A component: an id that holds a value of type `T`, such as a struct
+--- or a number. `name` is its jecs `Name`, which jabby shows and replecs
+--- reads. Each trait after it goes on the id in each world, as
+--- `component<<number>>('Owes', Exclusive)` does.
+export function component<T>(name: string?, ...: Id) -> Entity<T>
+  check_open(name)
+  return register(jecs.component<<T>>(), name, { ... })
+end
+
+--- A tag: an id that holds no value, such as `Dead`. A tag is also the
+--- first half of a relationship that holds no value: `pair(Likes, bob)`.
+export function tag(name: string?, ...: Id) -> Entity
+  check_open(name)
+  return register(jecs.tag(), name, { ... })
+end
+
+--- A new world. It knows each component and tag made before it. Pass
+--- `true` for jecs's debug world, which checks each call and is slower.
+export function world(debug: boolean?) -> World
+  closed = true
+  return jecs.world(debug)
+end
+
+--- Each target of `relation` on `entity`, in the order jecs keeps them:
+--- for `pair(Likes, alice)` and `pair(Likes, bob)`, alice and bob.
+export function targets<T, R>(world: World, entity: Entity<T>, relation: Entity<R>) -> { Entity }
+  const found: { Entity } = {}
+  local target = world:target(entity, relation, 0)
+
+  while target ~= nil do
+    table.insert(found, (target :: unknown) :: Entity)
+    target = world:target(entity, relation, #found)
+  end
+
+  return found
+end
+
+@test
+namespace WorldTests
+  const position = component<<Vector3>>('Position')
+  const health = component<<number>>('Health')
+  const owes = component<<number>>('Owes')
+  const likes = tag('Likes')
+  const married = tag('Married', jecs.Exclusive)
+
+  --- A component holds its value, and a tag holds none.
+  public function a_component_holds_a_value_and_a_tag_none() -> ()
+    const w = world()
+    const e = w:entity()
+
+    w:set(e, position, new Vector3(1, 2, 3))
+    w:add(e, likes)
+
+    $assert_eq(w:get(e, position), new Vector3(1, 2, 3))
+    $assert(w:has(e, likes))
+    $assert(jecs.is_tag(w, likes))
+    $assert(not jecs.is_tag(w, health))
+  end
+
+  --- The name goes to jecs's Name, in each world.
+  public function a_name_reaches_each_world() -> ()
+    $assert_eq(world():get(position, jecs.Name), 'Position')
+    $assert_eq(world():get(likes, jecs.Name), 'Likes')
+  end
+
+  --- A trait goes on the id: an exclusive relationship keeps one target.
+  public function a_trait_reaches_the_id() -> ()
+    const w = world()
+    const e = w:entity()
+    const first = w:entity()
+    const second = w:entity()
+
+    w:add(e, jecs.pair(married, first))
+    w:add(e, jecs.pair(married, second))
+
+    $assert(not w:has(e, jecs.pair(married, first)))
+    $assert(w:has(e, jecs.pair(married, second)))
+  end
+
+  --- targets gives every target of a relationship.
+  public function targets_lists_each_target() -> ()
+    const w = world()
+    const e = w:entity()
+    const alice = w:entity()
+    const bob = w:entity()
+
+    w:add(e, jecs.pair(likes, alice))
+    w:add(e, jecs.pair(likes, bob))
+
+    const found = targets(w, e, likes)
+    $assert_eq(#found, 2)
+    $assert(table.find(found, alice) ~= nil and table.find(found, bob) ~= nil)
+    $assert_eq(#targets(w, alice, likes), 0)
+  end
+
+  --- A relationship that holds data stores one value for each target.
+  public function a_data_pair_holds_a_value_for_each_target() -> ()
+    const w = world()
+    const e = w:entity()
+    const bank = w:entity()
+
+    w:set(e, jecs.pair(owes, bank), 50)
+    $assert_eq(w:get(e, jecs.pair(owes, bank)), 50)
+  end
+
+  --- An id made after the first world stops with an error.
+  public function an_id_after_the_first_world_stops() -> ()
+    world()
+
+    $expect(function() -> ()
+      tag('Late')
+    end):toThrow('before the first world')
+  end
+end

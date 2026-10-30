@@ -1,0 +1,20 @@
+--[[
+  The components of the spawner example. The systems import this table
+  as `ct`.
+]]
+
+import { component } from '@packages/lattice'
+
+--- A spawner's clock: it makes a coin every `every` seconds, and
+--- `left` counts down to the next one.
+export type Spawner = { every: number, left: number }
+
+export default {
+  --- The part that shows the entity. Its owner destroys it when the
+  --- entity goes (`systems/bodies.aly`).
+  Body = component<<BasePart>>('Body'),
+  --- On each entity that makes coins.
+  Spawner = component<<Spawner>>('Spawner'),
+  --- The seconds left before the entity goes.
+  Lifetime = component<<number>>('Lifetime'),
+}

@@ -1,0 +1,31 @@
+--[[
+  Moves each ball by its velocity, and bounces it off the floor at Y = 1
+  with a part of its speed.
+]]
+
+import { Phase, query, system, type World } from '@packages/lattice'
+import ct from '../components'
+
+-- The share of the speed that a bounce keeps.
+const BOUNCE = 0.8
+
+-- The lowest place of a ball's middle: its radius above Y = 0.
+const FLOOR = 1
+
+const moving = query(ct.Position, ct.Velocity)
+
+--- Moves each ball, and turns its velocity up where it meets the floor.
+function movement(world: World, dt: number) -> ()
+  for entity, position, velocity in moving:of(world) do
+    local moved = position + velocity * dt
+
+    if moved.Y < FLOOR then
+      moved = new Vector3(moved.X, FLOOR, moved.Z)
+      world:set(entity, ct.Velocity, new Vector3(velocity.X, -velocity.Y * BOUNCE, velocity.Z))
+    end
+
+    world:set(entity, ct.Position, moved)
+  end
+end
+
+export default system(movement, Phase.Simulation)

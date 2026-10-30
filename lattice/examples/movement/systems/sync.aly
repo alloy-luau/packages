@@ -1,0 +1,18 @@
+--[[
+  Puts each part where its entity is, after the frame's work. The parts
+  only show the world; the systems read the components.
+]]
+
+import { Phase, query, system, type World } from '@packages/lattice'
+import ct from '../components'
+
+const shown = query(ct.Body, ct.Position)
+
+--- Moves each part to its entity's position.
+function sync(world: World, _dt: number) -> ()
+  for _, body, position in shown:of(world) do
+    body.Position = position
+  end
+end
+
+export default system(sync, Phase.PostSimulation)

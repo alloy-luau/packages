@@ -1,0 +1,25 @@
+--[[
+  Burns and heals. The struct changes in place, then `set` writes it
+  back, so the observers of `changed` hear of it (`systems/show.aly`).
+]]
+
+import { Phase, query, system, type World } from '@packages/lattice'
+import ct from '../components'
+
+const burning = query(ct.Health, ct.Burning):without(ct.Dead)
+const healing = query(ct.Health, ct.Regen):without(ct.Burning, ct.Dead)
+
+--- Takes the damage of each burn, and gives back each regen.
+function damage(world: World, dt: number) -> ()
+  for entity, health, per_second in burning:of(world) do
+    health:take(per_second * dt)
+    world:set(entity, ct.Health, health)
+  end
+
+  for entity, health, per_second in healing:of(world) do
+    health:heal(per_second * dt)
+    world:set(entity, ct.Health, health)
+  end
+end
+
+export default system(damage, Phase.Simulation)

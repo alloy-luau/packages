@@ -1,0 +1,36 @@
+--[[
+  Puts five dummies in a row. The two at the ends burn; the others heal
+  over time. Each one starts with half its health.
+]]
+
+import Workspace from '@game/Workspace'
+import { Phase, system, type World } from '@packages/lattice'
+import ct from '../components'
+import { Health } from '../health'
+
+--- Makes each dummy.
+function spawn(world: World, _dt: number) -> ()
+  for i = 1, 5 do
+    const dummy = world:entity()
+
+    world:set(dummy, ct.Health, new Health { current = 50, max = 100 })
+    world:set(
+      dummy,
+      ct.Body,
+      new Instance('Part') {
+        Size = new Vector3(2, 4, 2),
+        Anchored = true,
+        Position = new Vector3(i * 4, 2, 0),
+        Parent = Workspace,
+      }
+    )
+
+    if i == 1 or i == 5 then
+      world:set(dummy, ct.Burning, 10)
+    else
+      world:set(dummy, ct.Regen, 5)
+    end
+  end
+end
+
+export default system(spawn, Phase.Startup)

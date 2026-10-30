@@ -1,0 +1,21 @@
+--[[
+  Pulls each ball down. The pull goes in PreSimulation, before the
+  movement of this frame reads the velocity.
+]]
+
+import { Phase, query, system, type World } from '@packages/lattice'
+import ct from '../components'
+
+-- Roblox's own gravity, in studs a second squared.
+const GRAVITY = new Vector3(0, -196.2, 0)
+
+const falling = query(ct.Velocity)
+
+--- Adds the pull of this frame to each velocity.
+function gravity(world: World, dt: number) -> ()
+  for entity, velocity in falling:of(world) do
+    world:set(entity, ct.Velocity, velocity + GRAVITY * dt)
+  end
+end
+
+export default system(gravity, Phase.PreSimulation)
