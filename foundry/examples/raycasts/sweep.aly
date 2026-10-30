@@ -1,0 +1,38 @@
+--[[
+  The job of this example: a batch of raycasts. Workspace:Raycast is
+  safe in the parallel phase, so a worker casts its batch there.
+]]
+
+import { job } from '@packages/foundry'
+
+--- The longest ray, in studs.
+export const RANGE = 60
+
+--- A batch of rays from one point. `ignore` keeps the rays off the
+--- character that casts them.
+export type Sweep = { origin: Vector3, directions: { Vector3 }, ignore: { Instance } }
+
+--- The length of each ray of a batch, to its hit, or RANGE for a miss.
+export function cast(sweep: Sweep) -> { number }
+  local params = new RaycastParams()
+  params.FilterType = Enum.RaycastFilterType.Exclude
+  params.FilterDescendantsInstances = sweep.ignore
+
+  local lengths: { number } = {}
+
+  for index, direction in sweep.directions do
+    const hit = workspace:Raycast(sweep.origin, direction * RANGE, params)
+    lengths[index] = hit ? hit.Distance : RANGE
+  end
+
+  return lengths
+end
+
+--- Casts one batch of rays.
+@job
+export message Cast(job: number, input: Sweep) reply(
+  job: number,
+  seconds: number,
+  result: { number }?,
+  problem: string?
+) as parallel

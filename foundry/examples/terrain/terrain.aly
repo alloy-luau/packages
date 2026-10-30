@@ -1,0 +1,43 @@
+--[[
+  The job of this example: the heights of one chunk of land, from noise.
+  The workers run it in the parallel phase, and the pool runs it here
+  when no worker can.
+]]
+
+import { job } from '@packages/foundry'
+
+--- The columns on each side of a chunk.
+export const COLUMNS = 8
+
+--- The studs on each side of a column.
+export const WIDTH = 4
+
+--- One chunk: its place in the grid of chunks, and the seed of the
+--- world.
+export type Chunk = { cx: number, cz: number, seed: number }
+
+--- The height of each column of a chunk in studs, row by row.
+export function heights(chunk: Chunk) -> { number }
+  local out: { number } = {}
+
+  for row = 0, COLUMNS - 1 do
+    for column = 0, COLUMNS - 1 do
+      const x = chunk.cx * COLUMNS + column
+      const z = chunk.cz * COLUMNS + row
+      const hills = math.noise(x / 24, z / 24, chunk.seed) * 24
+      const bumps = math.noise(x / 6, z / 6, chunk.seed + 1) * 4
+      out[row * COLUMNS + column + 1] = math.max(1, math.round(16 + hills + bumps))
+    end
+  end
+
+  return out
+end
+
+--- Fills the heights of one chunk.
+@job
+export message Fill(job: number, input: Chunk) reply(
+  job: number,
+  seconds: number,
+  result: { number }?,
+  problem: string?
+) as parallel

@@ -1,0 +1,39 @@
+--[[
+  A job goes to the ready worker with the fewest jobs out. `cap` is the
+  most jobs that one worker holds at a time, 1 by default. Past the cap,
+  a job waits in the queue of the pool, and it goes out when a worker
+  answers.
+
+  A worker runs all of its jobs in one parallel phase, and the frame
+  waits for the busiest worker. With a cap of 1, each worker takes one
+  job a frame. Raise the cap when the jobs are small, so that each
+  worker does more in each phase.
+]]
+
+import { Pool, device_workers } from '@packages/foundry'
+import { Fill, heights } from './001_a_job'
+
+const pool = Pool.start(script.Parent->worker, device_workers(4, 2), { cap = 2 })
+const fill = pool:channel(Fill, heights)
+
+-- 64 chunks at once. With four ready workers, eight are out at a time,
+-- two at each worker, and the rest wait. Each answer sends the next
+-- chunk in the queue.
+for n = 0, 63 do
+  fill:run({ x = n % 8 * 16, z = n // 8 * 16, size = 16 }, function(_made) end)
+end
+
+-- The clones start their scripts after `Pool.start`, so right now only
+-- the template may be ready, and fewer jobs are out.
+const stats = pool:stats()
+print(`{stats.ready} ready, {stats.out} out, {stats.waiting} waiting`)
+
+--[[
+  - The queue is first in, first out, across the channels of a pool.
+  - A worker that is not ready takes nothing. The pool checks each
+    frame, and a worker that turns ready takes the jobs that wait.
+  - A job counts its timeout from the moment it goes out, so a long
+    queue loses no job.
+  - Measure before you raise the cap. The MicroProfiler shows the
+    parallel phase of each worker.
+]]

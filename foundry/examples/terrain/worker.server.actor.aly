@@ -1,0 +1,9 @@
+--[[
+  One worker of the terrain pool. The pool clones its Actor.
+]]
+
+import { ready, serve } from '@packages/foundry'
+import { Fill, heights } from './terrain'
+
+Fill.on(serve(heights))
+ready(script)

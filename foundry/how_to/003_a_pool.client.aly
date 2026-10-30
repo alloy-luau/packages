@@ -1,0 +1,36 @@
+--[[
+  A pool clones the worker Actor and sends it jobs. `Pool.start` takes
+  the Actor that the worker script makes, and the count of workers.
+  `device_workers` picks the count from the device: a phone or a tablet
+  gets fewer workers than a computer.
+
+  `pool:channel(message, work)` gives the typed end of one job message.
+  `run` sends one input, and `done` gets the result. The types come from
+  the message, so a wrong input or a wrong result does not compile.
+]]
+
+import { Pool, device_workers } from '@packages/foundry'
+import { Fill, heights } from './001_a_job'
+
+-- The worker script of step 002, as `worker.client.actor.aly`, sits
+-- beside this script. Four workers on a computer, two on a phone.
+const pool = Pool.start(script.Parent->worker, device_workers(4, 2))
+
+-- The channel binds the replies now, before the first job goes out.
+const fill = pool:channel(Fill, heights)
+
+for x = 0, 3 do
+  fill:run({ x = x * 16, z = 0, size = 16 }, function(made)
+    print(`chunk {x}: {buffer.len(made)} bytes`)
+  end)
+end
+
+--[[
+  - `done` runs once for each job: with the result of a worker, or with
+    the result of `heights` here, when the pool cannot use a worker.
+  - `done` runs in the serial phase, so it may write Instances.
+  - The answers come back in any order. Keep what `done` needs in the
+    closure, as `x` above.
+  - The template Actor is the first worker. The clones go beside it, in
+    the same folder, so they run where it runs.
+]]

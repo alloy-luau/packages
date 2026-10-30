@@ -1,0 +1,56 @@
+--[[
+  A job runs in the parallel phase, and the engine refuses some work
+  there at run time: a write to an Instance, a new Instance, a Clone, a
+  Destroy, and a `require`. The compiler refuses what it can see in the
+  file: in a `parallel do` block, and in a handler that a message `as
+  parallel` binds in place.
+
+  `serve(work)` hides `work` from that check, because the compiler reads
+  the call and not the function behind it. This worker writes its
+  handler in place, so the compiler reads its body.
+]]
+
+import { ready } from '@packages/foundry'
+import { Fill, heights } from './001_a_job'
+
+Fill.on(function(job, input, respond)
+  -- Reads work in the parallel phase: properties, attributes, raycasts,
+  -- and math.
+  const start = os.clock()
+  const made = heights(input)
+
+  -- A write here does not compile:
+  --
+  --   workspace.Gravity = 0
+  --
+  --   error(3.15): ParallelError: the parallel handler of `Fill` cannot
+  --   write `workspace.Gravity`; call `task.synchronize()` before the write
+
+  respond(job, os.clock() - start, made)
+
+  -- `respond` went back to the serial phase to send the answer. A write
+  -- works from here on.
+end)
+
+ready(script)
+
+--[[
+  What the compiler refuses in the parallel phase:
+
+  - a write to `Parent`, and a write to a property of an Instance that
+    the file knows;
+  - `new Instance`, `Instance.new`, `Clone`, `Destroy`, `destroy`, and
+    `delete`;
+  - a call to a function of this file that does one of those;
+  - a `parallel do` block inside another, and `await`;
+  - a `return`, `break`, or `continue` that leaves a `parallel do`
+    block.
+
+  The check reads this file and no further. `heights` lives in another
+  module, so the compiler does not read it, and the engine has the last
+  word at run time. Keep each job a function of its input.
+
+  State that each worker reads goes in the input, or in a SharedTable.
+  A module's state belongs to the VM that runs it, so the main script
+  and each worker hold a copy of their own.
+]]

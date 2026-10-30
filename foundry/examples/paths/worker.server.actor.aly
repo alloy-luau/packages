@@ -1,0 +1,9 @@
+--[[
+  One worker of the path pool. The pool clones its Actor.
+]]
+
+import { ready, serve } from '@packages/foundry'
+import { Find, find } from './grid'
+
+Find.on(serve(find))
+ready(script)

@@ -1,0 +1,664 @@
+--[[
+  A pool of worker actors, and the jobs out at them.
+
+  `Pool.start` clones the Actor of the game's worker script, and each
+  clone marks itself ready (`ready` in `worker.aly`). A job goes to the
+  ready worker with the fewest jobs out, while that worker holds fewer
+  than `cap`. Past the cap, the job waits in a queue, and it goes out
+  when a worker frees.
+
+  A job with no answer after `timeout` seconds counts as lost, and so
+  does a job that failed. A lost job stops the pool. Each job out and
+  each job in the queue then runs serial, here, through the function
+  that the worker runs, and so does each later job. So a caller gets
+  each result once, from a worker or from the fallback.
+]]
+
+import { Queue } from '@alloy/std/collections'
+import RunService from '@game/RunService'
+import UserInputService from '@game/UserInputService'
+import { type JobMessage } from './job'
+import { READY } from './worker'
+
+-- The number of the next job. One count serves the whole VM: two
+-- pools that share a message take each other's answers, and a number
+-- that one pool alone holds keeps them apart.
+local next_job = 1
+
+--- One job: how it goes to a worker, how it runs here, and where its
+--- answer goes.
+struct Job
+  --- Sends the input to a worker under a job number.
+  fire: (worker: Actor, job: number) -> ()
+  --- Runs the job here, serial, and hands on the result.
+  serial: () -> ()
+  --- Hands on the result that a worker sent.
+  answer: (result: unknown) -> ()
+  --- The clock when the job began to wait, then when it went out.
+  since: number
+  --- The worker that holds the job, once it goes out.
+  worker: Actor? = nil
+end
+
+--- The numbers of a pool, for a debug overlay.
+export struct Stats
+  --- The workers, ready or not.
+  workers: number
+  --- The workers that called `ready`.
+  ready: number
+  --- The jobs out at a worker now.
+  out: number
+  --- The jobs that wait for a free worker.
+  waiting: number
+  --- The jobs sent to a worker.
+  sent: number
+  --- The jobs that a worker answered with a result.
+  answered: number
+  --- The jobs that failed or got no answer in time.
+  lost: number
+  --- The jobs that ran here, serial.
+  serial: number
+  --- The seconds that the workers spent on their jobs.
+  seconds: number
+  --- Whether the pool stopped.
+  off: boolean
+  --- Why the pool stopped.
+  reason: string?
+end
+
+--- Jobs of one message on a pool. `run` sends one.
+export type Channel<I, T> = {
+  run: (self: unknown, input: I, done: (result: T) -> ()) -> (),
+}
+
+--- How a pool runs its jobs. Each field is optional.
+export type Options = {
+  --- The most jobs out at one worker, 1 by default. Raise it when the
+  --- jobs are small.
+  cap: number?,
+  --- The seconds that a job may take before it counts as lost, 5 by
+  --- default.
+  timeout: number?,
+}
+
+--- The workers of one side, and the jobs out at them.
+export struct Pool
+  --- The worker Actors. The first is the template.
+  read workers: { Actor }
+  --- The most jobs out at one worker.
+  read cap: number = 1
+  --- The seconds that a job may take before it counts as lost.
+  read timeout: number = 5
+  --- The clock that times the jobs. A test sets its own.
+  read clock: (() -> number) = os.clock
+  private out: { [number]: Job } = {}
+  private load: { [Actor]: number } = {}
+  private waiting: Queue<Job> = new Queue()
+  private beat: RBXScriptConnection? = nil
+  private sent: number = 0
+  private answered: number = 0
+  private lost: number = 0
+  private serial: number = 0
+  private seconds: number = 0
+  private off: boolean = false
+  private reason: string? = nil
+end
+
+impl Pool
+  --[[
+    Clones the worker Actor `template` into `count` workers beside it.
+    A clone's script starts when the clone gets its parent, and the
+    clone marks itself ready once it listens. The clone carries the
+    attributes of the template, so the ready mark goes before the
+    parent does.
+
+    With no Actor, the pool starts off, and each job runs serial.
+  ]]
+  function start(template: Instance?, count: number, options: Options?) -> Pool
+    const cap = options?.cap ?? 1
+    const timeout = options?.timeout ?? 5
+
+    if template == nil or not template:IsA('Actor') then
+      warn('[foundry] the pool has no worker Actor to clone, so its jobs run serial')
+
+      return new Pool {
+        workers = [],
+        cap = cap,
+        timeout = timeout,
+        off = true,
+        reason = 'no worker Actor to clone',
+      }
+    end
+
+    const first = template :: Actor
+    local pool = new Pool { workers = [ first ], cap = cap, timeout = timeout }
+
+    for n = 2, count do
+      local worker = first:Clone()
+      worker.Name = `{first.Name}{n}`
+      worker:SetAttribute(READY, nil)
+      worker.Parent = first.Parent
+      table.insert(pool.workers, worker)
+    end
+
+    pool.beat = RunService.Heartbeat:Connect(function() -> ()
+      pool:sweep()
+    end)
+
+    return pool
+  end
+
+  --[[
+    A channel for the jobs of `message`. Each job runs `work` on its
+    input: at a worker that binds `message` to `serve(work)`, or here,
+    serial, when the pool cannot.
+
+    The channel binds the replies of the message now, before its first
+    job goes out. A `fire` before the first `replied` of its VM gets no
+    answer.
+  ]]
+  function channel<I, T>(self, message: JobMessage<I, T>, work: (input: I) -> T) -> Channel<I, T>
+    message.replied(function(job: number, seconds: number, result: T?, problem: string?) -> ()
+      self:land(job, seconds, result, problem)
+    end)
+
+    return {
+      run = function(_channel: unknown, input: I, done: (result: T) -> ()) -> ()
+        self:submit(new Job {
+          fire = function(worker: Actor, job: number) -> ()
+            message.fire(worker, job, input)
+          end,
+          serial = function() -> ()
+            done(work(input))
+          end,
+          answer = function(result: unknown) -> ()
+            done(result :: T)
+          end,
+          since = self.clock(),
+        })
+      end,
+    }
+  end
+
+  --[[
+    Checks the clock. A job out past the timeout stops the pool, and so
+    does a job that waited that long while no worker was ready. Then
+    each job in the queue that a worker can take goes out. The pool
+    that `start` made calls this each frame.
+  ]]
+  function sweep(self) -> ()
+    if self.off then
+      return
+    end
+
+    const now = self.clock()
+
+    for job, held in self.out do
+      if now - held.since > self.timeout then
+        self.lost += 1
+        self:stop(`job {job} got no answer in {self.timeout} s`)
+
+        return
+      end
+    end
+
+    if const first = self.waiting:peek() where now - first.since > self.timeout
+        and self:ready() == 0 then
+      self:stop(`no worker was ready in {self.timeout} s`)
+
+      return
+    end
+
+    self:pump()
+  end
+
+  --[[
+    Turns the pool off. Each job out and each job in the queue runs
+    serial now, and so does each later job. An answer that comes late
+    finds no job, and the pool drops it.
+  ]]
+  function stop(self, reason: string) -> ()
+    if self.off then
+      return
+    end
+
+    self.off = true
+    self.reason = reason
+
+    if const beat = self.beat then
+      beat:Disconnect()
+      self.beat = nil
+    end
+
+    warn(`[foundry] the pool stops, and its jobs run serial: {reason}`)
+
+    const out = self.out
+    self.out = {}
+    self.load = {}
+
+    -- A job that throws here must not keep the next jobs from their
+    -- callers, so each one runs on a thread of its own.
+    for _, held in out do
+      self.serial += 1
+      task.spawn(held.serial)
+    end
+
+    while const held = self.waiting:pop() do
+      self.serial += 1
+      task.spawn(held.serial)
+    end
+  end
+
+  --- The numbers of the pool now, for a debug overlay.
+  function stats(self) -> Stats
+    local out = 0
+
+    for _ in self.out do
+      out += 1
+    end
+
+    return new Stats {
+      workers = #self.workers,
+      ready = self:ready(),
+      out = out,
+      waiting = self.waiting:len(),
+      sent = self.sent,
+      answered = self.answered,
+      lost = self.lost,
+      serial = self.serial,
+      seconds = self.seconds,
+      off = self.off,
+      reason = self.reason,
+    }
+  end
+
+  --- The workers that called `ready`.
+  private function ready(self) -> number
+    local count = 0
+
+    for _, worker in self.workers do
+      count += worker:GetAttribute(READY) ? 1 : 0
+    end
+
+    return count
+  end
+
+  --- The ready worker with the fewest jobs out, while it holds fewer
+  --- than `cap`, or nil.
+  private function free(self) -> Actor?
+    local best: Actor? = nil
+    local least = self.cap
+
+    for _, worker in self.workers do
+      const load = self.load[worker] ?? 0
+
+      if load < least and worker:GetAttribute(READY) then
+        best = worker
+        least = load
+      end
+    end
+
+    return best
+  end
+
+  --- Takes a job: it runs here when the pool is off, and waits in the
+  --- queue for a worker otherwise.
+  private function submit(self, held: Job) -> ()
+    if self.off then
+      self.serial += 1
+      held.serial()
+
+      return
+    end
+
+    self.waiting:push(held)
+    self:pump()
+  end
+
+  --- Sends each job in the queue that a free worker can take.
+  private function pump(self) -> ()
+    while not self.off and not self.waiting:is_empty() do
+      const worker = self:free()
+
+      if worker == nil then
+        return
+      end
+
+      local held = self.waiting:pop()!
+      const job = next_job
+      next_job += 1
+      held.worker = worker
+      held.since = self.clock()
+      self.out[job] = held
+      self.load[worker] = (self.load[worker] ?? 0) + 1
+      self.sent += 1
+      held.fire(worker, job)
+    end
+  end
+
+  --[[
+    Takes the answer of a job. A job that this pool does not hold is
+    another pool's, or a late one, and the pool drops it. A failed job
+    stops the pool, and runs serial with the rest.
+  ]]
+  private function land(self, job: number, seconds: number, result: unknown, problem: string?) -> ()
+    const held = self.out[job]
+
+    if held == nil then
+      return
+    end
+
+    self.seconds += seconds
+
+    if const failed = problem then
+      self.lost += 1
+      self:stop(`job {job} failed at its worker: {failed}`)
+
+      return
+    end
+
+    self.out[job] = nil
+    self.answered += 1
+
+    if const worker = held.worker then
+      self.load[worker] = (self.load[worker] ?? 1) - 1
+    end
+
+    -- The next job goes out first, so a caller's error in `done` does
+    -- not hold the queue until the next frame.
+    self:pump()
+    held.answer(result)
+  end
+end
+
+--- The workers to start on this device: `touch` on a phone or a
+--- tablet, and `desktop` on a computer or a console. A server has no
+--- touch screen, so it gets `desktop`.
+export function device_workers(desktop: number, touch: number) -> number
+  const is_touch = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+
+  return is_touch ? touch : desktop
+end
+
+@test
+namespace PoolTests
+  import { type Respond } from './job'
+
+  --- A job that a fake worker got.
+  type Fired = { worker: Actor, job: number, input: number }
+
+  --- A message with no engine behind it: `fire` keeps each job, and
+  --- `answer` plays the worker's `respond`.
+  struct FakeMessage
+    fired: { Fired } = {}
+    handlers: { Respond<number> } = {}
+  end
+
+  impl FakeMessage
+    --- The table that a `message` declaration gives.
+    function message(self) -> JobMessage<number, number>
+      return {
+        fire = function(worker: Actor, job: number, input: number) -> ()
+          table.insert(self.fired, { worker = worker, job = job, input = input })
+        end,
+        replied = function(handler: Respond<number>) -> RBXScriptConnection
+          table.insert(self.handlers, handler)
+
+          return ({} :: unknown) :: RBXScriptConnection
+        end,
+      }
+    end
+
+    --- Answers a job: every `replied` handler takes it, as in the engine.
+    function answer(self, job: number, result: number?, problem: string?) -> ()
+      for _, handler in self.handlers do
+        handler(job, 0.25, result, problem)
+      end
+    end
+  end
+
+  --- A worker Actor, ready or not.
+  private function worker(name: string, is_ready: boolean) -> Actor
+    const actor = new Instance('Actor') { Name = name }
+    actor:SetAttribute(READY, is_ready ? true : nil)
+
+    return actor
+  end
+
+  --- The work of the tests: it doubles its input.
+  private function double(n: number) -> number
+    return n * 2
+  end
+
+  --- A job goes to the ready worker with the fewest jobs out.
+  public function a_job_goes_to_the_least_loaded_ready_worker() -> ()
+    const a = worker('a', true)
+    const b = worker('b', true)
+    const asleep = worker('asleep', false)
+    const pool = new Pool { workers = [ asleep, a, b ], cap = 2 }
+    const fake = new FakeMessage {}
+    const jobs = pool:channel(fake:message(), double)
+
+    for n = 1, 3 do
+      jobs:run(n, function(_result: number) -> () end)
+    end
+
+    $assert_eq(#fake.fired, 3)
+    $assert_eq(fake.fired[1].worker, a)
+    $assert_eq(fake.fired[2].worker, b)
+    $assert_eq(fake.fired[3].worker, a)
+
+    -- b answers, so b holds the fewest jobs and takes the next one.
+    fake:answer(fake.fired[2].job, 4)
+    jobs:run(4, function(_result: number) -> () end)
+    $assert_eq(fake.fired[4].worker, b)
+  end
+
+  --- Past the cap, a job waits, and it goes out when a worker frees.
+  public function a_job_past_the_cap_waits_for_a_free_worker() -> ()
+    const pool = new Pool { workers = [ worker('a', true) ] }
+    const fake = new FakeMessage {}
+    const jobs = pool:channel(fake:message(), double)
+    const results: { number } = {}
+
+    jobs:run(1, function(result: number) -> () table.insert(results, result) end)
+    jobs:run(2, function(result: number) -> () table.insert(results, result) end)
+
+    $assert_eq(#fake.fired, 1)
+    $assert_eq(pool:stats().waiting, 1)
+
+    fake:answer(fake.fired[1].job, 2)
+
+    $assert_eq(#fake.fired, 2)
+    $assert_eq(fake.fired[2].input, 2)
+    $assert_eq(pool:stats().waiting, 0)
+
+    fake:answer(fake.fired[2].job, 4)
+
+    $assert_eq(#results, 2)
+    $assert_eq(results[1], 2)
+    $assert_eq(results[2], 4)
+  end
+
+  --- A job past the timeout counts as lost. The pool stops, the job runs
+  --- serial, and a late answer finds no job.
+  public function a_lost_job_stops_the_pool_and_runs_serial() -> ()
+    local now = 0
+    const pool = new Pool {
+      workers = [ worker('a', true) ],
+      clock = function() -> number return now end,
+    }
+    const fake = new FakeMessage {}
+    const jobs = pool:channel(fake:message(), double)
+    const results: { number } = {}
+
+    jobs:run(5, function(result: number) -> () table.insert(results, result) end)
+    jobs:run(6, function(result: number) -> () table.insert(results, result) end)
+
+    now = 4
+    pool:sweep()
+    $assert(not pool:stats().off)
+
+    now = 6
+    pool:sweep()
+
+    const stats = pool:stats()
+    $assert(stats.off)
+    $assert_eq(stats.lost, 1)
+    $assert_eq(stats.serial, 2)
+    $assert_eq(stats.out, 0)
+    $assert_eq(stats.waiting, 0)
+    $assert_eq(#results, 2)
+
+    -- The late answer of the lost job adds nothing.
+    fake:answer(fake.fired[1].job, 10)
+    $assert_eq(#results, 2)
+
+    -- A job after the stop runs serial at once.
+    jobs:run(7, function(result: number) -> () table.insert(results, result) end)
+    $assert_eq(results[3], 14)
+    $assert_eq(#fake.fired, 1)
+  end
+
+  --- A job that fails at its worker stops the pool, and runs serial.
+  public function a_failed_job_stops_the_pool_and_runs_serial() -> ()
+    const pool = new Pool { workers = [ worker('a', true) ] }
+    const fake = new FakeMessage {}
+    const jobs = pool:channel(fake:message(), double)
+    const results: { number } = {}
+
+    jobs:run(3, function(result: number) -> () table.insert(results, result) end)
+    fake:answer(fake.fired[1].job, nil, 'the noise broke')
+
+    const stats = pool:stats()
+    $assert(stats.off)
+    $assert_eq(stats.lost, 1)
+    $assert(string.find(stats.reason ?? '', 'the noise broke', 1, true) ~= nil)
+    $assert_eq(results[1], 6)
+  end
+
+  --- A queue with no ready worker for the whole timeout stops the pool.
+  public function no_ready_worker_stops_the_pool() -> ()
+    local now = 0
+    const pool = new Pool {
+      workers = [ worker('a', false) ],
+      clock = function() -> number return now end,
+    }
+    const fake = new FakeMessage {}
+    const jobs = pool:channel(fake:message(), double)
+    local result = 0
+
+    jobs:run(8, function(made: number) -> () result = made end)
+    $assert_eq(#fake.fired, 0)
+
+    now = 6
+    pool:sweep()
+
+    $assert(pool:stats().off)
+    $assert_eq(result, 16)
+  end
+
+  --- A worker that turns ready takes the jobs that wait, on the next sweep.
+  public function a_worker_that_turns_ready_takes_the_queue() -> ()
+    const a = worker('a', false)
+    const pool = new Pool { workers = [ a ] }
+    const fake = new FakeMessage {}
+    const jobs = pool:channel(fake:message(), double)
+
+    jobs:run(1, function(_result: number) -> () end)
+    $assert_eq(#fake.fired, 0)
+
+    a:SetAttribute(READY, true)
+    pool:sweep()
+    $assert_eq(#fake.fired, 1)
+  end
+
+  --- With no Actor to clone, the pool starts off, and runs each job here.
+  public function a_pool_with_no_template_runs_serial() -> ()
+    const pool = Pool.start(nil, 4)
+    const fake = new FakeMessage {}
+    const jobs = pool:channel(fake:message(), double)
+    local result = 0
+
+    jobs:run(21, function(made: number) -> () result = made end)
+
+    const stats = pool:stats()
+    $assert(stats.off)
+    $assert_eq(stats.workers, 0)
+    $assert_eq(stats.serial, 1)
+    $assert_eq(result, 42)
+  end
+
+  --- The stats count what a debug overlay shows.
+  public function stats_count_the_jobs() -> ()
+    const pool = new Pool { workers = [ worker('a', true), worker('b', false) ] }
+    const fake = new FakeMessage {}
+    const jobs = pool:channel(fake:message(), double)
+
+    jobs:run(1, function(_result: number) -> () end)
+    fake:answer(fake.fired[1].job, 2)
+    jobs:run(2, function(_result: number) -> () end)
+
+    const stats = pool:stats()
+    $assert_eq(stats.workers, 2)
+    $assert_eq(stats.ready, 1)
+    $assert_eq(stats.sent, 2)
+    $assert_eq(stats.answered, 1)
+    $assert_eq(stats.out, 1)
+    $assert_eq(stats.seconds, 0.25)
+    $assert_eq(stats.lost, 0)
+    $assert(not stats.off)
+  end
+
+  --- `start` clones the template beside it, and sweeps the pool each
+  --- frame, so a worker that turns ready takes the jobs that wait.
+  public function start_clones_the_template_and_sweeps_each_frame() -> ()
+    const folder = new Instance('Folder')
+    const template = new Instance('Actor') { Name = 'worker', Parent = folder }
+    template:SetAttribute(READY, true)
+
+    const pool = Pool.start(template, 3, { cap = 2 })
+    const fake = new FakeMessage {}
+    const jobs = pool:channel(fake:message(), double)
+
+    $assert_eq(#folder:GetChildren(), 3)
+    $assert(folder->worker3 ~= nil)
+    $assert_eq(pool:stats().ready, 1)
+
+    for n = 1, 3 do
+      jobs:run(n, function(_result: number) -> () end)
+    end
+
+    $assert_eq(#fake.fired, 2)
+
+    const second = folder->worker2!
+    second:SetAttribute(READY, true)
+    -- The test shim's Heartbeat fires on a call, as a frame would.
+    const frame = (RunService.Heartbeat :: unknown) :: { Fire: (self: unknown) -> () }
+    frame:Fire()
+
+    $assert_eq(#fake.fired, 3)
+    $assert_eq(fake.fired[3].worker, second)
+
+    pool:stop('the test ends')
+  end
+
+  --- Two pools that share a message take only their own answers.
+  public function two_pools_keep_their_jobs_apart() -> ()
+    const fake = new FakeMessage {}
+    const first = new Pool { workers = [ worker('a', true) ] }
+    const second = new Pool { workers = [ worker('b', true) ] }
+    const one = first:channel(fake:message(), double)
+    const two = second:channel(fake:message(), double)
+    local landed = 0
+
+    one:run(1, function(_result: number) -> () landed += 1 end)
+    two:run(2, function(_result: number) -> () landed += 10 end)
+    $assert(fake.fired[1].job ~= fake.fired[2].job)
+
+    fake:answer(fake.fired[2].job, 4)
+    $assert_eq(landed, 10)
+    $assert_eq(first:stats().answered, 0)
+    $assert_eq(second:stats().answered, 1)
+  end
+end

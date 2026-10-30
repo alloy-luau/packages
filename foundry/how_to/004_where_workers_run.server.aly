@@ -1,0 +1,37 @@
+--[[
+  A worker runs only where its side runs scripts. The build writes the
+  script of `worker.server.actor.aly` as a Script with RunContext
+  Legacy, and the script of `worker.client.actor.aly` as a LocalScript.
+  So each worker Actor must sit in a container that runs that class:
+
+    Script (RunContext Legacy)   ServerScriptService, Workspace
+    LocalScript                  PlayerScripts, PlayerGui, Backpack,
+                                 the character, ReplicatedFirst
+
+  The usual mounts do this. `src/server` lands in ServerScriptService.
+  `src/client` lands in StarterPlayerScripts, and the engine copies it
+  into the PlayerScripts of each player, where the copy runs. A worker in
+  `src/shared` lands in ReplicatedStorage, where neither class runs.
+]]
+
+import { Pool } from '@packages/foundry'
+
+-- A server pool. A server has no touch screen, so the count is fixed.
+-- `worker.server.actor.aly` sits beside this script.
+const pool = Pool.start(script.Parent->worker, 4)
+
+print(`{pool:stats().workers} workers on the server`)
+
+--[[
+  - The clones go beside the template, so each clone runs where the
+    template runs.
+  - A worker that never runs never calls `ready`. The pool waits
+    `timeout` seconds for a ready worker, then stops, warns, and runs
+    each job serial.
+  - Rojo makes `.client.luau` a LocalScript. With `emitLegacyScripts =
+    false`, it makes a Script with RunContext Client, and such a script
+    in StarterPlayerScripts runs twice: as the template and as the copy.
+    Keep the default.
+  - The server has its own pool, and each client has its own. An actor
+    message never crosses the network.
+]]

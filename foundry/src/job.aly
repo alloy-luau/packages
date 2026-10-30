@@ -1,0 +1,38 @@
+--[[
+  The shape of a job, which both ends of a pool read.
+
+  A job message takes the number of the job and one input. Its reply
+  names the job and the seconds the worker spent, then the result, or
+  the error:
+
+    @job
+    export message Fill(job: number, input: Chunk) reply(
+      job: number,
+      seconds: number,
+      result: buffer?,
+      problem: string?
+    ) as parallel
+
+  The pool gives each job its number, and matches each answer to its
+  job by that number. The engine pairs nothing: every `replied` handler
+  of a message takes every answer of that message.
+]]
+
+--- Marks a job message. The contract asks for the two parameters that
+--- `Pool:channel` sends and `serve` reads: the job number, and the input.
+export attribute job on message as
+  requires field job: number
+  requires field input
+end
+
+--- How a worker answers a job: the job number, the seconds it spent,
+--- then the result, or the error.
+export type Respond<T> = (job: number, seconds: number, result: T?, problem: string?) -> ()
+
+--- A job message, as the pool reads it. `fire` sends an input to a
+--- worker, and `replied` takes each answer. The compiler gives a
+--- `message` with the shape above this type.
+export type JobMessage<I, T> = {
+  fire: (actor: Actor, job: number, input: I) -> (),
+  replied: (handler: Respond<T>) -> RBXScriptConnection,
+}

@@ -1,0 +1,107 @@
+--[[
+  Pathfinding for many agents. Forty agents walk a grid with walls. Each
+  agent asks the pool for a path to a random free cell, walks it one cell
+  at a time, and asks again at its end. The workers search, and this
+  script moves the parts.
+]]
+
+import RunService from '@game/RunService'
+import { Pool } from '@packages/foundry'
+import { Find, SIZE, find } from './grid'
+
+--- The agents that walk the grid.
+const AGENTS = 40
+
+--- The studs on each side of a cell.
+const CELL = 4
+
+--- The seconds between two steps of an agent.
+const STEP = 0.15
+
+--- One agent: its part, the cell it stands on, and the path ahead.
+struct Agent
+  part: BasePart
+  cell: number
+  path: { number } = {}
+  asked: boolean = false
+end
+
+const pool = Pool.start(script.Parent->worker, 4, { cap = 4 })
+const paths = pool:channel(Find, find)
+const random = new Random(7)
+const walls = buffer.create(SIZE * SIZE)
+const folder = new Instance('Folder') { Name = 'Grid', Parent = workspace }
+
+--- The middle of a cell, in the world.
+local function place(cell: number) -> Vector3
+  return new Vector3(cell % SIZE * CELL, 2, cell // SIZE * CELL)
+end
+
+--- A random cell with no wall.
+local function free_cell() -> number
+  while true do
+    const cell = random:NextInteger(0, SIZE * SIZE - 1)
+
+    if buffer.readu8(walls, cell) == 0 then
+      return cell
+    end
+  end
+end
+
+for cell = 0, SIZE * SIZE - 1 do
+  if random:NextNumber() < 0.25 then
+    buffer.writeu8(walls, cell, 1)
+    new Instance('Part') {
+      Anchored = true,
+      Size = new Vector3(CELL, 4, CELL),
+      Position = place(cell),
+      Color = Color3.fromRGB(60, 60, 70),
+      Parent = folder,
+    }
+  end
+end
+
+local agents: { Agent } = {}
+
+for n = 1, AGENTS do
+  const cell = free_cell()
+  const part = new Instance('Part') {
+    Anchored = true,
+    Size = new Vector3(2, 2, 2),
+    Position = place(cell),
+    Color = Color3.fromHSV(n / AGENTS, 0.8, 1),
+    Parent = folder,
+  }
+  agents[n] = new Agent { part = part, cell = cell }
+end
+
+--- Asks the pool for a path from where the agent stands.
+local function ask(agent: Agent) -> ()
+  agent.asked = true
+
+  paths:run({ walls = walls, from = agent.cell, to = free_cell() }, function(path)
+    agent.path = path
+    agent.asked = false
+  end)
+end
+
+local since = 0
+
+RunService.Heartbeat:Connect(function(dt)
+  since += dt
+
+  if since < STEP then
+    return
+  end
+
+  since = 0
+
+  for _, agent in agents do
+    if #agent.path > 0 then
+      agent.cell = table.remove(agent.path, 1)!
+      agent.part.Position = place(agent.cell)
+    elseif not agent.asked then
+      ask(agent)
+    end
+  end
+end)

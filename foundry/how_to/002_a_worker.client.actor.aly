@@ -1,0 +1,34 @@
+--[[
+  A worker is an actor script. `.actor.` after the side in the file name
+  puts the script in an Actor of its own, and the pool clones that Actor
+  into as many workers as it wants.
+
+  Foundry cannot ship this script. It binds the game's own messages, and
+  it must sit where its side runs scripts. So the game writes it, and it
+  stays short: bind each job message to `serve`, then call `ready`.
+
+  In a game, name the file `worker.client.actor.aly`. The build makes
+  the Actor `worker`, with a LocalScript in it.
+]]
+
+import { ready, serve } from '@packages/foundry'
+import { Fill, heights } from './001_a_job'
+
+-- `serve(heights)` is the handler. It runs `heights` on the input, times
+-- it, and answers with the result. A job that throws answers with its
+-- error, and the worker goes on.
+Fill.on(serve(heights))
+
+-- The pool sends nothing to a worker before this call. Call it last, so
+-- each message has its handler first.
+ready(script)
+
+--[[
+  - `Fill.on` stands only in an actor script. In any other file it does
+    not compile.
+  - One worker binds as many job messages as the side sends.
+  - Require what the jobs need at the top of the script. A `require`
+    cannot run in the parallel phase.
+  - Each worker is a Luau VM of its own. A module that the worker
+    requires runs again in it, with state of its own.
+]]

@@ -1,0 +1,72 @@
+--[[
+  The job of this example: the shortest path across a grid, by a
+  breadth-first search. The grid crosses to the worker as a buffer, one
+  byte for each cell, so the copy stays small.
+]]
+
+import { job } from '@packages/foundry'
+
+--- The cells on each side of the grid.
+export const SIZE = 48
+
+--- A path to find: the cells as a buffer, 1 for a wall, and the cells
+--- at its two ends, from 0.
+export type Ask = { walls: buffer, from: number, to: number }
+
+--- The cells of the shortest path from `from` to `to`, both ends
+--- included, or an empty list when no path exists.
+export function find(ask: Ask) -> { number }
+  local came: { [number]: number } = { [ask.from] = ask.from }
+  local queue = { ask.from }
+  local head = 1
+
+  while head <= #queue do
+    const cell = queue[head]
+    head += 1
+
+    if cell == ask.to then
+      break
+    end
+
+    const x = cell % SIZE
+    const y = cell // SIZE
+
+    for _, step in { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } } do
+      const nx = x + step[1]
+      const ny = y + step[2]
+      const next = ny * SIZE + nx
+
+      if nx >= 0 and nx < SIZE and ny >= 0 and ny < SIZE and came[next] == nil
+        and buffer.readu8(ask.walls, next) == 0 then
+        came[next] = cell
+        queue[#queue + 1] = next
+      end
+    end
+  end
+
+  const path: { number } = {}
+
+  if came[ask.to] == nil then
+    return path
+  end
+
+  local cell = ask.to
+
+  while cell ~= ask.from do
+    table.insert(path, 1, cell)
+    cell = came[cell]
+  end
+
+  table.insert(path, 1, ask.from)
+
+  return path
+end
+
+--- Finds one path.
+@job
+export message Find(job: number, input: Ask) reply(
+  job: number,
+  seconds: number,
+  result: { number }?,
+  problem: string?
+) as parallel

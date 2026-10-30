@@ -1,0 +1,84 @@
+--[[
+  A batch of raycasts. Ten times a second, the client casts 240 rays in
+  a ring around the character, in one batch for each worker, and moves
+  a dot to the end of each ray. A new sweep starts when the last batch
+  of the old one lands.
+]]
+
+import Players from '@game/Players'
+import RunService from '@game/RunService'
+import { Pool, device_workers } from '@packages/foundry'
+import { Cast, RANGE, type Sweep, cast } from './sweep'
+
+--- The rays of one sweep.
+const RAYS = 240
+
+--- The seconds between sweeps.
+const EVERY = 0.1
+
+const workers = device_workers(4, 2)
+const pool = Pool.start(script.Parent->worker, workers)
+const sweeps = pool:channel(Cast, cast)
+const folder = new Instance('Folder') { Name = 'Rays', Parent = workspace }
+local dots: { BasePart } = {}
+
+for n = 1, RAYS do
+  dots[n] = new Instance('Part') {
+    Anchored = true,
+    CanCollide = false,
+    CanQuery = false,
+    Size = new Vector3(0.4, 0.4, 0.4),
+    Shape = Enum.PartType.Ball,
+    Material = Enum.Material.Neon,
+    Parent = folder,
+  }
+end
+
+local busy = false
+local last = 0
+
+--- Casts one sweep from the head of the character.
+local function sweep(head: BasePart, character: Model) -> ()
+  busy = true
+
+  const origin = head.Position
+  const per = math.ceil(RAYS / workers)
+  local left = math.ceil(RAYS / per)
+
+  for first = 1, RAYS, per do
+    local directions: { Vector3 } = {}
+
+    for n = first, math.min(first + per - 1, RAYS) do
+      const angle = n / RAYS * math.pi * 2
+      directions[#directions + 1] = new Vector3(math.cos(angle), 0, math.sin(angle))
+    end
+
+    const batch: Sweep = {
+      origin = origin,
+      directions = directions,
+      ignore = { character, folder },
+    }
+
+    sweeps:run(batch, function(lengths)
+      for index, length in lengths do
+        dots[first + index - 1].Position = origin + directions[index] * math.min(length, RANGE)
+      end
+
+      left -= 1
+      busy = left > 0
+    end)
+  end
+end
+
+RunService.Heartbeat:Connect(function()
+  const character = Players.LocalPlayer.Character
+
+  if busy or character == nil or os.clock() - last < EVERY then
+    return
+  end
+
+  if const head = character->Head where head is BasePart then
+    last = os.clock()
+    sweep(head, character)
+  end
+end)

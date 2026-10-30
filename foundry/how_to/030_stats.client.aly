@@ -1,0 +1,58 @@
+--[[
+  `pool:stats()` gives the numbers of a pool now: the workers and the
+  ready ones, the jobs out and the jobs that wait, the jobs sent,
+  answered, lost, and run serial, the seconds that the workers spent, and
+  why the pool stopped, if it did. A debug overlay reads it each second.
+]]
+
+import Players from '@game/Players'
+import { Pool, device_workers, type Stats } from '@packages/foundry'
+
+const pool = Pool.start(script.Parent->worker, device_workers(4, 2))
+
+const gui = new Instance('ScreenGui') {
+  Name = 'FoundryStats',
+  ResetOnSpawn = false,
+  Parent = Players.LocalPlayer->'PlayerGui'!,
+}
+local label = new Instance('TextLabel') {
+  Position = UDim2.fromOffset(8, 8),
+  Size = UDim2.fromOffset(280, 120),
+  BackgroundTransparency = 0.3,
+  TextXAlignment = Enum.TextXAlignment.Left,
+  TextYAlignment = Enum.TextYAlignment.Top,
+  FontFace = Font.fromEnum(Enum.Font.Code),
+  TextSize = 14,
+  Parent = gui,
+}
+
+--- The text of the overlay.
+local function show(stats: Stats) -> string
+  const each = stats.answered > 0 ? stats.seconds / stats.answered * 1000 : 0
+
+  return table.concat(
+    {
+      `workers  {stats.ready} of {stats.workers} ready`,
+      `jobs     {stats.out} out, {stats.waiting} waiting`,
+      `sent     {stats.sent}, answered {stats.answered}`,
+      `lost     {stats.lost}, serial {stats.serial}`,
+      `time     {string.format('%.2f', each)} ms a job`,
+      stats.off ? `off: {stats.reason ?? ''}` : 'on',
+    },
+    '\n'
+  )
+end
+
+while true do
+  label.Text = show(pool:stats())
+  task.wait(1)
+end
+
+--[[
+  - `seconds` counts the time that the workers spent in `work`, from the
+    clock of each worker. It leaves out the frames that a job waits.
+  - `serial` counts each job that ran here: after a stop, or in a pool
+    that started off.
+  - `stats()` makes a new table on each call. Read it at the pace of
+    the overlay, not each frame.
+]]

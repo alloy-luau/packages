@@ -1,0 +1,42 @@
+--[[
+  A job with no answer in `timeout` seconds counts as lost, 5 by default,
+  and so does a job that throws at its worker. A lost job stops the
+  pool. The pool warns once, and from then on each job runs serial,
+  here, through the function that the worker runs.
+
+  So the fallback is part of `run`. A caller does not check whether the
+  pool works: `done` gets each result once, from a worker or from here.
+]]
+
+import UserInputService from '@game/UserInputService'
+import { Pool, device_workers } from '@packages/foundry'
+import { Fill, heights } from './001_a_job'
+
+const pool = Pool.start(script.Parent->worker, device_workers(4, 2), { timeout = 2 })
+const fill = pool:channel(Fill, heights)
+
+fill:run({ x = 0, z = 0, size = 16 }, function(made)
+  -- From a worker, or from `heights` here. The caller cannot tell, and
+  -- does not need to.
+  print(buffer.len(made))
+end)
+
+-- The game can stop the pool itself, from a settings menu or a debug
+-- key. The jobs out and the jobs that wait run serial at once.
+UserInputService.InputBegan:Connect(function(input, typing)
+  if not typing and input.KeyCode == Enum.KeyCode.F8 then
+    pool:stop('F8 turned the workers off')
+  end
+end)
+
+--[[
+  - A stop is for good. A pool that stopped runs each job serial until
+    the game makes a new pool.
+  - An answer that comes after the stop finds no job, and the pool drops
+    it. So `done` never runs twice.
+  - `Pool.start(nil, 0)` gives a pool that is off from the start. A test
+    uses it: each `run` calls `done` at once, with no actors.
+  - Keep `work` free of Instance writes. The serial path runs it in the
+    serial phase, where a write works, so the bug hides until the job
+    runs at a worker.
+]]

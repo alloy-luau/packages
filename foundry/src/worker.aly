@@ -1,0 +1,128 @@
+--[[
+  The worker end of a pool.
+
+  A package cannot ship the game's actor script. The script must sit
+  where its side runs scripts, and it binds the game's own messages, so
+  the game writes a short one:
+
+    -- src/client/worker.client.actor.aly
+    import { ready, serve } from '@packages/foundry'
+    import { Fill, heights } from '@shared/noise'
+
+    Fill.on(serve(heights))
+    ready(script)
+
+  The pool clones the Actor of that script, and sends a job only to a
+  clone that called `ready`.
+]]
+
+import { type Respond } from './job'
+
+--- The attribute a worker sets on its Actor once it listens. The pool
+--- reads it before it sends a job.
+export const READY = 'FoundryReady'
+
+--[[
+  The handler of a job message: it runs `work` on the input and answers
+  with the result, or with the error. Bind the message `as parallel`, so
+  `work` runs in the parallel phase. `respond` then goes back to the
+  serial phase to send the answer.
+
+  The pool runs the same `work` serial when no worker can, so one
+  function serves both paths.
+]]
+export function serve<I, T>(
+  work: (input: I) -> T
+) -> (job: number, input: I, respond: Respond<T>) -> ()
+  return function(job: number, input: I, respond: Respond<T>) -> ()
+    const start = os.clock()
+    const made = Result.pcall(work, input)
+    const seconds = os.clock() - start
+
+    match made with
+      case Ok(result) then
+        respond(job, seconds, result)
+      case Err(problem) then
+        respond(job, seconds, nil, tostring(problem))
+    end
+  end
+end
+
+--- Marks the Actor of a worker script ready, so the pool sends it jobs.
+--- Call it with `script`, after the script binds its handlers.
+export function ready(from: Instance) -> ()
+  const actor = from:GetActor()
+
+  if actor == nil then
+    error(
+      'ready(): this script is under no Actor; name it worker.client.actor.aly or worker.server.actor.aly',
+      2
+    )
+  end
+
+  actor:SetAttribute(READY, true)
+end
+
+@test
+namespace WorkerTests
+  --- What a fake respond got.
+  type Answer = { job: number, seconds: number, result: number?, problem: string? }
+
+  --- A respond that keeps what it got.
+  private function recorder(into: { Answer }) -> Respond<number>
+    return function(job: number, seconds: number, result: number?, problem: string?) -> ()
+      table.insert(into, { job = job, seconds = seconds, result = result, problem = problem })
+    end
+  end
+
+  --- A job that runs answers with its job number and its result.
+  public function serve_answers_with_the_result() -> ()
+    const answers: { Answer } = {}
+    const handler = serve(function(n: number) -> number return n * 2 end)
+
+    handler(7, 21, recorder(answers))
+
+    $assert_eq(#answers, 1)
+    $assert_eq(answers[1].job, 7)
+    $assert_eq(answers[1].result, 42)
+    $assert_eq(answers[1].problem, nil)
+    $assert(answers[1].seconds >= 0)
+  end
+
+  --- A job that throws answers with the error, so the pool can stop.
+  public function serve_answers_with_the_error() -> ()
+    const answers: { Answer } = {}
+    const handler = serve(function(_n: number) -> number
+      error('the noise broke', 0)
+    end)
+
+    handler(3, 1, recorder(answers))
+
+    $assert_eq(answers[1].job, 3)
+    $assert_eq(answers[1].result, nil)
+    $assert(string.find(answers[1].problem ?? '', 'the noise broke', 1, true) ~= nil)
+  end
+
+  --- `ready` sets the attribute on the Actor of the script.
+  public function ready_marks_the_actor() -> ()
+    const actor = new Instance('Actor')
+    const from = (
+      { GetActor = function(_self: unknown) -> Actor return actor end } :: unknown
+    ) :: Instance
+
+    ready(from)
+
+    $assert_eq(actor:GetAttribute(READY), true)
+  end
+
+  --- A script under no Actor cannot be a worker.
+  public function ready_refuses_a_script_under_no_actor() -> ()
+    const from = (
+      { GetActor = function(_self: unknown) -> Actor? return nil end } :: unknown
+    ) :: Instance
+
+    $expect(function() -> ()
+      ready(from)
+    end):toThrow('under no Actor')
+  end
+end

@@ -1,0 +1,57 @@
+--[[
+  Noise terrain in chunks. The server asks the pool for the heights of
+  each chunk of a 12 by 12 grid, and builds the columns of a chunk as
+  its answer lands. The workers make the numbers, and this script makes
+  the parts, in the serial phase.
+]]
+
+import { Pool } from '@packages/foundry'
+import { COLUMNS, WIDTH, type Chunk, Fill, heights } from './terrain'
+
+--- The chunks on each side of the world.
+const CHUNKS = 12
+
+const pool = Pool.start(script.Parent->worker, 4, { cap = 2 })
+const fill = pool:channel(Fill, heights)
+const land = new Instance('Folder') { Name = 'Land', Parent = workspace }
+const seed = math.random(1, 10000)
+const began = os.clock()
+local left = CHUNKS * CHUNKS
+
+--- Builds the columns of one chunk from its heights.
+local function build(chunk: Chunk, tops: { number }) -> ()
+  const name = `{chunk.cx},{chunk.cz}`
+  local model = new Instance('Model') { Name = name }
+
+  for index, top in tops do
+    const column = (index - 1) % COLUMNS
+    const row = (index - 1) // COLUMNS
+    const x = (chunk.cx * COLUMNS + column) * WIDTH
+    const z = (chunk.cz * COLUMNS + row) * WIDTH
+
+    new Instance('Part') {
+      Anchored = true,
+      Size = new Vector3(WIDTH, top, WIDTH),
+      Position = new Vector3(x, top / 2, z),
+      Color = top > 24 ? Color3.fromRGB(120, 120, 120) : Color3.fromRGB(90, 160, 70),
+      Parent = model,
+    }
+  end
+
+  model.Parent = land
+  left -= 1
+
+  if left == 0 then
+    const stats = pool:stats()
+    print(`{CHUNKS * CHUNKS} chunks in {string.format('%.2f', os.clock() - began)} s`)
+    print(`{stats.answered} from the workers, {stats.serial} here`)
+  end
+end
+
+for cx = 0, CHUNKS - 1 do
+  for cz = 0, CHUNKS - 1 do
+    const chunk = { cx = cx, cz = cz, seed = seed }
+
+    fill:run(chunk, function(tops) build(chunk, tops) end)
+  end
+end

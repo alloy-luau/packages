@@ -10,6 +10,7 @@ a version of its own.
 | [Bevel](bevel) | `alloy/bevel` | Components, services, injectors, and signals, after Angular. |
 | [Gear](gear) | `alloy/gear` | State machines over Alloy enums, with transitions that a `match` checks. |
 | [Ledger](ledger) | `alloy/ledger` | Typed player data on DataStores: session locks, migrations, autosave, and purchase receipts. |
+| [Foundry](foundry) | `alloy/foundry` | Worker pools on Roblox actors, with typed jobs and a serial fallback. |
 
 Each package folder holds:
 

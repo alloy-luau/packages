@@ -1,0 +1,12 @@
+--[[
+  Foundry: worker pools on Roblox actors, with typed jobs. This module
+  sends out the public API; each part lives in its own module beside it.
+
+  - pool: Pool, Channel, Stats, device_workers
+  - worker: serve, ready
+  - job: @job, JobMessage, Respond
+]]
+
+export { Pool, device_workers, type Channel, type Options, type Stats } from './pool'
+export { serve, ready } from './worker'
+export { job, type JobMessage, type Respond } from './job'

@@ -1,0 +1,9 @@
+--[[
+  One worker of the raycast pool. The pool clones its Actor.
+]]
+
+import { ready, serve } from '@packages/foundry'
+import { Cast, cast } from './sweep'
+
+Cast.on(serve(cast))
+ready(script)

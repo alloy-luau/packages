@@ -1,0 +1,60 @@
+--[[
+  A job is a function that a worker runs. It reads its input and gives a
+  result, and it writes no Instance, so it can run in the parallel phase.
+  The pool runs the same function here, serial, when no worker can take
+  the job.
+
+  A job message takes the job to a worker and brings the answer back. It
+  is an Alloy `message` with a `reply`, in the shape that Foundry reads:
+  the job number and one input, then the job number, the seconds, the
+  result, and the error. `@job` makes the compiler check the first half.
+
+  These files import Foundry from `@packages/foundry`, where `embr
+  install` puts it. Each step of this tour uses the two names below.
+]]
+
+import { job } from '@packages/foundry'
+
+--- One square of the world: its corner, and the columns on each side.
+export type Chunk = { x: number, z: number, size: number }
+
+--- The height of each column of a chunk, one f32 for each, row by row.
+export function heights(chunk: Chunk) -> buffer
+  const out = buffer.create(chunk.size * chunk.size * 4)
+
+  for row = 0, chunk.size - 1 do
+    for column = 0, chunk.size - 1 do
+      const height = math.noise((chunk.x + column) / 64, (chunk.z + row) / 64) * 32
+      buffer.writef32(out, (row * chunk.size + column) * 4, height)
+    end
+  end
+
+  return out
+end
+
+--- Fills the heights of one chunk. The reply names the job and the
+--- seconds the worker spent, then the heights, or the error.
+@job
+export message Fill(job: number, input: Chunk) reply(
+  job: number,
+  seconds: number,
+  result: buffer?,
+  problem: string?
+) as parallel
+
+--[[
+  - `as parallel` binds the worker's handler with BindToMessageParallel,
+    so the job runs in the parallel phase.
+  - The input crosses to the worker as a copy, and the result crosses
+    back. A message carries data: numbers, strings, buffers, Instances,
+    and plain tables of them. A struct, a function, and a HashMap do not
+    arrive whole, and the compiler reports each one at the message.
+  - The names in the reply are free. Its types are not: a number, a
+    number, the result as an optional, and an optional string.
+  - Put the module where both ends read it: the worker script and the
+    script that sends the jobs.
+
+  A job message with no job number does not compile:
+
+    error(3.11): AttributeContract: `@job` requires a field `job: number`; `Fill` declares none
+]]
