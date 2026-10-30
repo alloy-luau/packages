@@ -434,7 +434,7 @@ local function sync<A, C>(self: Lever<A, C>, action: A) -> ()
 
   for _, each in DEVICES do
     for index, binding in entry.bindings[each] do
-      const child = new Instance('InputBinding') { Name = `{each}{index}` }
+      local child = new Instance('InputBinding') { Name = `{each}{index}` }
 
       if const key = binding.key then
         child.KeyCode = key
