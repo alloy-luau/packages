@@ -1,0 +1,46 @@
+--[[
+  Saved settings. The client sends each change, the server checks it and
+  keeps it in the player's data, and the data saves on the interval and
+  on leave. Settings change often, so the example does not save after
+  each change.
+
+  This folder keeps the four files together. Both sides read
+  `remotes.aly`, so in a game it goes in ReplicatedStorage, with
+  `Settings.aly`, and the imports of the two entry scripts point there.
+]]
+
+import Players from '@game/Players'
+import RunService from '@game/RunService'
+import { MemoryBackend, Store } from '@packages/ledger'
+import { Loaded, SetMusic, SetVolume } from './remotes'
+import { Settings } from './Settings'
+
+const store = new Store<<Settings>>(Settings, {
+  name = 'Settings',
+  version = 1,
+  backend = RunService:IsStudio() ? new MemoryBackend {} : nil,
+})
+
+Players.PlayerAdded:Connect(function(player)
+  match store:join(player) with
+    case Ok(session) then
+      Loaded.fire(player, session.data.volume, session.data.music)
+    case Err(reason) then
+      -- A player can play with the default settings. The session never
+      -- opened, so nothing saves over the real ones.
+      warn(reason)
+  end
+end)
+
+SetVolume.on(function(player, percent)
+  -- The wire checks the type and the width; the range is ours to check.
+  store:get(player)?:update(function(data)
+    data.volume = math.clamp(percent, 0, 100)
+  end)
+end)
+
+SetMusic.on(function(player, on)
+  store:get(player)?:update(function(data)
+    data.music = on
+  end)
+end)

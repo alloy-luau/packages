@@ -1,0 +1,8 @@
+import { Deserialize, Serialize } from '@alloy/std/serde'
+
+--- What each player keeps: their coins, and whether they bought VIP.
+@derive(Serialize, Deserialize)
+export struct Save
+  coins: number = 0
+  vip: boolean = false
+end

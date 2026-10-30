@@ -1,0 +1,14 @@
+--[[
+  Ledger: typed player data on Roblox DataStores. This module sends out
+  the public API; each part lives in its own module beside it.
+
+  - store: Store, the options, and the receipt grants
+  - session: Session, the session lock, and the purchase ids
+  - migrate: the Migration type
+  - backend: Backend, MemoryBackend, DataStoreBackend
+]]
+
+export { Store, type Options, type Grant } from './store'
+export { Session, type Template } from './session'
+export type { Migration } from './migrate'
+export { Backend, MemoryBackend, DataStoreBackend, type Transform } from './backend'

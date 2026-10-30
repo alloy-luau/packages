@@ -1,0 +1,121 @@
+--[[
+  Migrations. A record keeps the schema version of its data. A store
+  declares its own version and one migration for each step before it:
+  migration 1 turns the data of version 1 into the data of version 2,
+  and so on. A load runs the chain from the record's version up to the
+  store's, in order.
+
+  A migration works on the saved form of the data, the plain table that
+  `to_table` writes. Old versions have no struct, so a migration names
+  each shape with a `type`:
+
+    type SaveV1 = { gold: number? }
+    type SaveV2 = { coins: number? }
+
+    function(old: SaveV1) -> SaveV2
+      return { coins = old.gold }
+    end
+
+  The checker reads each migration against the shapes it names. It does
+  not check that the output of one migration is the input of the next.
+  Luau rejects a generic alias that names itself with other type
+  arguments, so a typed chain of `Chain<A>` to `Chain<B>` cannot exist.
+]]
+
+--- One step of the chain: the data of one version in, the data of the
+--- next version out. It must not yield. The `any` lets each migration
+--- name its own input and output shapes; the chain itself is untyped,
+--- as the module header says.
+@allow(explicit_any)
+export type Migration = (old: any) -> any
+
+--- The saved data of a record, after the chain from version `from` up to
+--- version `to`. A version newer than `to` is an Err: the server runs
+--- older code, and a save from it would drop the new fields.
+export function migrate(
+  data: { [string]: unknown },
+  from: number,
+  to: number,
+  migrations: { Migration }
+) -> Result<{ [string]: unknown }, string>
+  if from > to then
+    return Err(`the save has version {from}, and this server knows version {to}`)
+  end
+
+  local current = data
+
+  for version = from, to - 1 do
+    const step = migrations[version]
+    const out = Result.pcall(step, current)
+
+    match out with
+      case Ok(value) then
+        if value is not table then
+          return Err(`migration {version} gave no table`)
+        end
+
+        current = value
+      case Err(message) then
+        return Err(`migration {version} failed: {message}`)
+    end
+  end
+
+  return Ok(current)
+end
+
+@test
+namespace MigrateTests
+  type SaveV1 = { gold: number? }
+
+  type SaveV2 = { coins: number? }
+
+  type SaveV3 = { coins: number?, gems: number? }
+
+  private function chain() -> { Migration }
+    return {
+      function(old: SaveV1) -> SaveV2
+        return { coins = old.gold }
+      end,
+      function(old: SaveV2) -> SaveV3
+        return { coins = old.coins, gems = 0 }
+      end,
+    }
+  end
+
+  --- A save of version 1 runs both steps, in order.
+  public function runs_the_chain_in_order() -> ()
+    const out = migrate({ gold = 7 }, 1, 3, chain()):unwrap()
+
+    $assert_eq(out.coins, 7)
+    $assert_eq(out.gems, 0)
+  end
+
+  --- A save of the current version runs no step.
+  public function a_current_save_stays_as_it_is() -> ()
+    const out = migrate({ coins = 2 }, 3, 3, chain()):unwrap()
+
+    $assert_eq(out.coins, 2)
+    $assert_eq(out.gems, nil)
+  end
+
+  --- A save of a newer version does not load.
+  public function a_newer_save_is_an_err() -> ()
+    $assert(migrate({}, 4, 3, chain()):is_err())
+  end
+
+  --- A migration that throws gives an Err that names its step.
+  public function a_throw_names_the_step() -> ()
+    const broken: { Migration } = {
+      function(_old: SaveV1) -> SaveV2
+        error('no gold')
+      end,
+    }
+
+    match migrate({}, 1, 2, broken) with
+      case Ok(_) then
+        error('the broken migration loaded')
+      case Err(message) then
+        $assert(string.find(message, 'migration 1 failed', 1, true) ~= nil)
+    end
+  end
+end

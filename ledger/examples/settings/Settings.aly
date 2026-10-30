@@ -1,0 +1,15 @@
+import { Deserialize, Serialize } from '@alloy/std/serde'
+
+--- The graphics a player picks. It saves as the name of the variant.
+export enum Quality
+  Low
+  High
+end
+
+--- What each player picks in the settings menu.
+@derive(Serialize, Deserialize)
+export struct Settings
+  volume: number = 50
+  music: boolean = true
+  quality: Quality = Quality.High
+end

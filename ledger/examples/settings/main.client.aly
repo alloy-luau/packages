@@ -1,0 +1,29 @@
+--[[
+  The client half: it hears the saved settings, and sends a change when
+  the player presses M (music) or the minus and plus keys (volume).
+]]
+
+import UserInputService from '@game/UserInputService'
+import { Loaded, SetMusic, SetVolume } from './remotes'
+
+local volume = 50
+local music = true
+
+Loaded.on(function(saved_volume, saved_music)
+  volume = saved_volume
+  music = saved_music
+end)
+
+UserInputService.InputBegan:Connect(function(input, typing)
+  if typing then
+    return
+  end
+
+  if input.KeyCode == Enum.KeyCode.M then
+    music = not music
+    SetMusic.fire(music)
+  elseif input.KeyCode == Enum.KeyCode.Minus or input.KeyCode == Enum.KeyCode.Equals then
+    volume = math.clamp(volume + (input.KeyCode == Enum.KeyCode.Minus ? -10 : 10), 0, 100)
+    SetVolume.fire(volume)
+  end
+end)

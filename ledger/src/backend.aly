@@ -1,0 +1,202 @@
+--[[
+  Where a store keeps its records. A backend reads and writes one key in
+  one step, as `UpdateAsync` does: it gives the stored value to a
+  transform and writes what the transform gives back. Ledger asks for
+  nothing else, so the lock check and the data write always share one
+  call.
+
+  - DataStoreBackend: a Roblox DataStore.
+  - MemoryBackend: a table in memory, for tests, for Studio without API
+    access, and for the examples.
+]]
+
+import DataStoreService from '@game/DataStoreService'
+
+--- Seconds that a call waits for the request budget before it tries
+--- anyway. A call past the budget goes into Roblox's queue, and the
+--- retry catches the error if the queue is full.
+const BUDGET_WAIT = 10
+
+--- Gets the stored value, or nil for a new key, and gives the value to
+--- write. A nil result writes nothing.
+export type Transform = (old: unknown) -> unknown
+
+--- Where a store keeps its records. Ledger has two, MemoryBackend and
+--- DataStoreBackend; a game may write its own with `impl Backend for`.
+--- The store makes the Results: `update` answers with the error text, or
+--- nil, because a `Result` from a package does not yet type check
+--- against a game's own `Result`.
+export trait Backend
+  --- Runs `transform` on the value of `key` and writes what it gives
+  --- back, in one step. `user_ids` tags the key with the players whose
+  --- data it holds, for Roblox's data deletion requests. It answers nil
+  --- when the call ran, and the error text when it failed.
+  function update(self, key: string, transform: Transform, user_ids: { number }?) -> string?
+end
+
+--- A deep copy of a value, with no metatables. The serde derives give
+--- back the struct's own arrays and maps, so a save copies them before
+--- it yields, and later changes do not reach the write.
+export function copy(value: unknown) -> unknown
+  if value is table then
+    local out: { [unknown]: unknown } = {}
+
+    -- `next` skips an `__iter`: the copy reads the raw table, as a
+    -- DataStore does.
+    for key, item in next, value do
+      out[key] = copy(item)
+    end
+
+    return out
+  end
+
+  return value
+end
+
+--- Keeps each record in a table in memory. Each read and each write
+--- copies the value, as a DataStore does, so a session never shares a
+--- table with the stored record. The records go when the server stops.
+export struct MemoryBackend
+  private values: { [string]: unknown } = {}
+  private failures: number = 0
+end
+
+impl MemoryBackend
+  --- Makes the next `count` calls fail, as a DataStore outage does. A
+  --- test uses it to check the retries and the failed paths.
+  function fail(self, count: number) -> ()
+    self.failures = count
+  end
+
+  --- A copy of the stored value of `key`, or nil.
+  function read(self, key: string) -> unknown
+    return copy(self.values[key])
+  end
+
+  --- Stores a copy of `value` under `key`. A test uses it to write an old
+  --- save, or a lock that another server holds.
+  function write(self, key: string, value: unknown) -> ()
+    self.values[key] = copy(value)
+  end
+end
+
+impl Backend for MemoryBackend
+  function update(self, key: string, transform: Transform, _user_ids: { number }?) -> string?
+    if self.failures > 0 then
+      self.failures -= 1
+
+      return 'MemoryBackend: a planned failure'
+    end
+
+    const value = transform(copy(self.values[key]))
+
+    if value ~= nil then
+      self.values[key] = copy(value)
+    end
+
+    return nil
+  end
+end
+
+--- Waits, up to BUDGET_WAIT seconds, until the server has the budget for
+--- one more UpdateAsync.
+local function wait_for_budget() -> ()
+  local waited = 0
+
+  while
+    waited < BUDGET_WAIT
+    and DataStoreService:GetRequestBudgetForRequestType(Enum.DataStoreRequestType.UpdateAsync) < 1
+  do
+    waited += task.wait(1)
+  end
+end
+
+--- Keeps each record in a Roblox DataStore, one key for each record.
+export struct DataStoreBackend
+  private store: DataStore
+end
+
+impl DataStoreBackend
+  --- The backend of the DataStore `name`, in `scope` if one is given.
+  function new(name: string, scope: string?) -> DataStoreBackend
+    return new DataStoreBackend { store = DataStoreService:GetDataStore(name, scope) }
+  end
+end
+
+impl Backend for DataStoreBackend
+  function update(self, key: string, transform: Transform, user_ids: { number }?) -> string?
+    wait_for_budget()
+
+    const result = Result.pcall(function() -> nil
+      self.store:UpdateAsync(key, function(old: unknown, info: DataStoreKeyInfo?)
+        const value = transform(old)
+
+        if value == nil then
+          return nil
+        end
+
+        -- The metadata goes back as it came: a write without it clears
+        -- it.
+        return value, user_ids ?? info?:GetUserIds(), info?:GetMetadata()
+      end)
+
+      return nil
+    end)
+
+    if local Err(message) = result then
+      return message
+    end
+
+    return nil
+  end
+end
+
+@test
+namespace BackendTests
+  --- A copy shares no table with the value, and drops the metatables.
+  public function copy_is_deep_and_plain() -> ()
+    const inner = setmetatable({ 1, 2 }, { __index = {} })
+    const value = { list = inner, name = 'a' }
+    const out = copy(value) :: { list: { number }, name: string }
+
+    $assert(not rawequal(out.list, inner))
+    $assert_eq(out.list[2], 2)
+    $assert_eq(out.name, 'a')
+    $assert_eq(getmetatable(out.list), nil)
+  end
+
+  --- A write stores a copy, and a read gives a copy.
+  public function memory_keeps_copies() -> ()
+    const backend = new MemoryBackend {}
+    local value = { coins = 1 }
+
+    backend:write('k', value)
+    value.coins = 2
+
+    local stored = backend:read('k') :: { coins: number }
+    stored.coins = 3
+
+    $assert_eq((backend:read('k') :: { coins: number }).coins, 1)
+  end
+
+  --- A transform that gives nil writes nothing.
+  public function memory_skips_a_nil_transform() -> ()
+    const backend = new MemoryBackend {}
+
+    backend:write('k', 1)
+    $assert_eq(backend:update('k', function(_old) return nil end, nil), nil)
+    $assert_eq(backend:read('k'), 1)
+  end
+
+  --- A planned failure fails that many calls, then the backend works.
+  public function memory_fails_when_told() -> ()
+    const backend = new MemoryBackend {}
+    const write = function(_old: unknown) -> unknown return 5 end
+
+    backend:fail(2)
+    $assert(backend:update('k', write, nil) ~= nil)
+    $assert(backend:update('k', write, nil) ~= nil)
+    $assert_eq(backend:update('k', write, nil), nil)
+    $assert_eq(backend:read('k'), 5)
+  end
+end

@@ -1,0 +1,81 @@
+--[[
+  A store writes through a backend. The default is the DataStore of the
+  store's name. `MemoryBackend` keeps each record in a table instead,
+  so tests, Studio with no API access, and these examples run with no
+  network. Its records go when the server stops.
+]]
+
+import RunService from '@game/RunService'
+import { Deserialize, Serialize } from '@alloy/std/serde'
+import { MemoryBackend, Store } from '@packages/ledger'
+
+@derive(Serialize, Deserialize)
+struct Save
+  coins: number = 0
+end
+
+type SaveV1 = { gold: number? }
+
+type SaveV2 = { coins: number? }
+
+-- Studio writes to memory, so a test there never touches a live save.
+const store = new Store<<Save>>(Save, {
+  name = 'Players',
+  version = 1,
+  backend = RunService:IsStudio() ? new MemoryBackend {} : nil,
+})
+
+print(store.name)
+
+-- A test builds its own backend, and reads what the store wrote.
+const backend = new MemoryBackend {}
+const test_store = new Store<<Save>>(Save, {
+  name = 'Test',
+  version = 2,
+  migrations = {
+    function(old: SaveV1) -> SaveV2
+      return { coins = old.gold }
+    end,
+  },
+  backend = backend,
+  autosave = 0,
+})
+
+-- `write` puts a record in place: here, a save of version 1.
+backend:write('player_1', { version = 1, data = { gold = 5 } })
+
+const session = test_store:open('player_1', 1):unwrap()
+
+print(session.data.coins) -- 5
+
+-- `fail(n)` makes the next n calls fail, as a DataStore outage does.
+backend:fail(5)
+print(session:save():is_err()) -- true
+
+-- `read` gives a copy of the stored record.
+session:save():unwrap()
+print(backend:read('player_1'))
+
+--[[
+  `store:open(key, user_id?)` opens any key, and `join(player)` opens
+  `player_<UserId>`. Each open session saves at shutdown.
+
+  A backend of your own, such as one that logs each call, implements
+  `Backend`:
+
+    struct LoggedBackend
+      read inner: Backend
+    end
+
+    impl Backend for LoggedBackend
+      function update(self, key: string, transform: Transform, user_ids: { number }?) -> string?
+        print('update', key)
+        return self.inner:update(key, transform, user_ids)
+      end
+    end
+
+  `transform` gets the stored value and gives the value to write, or nil
+  to write nothing. It must run in one step, as UpdateAsync does.
+  `update` answers nil when the call ran, and the error text when it
+  failed. The store turns that into a Result, and tries again.
+]]

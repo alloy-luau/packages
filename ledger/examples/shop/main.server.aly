@@ -1,0 +1,50 @@
+--[[
+  A shop with receipts. Two prompts sell two developer products. The
+  store's receipt handler grants each purchase once, and answers Roblox
+  only after the save, so a receipt that comes twice grants once.
+]]
+
+import MarketplaceService from '@game/MarketplaceService'
+import Players from '@game/Players'
+import RunService from '@game/RunService'
+import { MemoryBackend, Store } from '@packages/ledger'
+import { COINS_500, GRANTS, VIP } from './products'
+import { Save } from './Save'
+
+const store = new Store<<Save>>(Save, {
+  name = 'Shop',
+  version = 1,
+  backend = RunService:IsStudio() ? new MemoryBackend {} : nil,
+})
+
+-- The one ProcessReceipt of the game.
+MarketplaceService.ProcessReceipt = store:receipts(GRANTS)
+
+Players.PlayerAdded:Connect(function(player)
+  if local Err(reason) = store:join(player) then
+    warn(reason)
+    player:Kick('Your data did not load. Rejoin in a minute.')
+  end
+end)
+
+--- A stand with a prompt that sells one product.
+local function stand(text: string, product: number, x: number) -> ()
+  const part = new Instance('Part') {
+    Anchored = true,
+    Size = new Vector3(4, 4, 4),
+    Position = new Vector3(x, 2, 10),
+    Parent = workspace,
+  }
+  const prompt = new Instance('ProximityPrompt') { ActionText = text, Parent = part }
+
+  prompt.Triggered:Connect(function(player)
+    -- Sell only to a player whose data loaded: a grant needs a session
+    -- that saves.
+    if store:get(player) ~= nil then
+      MarketplaceService:PromptProductPurchase(player, product)
+    end
+  end)
+end
+
+stand('Buy 500 coins', COINS_500, -4)
+stand('Buy VIP', VIP, 4)

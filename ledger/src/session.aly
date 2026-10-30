@@ -1,0 +1,709 @@
+--[[
+  Sessions. A session holds one record in memory while its server owns
+  the record's lock. It loads with `claim`, which takes the lock in the
+  same write that reads the record, and it writes back with `save` and
+  `close`. Each write checks the lock first, in the same transform, so a
+  server that lost the lock writes nothing.
+
+  A record, as a backend stores it:
+
+    {
+      version = 2,                             -- the schema version of data
+      data = { ... },                          -- what to_table wrote
+      lock = { job = '...', id = '...', at = 1730000000 },
+      receipts = { 'purchase id', ... },       -- the newest MAX_RECEIPTS
+    }
+
+  `lock.job` names the server (`game.JobId`), `lock.id` names the
+  session, and `lock.at` is the `os.time()` of the last write. A lock
+  older than the store's lock timeout is stale, and the next claim takes
+  it over.
+]]
+
+import { Deserialize, Serialize } from '@alloy/std/serde'
+import { copy, type Backend, MemoryBackend } from './backend'
+import { migrate, type Migration } from './migrate'
+
+--- Purchase ids that a record keeps. Roblox sends a receipt again only
+--- while it is not granted, so the newest ids are enough.
+const MAX_RECEIPTS = 100
+
+--- The seconds of the first wait between two tries. Each wait doubles
+--- it, with a random part from 0.5x to 1.5x.
+const BACKOFF = 1
+
+--- DataStore error codes that no retry fixes: a bad key, a bad value, a
+--- value too large, and Studio without API access.
+const PERMANENT: { [string]: boolean } = {
+  ['101'] = true,
+  ['102'] = true,
+  ['103'] = true,
+  ['104'] = true,
+  ['105'] = true,
+  ['106'] = true,
+  ['107'] = true,
+  ['403'] = true,
+  ['509'] = true,
+  ['511'] = true,
+  ['512'] = true,
+  ['513'] = true,
+}
+
+--- The struct class of the data. A struct with
+--- `@derive(Serialize, Deserialize)` has both functions. The `any` lets
+--- the derived `from_table`, whose parameter Luau reads as the struct's
+--- own field shape, fit here.
+@allow(explicit_any)
+export type Template<T> = {
+  from_table: (raw: any) -> T,
+  to_table: (data: T) -> any,
+}
+
+--- What each session of a store reads. The store builds it once.
+export type Settings<T> = {
+  name: string,
+  version: number,
+  template: Template<T>,
+  migrations: { Migration },
+  backend: Backend,
+  attempts: number,
+  lock_timeout: number,
+  sessions: { [string]: Session<T> },
+}
+
+--- A lock as a record stores it.
+type Lock = { job: string, id: string, at: number }
+
+--- The state of a session: it takes writes while it is open.
+type State = 'open' | 'closed' | 'lost'
+
+--- The ids of this server's sessions: the job, a count, and a random
+--- part, so no two sessions anywhere share one.
+const random = new Random()
+local count = 0
+
+--- A new lock id.
+local function new_id() -> string
+  count += 1
+
+  return `{game.JobId}/{count}/{random:NextInteger(0, 2 ^ 30)}`
+end
+
+--- A lock for session `id`, written now.
+local function lock_of(id: string) -> Lock
+  return { job = game.JobId, id = id, at = os.time() }
+end
+
+--- Whether a DataStore error is one that no retry fixes. The message
+--- starts with its code, as "104: Cannot store Array in data store".
+local function permanent(message: string) -> boolean
+  const code = string.match(message, '^(%d%d%d)')
+
+  return code ~= nil and PERMANENT[code] ~= nil
+end
+
+--- Waits before try `attempt` + 1.
+local function back_off(attempt: number) -> ()
+  task.wait(BACKOFF * 2 ^ (attempt - 1) * (0.5 + math.random()))
+end
+
+--- Runs `call`, a backend call, up to `attempts` times, with a wait
+--- between tries, until it gives no error. A permanent error stops the
+--- tries at once.
+local function retry(attempts: number, call: () -> string?) -> Result<nil, string>
+  local last = 'no attempt ran'
+
+  for attempt = 1, attempts do
+    const failed = call()
+
+    if failed == nil then
+      return Ok(nil)
+    end
+
+    last = failed
+
+    if permanent(last) then
+      break
+    end
+
+    if attempt < attempts then
+      back_off(attempt)
+    end
+  end
+
+  return Err(last)
+end
+
+--- The schema version of a stored record. A record from before Ledger
+--- wrote versions is version 1.
+local function version_of(record: { [unknown]: unknown }) -> number
+  const version = record.version
+
+  return version is number ? version : 1
+end
+
+--- Takes the lock off a record that this session claimed, and keeps the
+--- data as it is. A load that cannot read the data calls it, so the
+--- player can load again at once.
+local function release<T>(settings: Settings<T>, key: string, id: string) -> ()
+  const result = retry(settings.attempts, function() -> string?
+    return settings.backend:update(key, function(old: unknown) -> unknown
+      if old is not table then
+        return nil
+      end
+
+      const lock = old.lock
+
+      if lock is not table or lock.id ~= id then
+        return nil
+      end
+
+      old.lock = nil
+
+      return old
+    end, nil)
+  end)
+
+  if local Err(message) = result then
+    warn(`[ledger] {settings.name}: the lock on {key} stays until it times out: {message}`)
+  end
+end
+
+--- One record, held in memory while this server owns its lock.
+export struct Session<T>
+  --- The key of the record.
+  read key: string
+  --- The data. Change it inside `update`, so a change after the session
+  --- ends is an Err and not a write that never saves.
+  read data: T
+  private settings: Settings<T>
+  private id: string
+  private user_ids: { number }?
+  private receipts: { string }
+  private state: State = 'open'
+  private saving: boolean = false
+end
+
+impl Session<T>
+  --- Whether the session still takes changes and writes.
+  function active(self) -> boolean
+    return self.state == 'open'
+  end
+
+  --- Runs `change` on the data. It is an Err when the session has ended:
+  --- closed, or lost to another server. `change` must not yield, so a
+  --- save sees all of it or none of it.
+  function update(self, change: (data: T) -> ()) -> Result<nil, string>
+    if self.state ~= 'open' then
+      return Err(`{self.settings.name}: the session of {self.key} is {self.state}`)
+    end
+
+    change(self.data)
+
+    return Ok(nil)
+  end
+
+  --- Writes the data now and renews the lock. Yields. It is an Err when
+  --- the tries run out, or when another server took the lock: the
+  --- session is then lost, and it writes nothing again.
+  function save(self) -> Result<nil, string>
+    -- `Session.write(self)`, not `self:write()`: flux does not see a
+    -- private method of a generic struct through `self`.
+    return Session.write(self, false)
+  end
+
+  --- Writes the data and takes the lock off, so the next server loads
+  --- at once. Yields. The session ends, even when the write fails; the
+  --- lock then times out. A second close waits for the first, and is Ok.
+  function close(self) -> Result<nil, string>
+    return Session.write(self, true)
+  end
+
+  --- Grants a purchase once. When the record does not hold `id`,
+  --- `grant` runs on the data and the id goes into the record. Then the
+  --- record saves, so the grant and the id land in one write. Ok(true)
+  --- means `grant` ran now, Ok(false) that it ran before. An Err means
+  --- the save failed: answer `NotProcessedYet`, and the next receipt
+  --- saves again without a second grant. `grant` must not yield.
+  function purchase(self, id: string, grant: (data: T) -> ()) -> Result<boolean, string>
+    if self.state ~= 'open' then
+      return Err(`{self.settings.name}: the session of {self.key} is {self.state}`)
+    end
+
+    const granted = table.find(self.receipts, id) == nil
+
+    if granted then
+      grant(self.data)
+      table.insert(self.receipts, id)
+
+      while #self.receipts > MAX_RECEIPTS do
+        table.remove(self.receipts, 1)
+      end
+    end
+
+    try self:save()
+
+    return Ok(granted)
+  end
+
+  --- Whether the record holds the purchase `id`.
+  function has_receipt(self, id: string) -> boolean
+    return table.find(self.receipts, id) ~= nil
+  end
+
+  --- The one write path: the lock check, the data, and the lock, in one
+  --- transform.
+  private function write(self, release: boolean) -> Result<nil, string>
+    -- One write at a time, so an older write never lands after a newer
+    -- one.
+    while self.saving do
+      task.wait()
+    end
+
+    if self.state == 'closed' and release then
+      return Ok(nil)
+    end
+
+    if self.state ~= 'open' then
+      return Err(`{self.settings.name}: the session of {self.key} is {self.state}`)
+    end
+
+    const settings = self.settings
+    -- The snapshot comes before the yield. A change during the write
+    -- goes into the next one.
+    const data = copy(settings.template.to_table(self.data))
+    const receipts = copy(self.receipts)
+    local lost = false
+
+    self.saving = true
+
+    const result = retry(settings.attempts, function() -> string?
+      return settings.backend:update(self.key, function(old: unknown) -> unknown
+        -- The transform can run more than once: set the outcome each time.
+        lost = true
+
+        if old is not table then
+          return nil
+        end
+
+        const lock = old.lock
+
+        if lock is not table or lock.id ~= self.id then
+          return nil
+        end
+
+        lost = false
+        old.version = settings.version
+        old.data = data
+        old.receipts = receipts
+        old.lock = release ? nil : lock_of(self.id)
+
+        return old
+      end, self.user_ids)
+    end)
+
+    self.saving = false
+
+    if result:is_ok() and lost then
+      Session.finish(self, 'lost')
+
+      return Err(`{settings.name}: another server took the lock on {self.key}`)
+    end
+
+    if release then
+      Session.finish(self, 'closed')
+    end
+
+    return result:map_err(function(message: string) -> string
+      return `{settings.name}: the save of {self.key} failed: {message}`
+    end)
+  end
+
+  --- Ends the session, and takes it out of the store's open sessions.
+  private function finish(self, state: State) -> ()
+    self.state = state
+
+    if self.settings.sessions[self.key] == self then
+      self.settings.sessions[self.key] = nil
+    end
+  end
+end
+
+--- What one try at a lock found.
+type Found = {
+  --- `claimed`: the lock is ours. `locked`: a live session holds it.
+  --- `refused`: the record does not load, and `reason` says why.
+  outcome: 'claimed' | 'locked' | 'refused',
+  record: { [unknown]: unknown },
+  reason: string,
+}
+
+--- One try at the lock of `key`, in one write. A new key gets a record
+--- of the store's version.
+local function try_lock<T>(
+  settings: Settings<T>,
+  key: string,
+  id: string,
+  user_ids: { number }?
+) -> Result<Found, string>
+  local found: Found = { outcome = 'refused', record = {}, reason = '' }
+
+  const failed = settings.backend:update(key, function(old: unknown) -> unknown
+    -- The transform can run more than once: set the outcome each time.
+    found.outcome = 'refused'
+
+    if old ~= nil and old is not table then
+      found.reason = `the record under {key} is not a table`
+
+      return nil
+    end
+
+    local stored = (old ?? { version = settings.version }) :: { [unknown]: unknown }
+    const lock = stored.lock
+    const version = version_of(stored)
+
+    if
+      lock is table
+      and lock.id ~= id
+      and lock.at is number
+      and os.time() - lock.at < settings.lock_timeout
+    then
+      found.outcome = 'locked'
+      found.reason = `another server ({lock.job}) still holds {key}`
+
+      return nil
+    end
+
+    if version > settings.version then
+      found.reason = `{key} has version {version}, and this server knows {settings.version}`
+
+      return nil
+    end
+
+    stored.lock = lock_of(id)
+    found.outcome = 'claimed'
+    found.record = stored
+
+    return stored
+  end, user_ids)
+
+  return failed == nil ? Ok(found) : Err(failed)
+end
+
+--- The session of a record that `try_lock` claimed: the data after the
+--- migrations, read into the struct. Data that does not read is an Err,
+--- and the lock comes off again.
+local function start<T>(
+  settings: Settings<T>,
+  key: string,
+  id: string,
+  user_ids: { number }?,
+  record: { [unknown]: unknown }
+) -> Result<Session<T>, string>
+  const raw = record.data
+  const migrated = migrate(
+    raw is table ? raw : {},
+    version_of(record),
+    settings.version,
+    settings.migrations
+  )
+  const decoded = migrated:and_then(function(data: { [string]: unknown }) -> Result<T, string>
+    return Result.pcall(settings.template.from_table, data)
+  end)
+
+  if local Err(message) = decoded then
+    release(settings, key, id)
+
+    return Err(`{settings.name}: the data under {key} does not load: {message}`)
+  end
+
+  const receipts: { string } = {}
+  const saved = record.receipts
+
+  if saved is table then
+    for _, receipt in saved do
+      if receipt is string then
+        table.insert(receipts, receipt)
+      end
+    end
+  end
+
+  const session: Session<T> = new Session {
+    key = key,
+    data = decoded:unwrap(),
+    settings = settings,
+    id = id,
+    user_ids = user_ids,
+    receipts = receipts,
+  }
+
+  settings.sessions[key] = session
+
+  return Ok(session)
+end
+
+--- Loads the record under `key` and takes its lock, in one write.
+--- Yields. A lock that another session renewed within the lock timeout
+--- makes the claim wait and try again; past the tries it is an Err. A
+--- record of a newer version, or data that does not read, is an Err
+--- too, and the record keeps its data.
+export function claim<T>(
+  settings: Settings<T>,
+  key: string,
+  user_ids: { number }?
+) -> Result<Session<T>, string>
+  const id = new_id()
+  local last = 'no attempt ran'
+
+  for attempt = 1, settings.attempts do
+    match try_lock(settings, key, id, user_ids) with
+      case Ok(found) then
+        if found.outcome == 'claimed' then
+          return start(settings, key, id, user_ids, found.record)
+        end
+
+        if found.outcome == 'refused' then
+          return Err(`{settings.name}: {found.reason}`)
+        end
+
+        last = found.reason
+      case Err(message) then
+        if permanent(message) then
+          return Err(`{settings.name}: the load of {key} failed: {message}`)
+        end
+
+        last = message
+    end
+
+    if attempt < settings.attempts then
+      back_off(attempt)
+    end
+  end
+
+  return Err(`{settings.name}: the load of {key} failed: {last}`)
+end
+
+@test
+namespace SessionTests
+  @derive(Serialize, Deserialize)
+  struct Save
+    coins: number = 0
+    items: string[] = []
+  end
+
+  type Record = {
+    version: number,
+    data: { coins: number?, items: { string }? }?,
+    lock: Lock?,
+    receipts: { string }?,
+  }
+
+  private function settings_of(backend: MemoryBackend) -> Settings<Save>
+    return {
+      name = 'Test',
+      version = 1,
+      template = Save,
+      migrations = {},
+      backend = backend,
+      attempts = 3,
+      lock_timeout = 180,
+      sessions = {},
+    }
+  end
+
+  private function record(backend: MemoryBackend) -> Record
+    return backend:read('k') :: Record
+  end
+
+  --- A new key loads the defaults of the struct, and the claim writes the lock.
+  public function a_new_key_loads_the_defaults() -> ()
+    const backend = new MemoryBackend {}
+    const session = claim(settings_of(backend), 'k', nil):unwrap()
+
+    $assert_eq(session.data.coins, 0)
+    $assert(session:active())
+    $assert(record(backend).lock ~= nil)
+  end
+
+  --- A save writes the data, and the next load reads it.
+  public function a_save_reads_back() -> ()
+    const backend = new MemoryBackend {}
+    const settings = settings_of(backend)
+    const session = claim(settings, 'k', nil):unwrap()
+
+    session:update(function(data) data.coins += 5 end):unwrap()
+    session:close():unwrap()
+
+    $assert_eq(claim(settings, 'k', nil):unwrap().data.coins, 5)
+  end
+
+  --- A save copies the data first, so a later change does not reach it.
+  public function a_save_is_a_snapshot() -> ()
+    const backend = new MemoryBackend {}
+    const session = claim(settings_of(backend), 'k', nil):unwrap()
+
+    session:update(function(data) data.items:push('sword') end):unwrap()
+    session:save():unwrap()
+    session:update(function(data) data.items:push('shield') end):unwrap()
+
+    $assert_eq(#((record(backend).data :: { items: { string } }).items), 1)
+  end
+
+  --- A lock that a live session holds refuses the load, and writes nothing.
+  public function a_live_lock_refuses_the_load() -> ()
+    const backend = new MemoryBackend {}
+
+    backend:write(
+      'k',
+      { version = 1, data = { coins = 9 }, lock = { job = 'other', id = 'x', at = os.time() } }
+    )
+
+    match claim(settings_of(backend), 'k', nil) with
+      case Ok(_) then
+        error('the load took a live lock')
+      case Err(message) then
+        $assert(string.find(message, 'another server (other) still holds k', 1, true) ~= nil)
+    end
+
+    $assert_eq((record(backend).lock :: Lock).id, 'x')
+  end
+
+  --- A lock past the timeout is stale, and the load takes it over.
+  public function a_stale_lock_is_taken_over() -> ()
+    const backend = new MemoryBackend {}
+
+    backend:write(
+      'k',
+      { version = 1, data = { coins = 9 }, lock = { job = 'old', id = 'x', at = os.time() - 1000 } }
+    )
+
+    const session = claim(settings_of(backend), 'k', nil):unwrap()
+
+    $assert_eq(session.data.coins, 9)
+    $assert((record(backend).lock :: Lock).id ~= 'x')
+  end
+
+  --- When another server takes the lock, the session is lost and writes nothing.
+  public function a_taken_lock_loses_the_session() -> ()
+    const backend = new MemoryBackend {}
+    const session = claim(settings_of(backend), 'k', nil):unwrap()
+
+    backend:write(
+      'k',
+      { version = 1, data = { coins = 1 }, lock = { job = 'other', id = 'y', at = os.time() } }
+    )
+    session:update(function(data) data.coins = 50 end):unwrap()
+
+    $assert(session:save():is_err())
+    $assert(not session:active())
+    $assert(session:update(function(data) data.coins = 60 end):is_err())
+    $assert_eq((record(backend).data :: { coins: number }).coins, 1)
+  end
+
+  --- A close takes the lock off and ends the session. A second close is Ok.
+  public function close_takes_the_lock_off() -> ()
+    const backend = new MemoryBackend {}
+    const settings = settings_of(backend)
+    const session = claim(settings, 'k', nil):unwrap()
+
+    $assert_eq(settings.sessions.k, session)
+    session:close():unwrap()
+
+    $assert_eq(record(backend).lock, nil)
+    $assert_eq(settings.sessions.k, nil)
+    $assert(session:close():is_ok())
+    $assert(session:update(function(data) data.coins = 1 end):is_err())
+  end
+
+  --- A save of a newer version does not load, and its record stays as it was.
+  public function a_newer_record_stays_untouched() -> ()
+    const backend = new MemoryBackend {}
+
+    backend:write('k', { version = 2, data = { coins = 3 } })
+
+    $assert(claim(settings_of(backend), 'k', nil):is_err())
+    $assert_eq(record(backend).lock, nil)
+  end
+
+  --- Data that does not read keeps its record, and the lock comes off.
+  public function a_failed_read_takes_the_lock_off() -> ()
+    const backend = new MemoryBackend {}
+    local settings = settings_of(backend)
+
+    settings.version = 2
+    settings.migrations = {
+      function(_old: { gold: number? }) -> { coins: number? }
+        error('a bug in the migration')
+      end,
+    }
+    backend:write('k', { version = 1, data = { gold = 3 } })
+
+    $assert(claim(settings, 'k', nil):is_err())
+    $assert_eq(record(backend).lock, nil)
+    $assert_eq((record(backend).data :: { gold: number }).gold, 3)
+  end
+
+  --- An error tries again; past the tries the load is an Err.
+  public function errors_try_again() -> ()
+    const backend = new MemoryBackend {}
+    const settings = settings_of(backend)
+
+    backend:fail(2)
+    $assert(claim(settings, 'k', nil):is_ok())
+
+    backend:fail(3)
+    $assert(claim(settings, 'j', nil):is_err())
+  end
+
+  --- A permanent error stops the tries at once.
+  public function a_permanent_error_stops_the_tries() -> ()
+    local calls = 0
+    const result = retry(5, function() -> string?
+      calls += 1
+
+      return '104: Cannot store Array in data store'
+    end)
+
+    $assert(result:is_err())
+    $assert_eq(calls, 1)
+  end
+
+  --- A purchase grants once, and the id saves with the grant.
+  public function a_purchase_grants_once() -> ()
+    const backend = new MemoryBackend {}
+    const session = claim(settings_of(backend), 'k', nil):unwrap()
+    const grant = function(data: Save) -> () data.coins += 100 end
+
+    $assert_eq(session:purchase('p1', grant):unwrap(), true)
+    $assert_eq(session:purchase('p1', grant):unwrap(), false)
+    $assert_eq(session.data.coins, 100)
+    $assert_eq((record(backend).receipts :: { string })[1], 'p1')
+    $assert_eq((record(backend).data :: { coins: number }).coins, 100)
+  end
+
+  --- A purchase whose save fails grants in memory only. The next try saves it and grants nothing more.
+  public function a_failed_purchase_save_grants_once() -> ()
+    const backend = new MemoryBackend {}
+    const session = claim(settings_of(backend), 'k', nil):unwrap()
+    const grant = function(data: Save) -> () data.coins += 100 end
+
+    backend:fail(3)
+    $assert(session:purchase('p1', grant):is_err())
+    $assert_eq(session:purchase('p1', grant):unwrap(), false)
+    $assert_eq((record(backend).data :: { coins: number }).coins, 100)
+  end
+
+  --- The record keeps the newest MAX_RECEIPTS purchase ids.
+  public function receipts_stay_bounded() -> ()
+    const backend = new MemoryBackend {}
+    const session = claim(settings_of(backend), 'k', nil):unwrap()
+
+    for n = 1, MAX_RECEIPTS + 5 do
+      session:purchase(`p{n}`, function(data: Save) -> () data.coins += 1 end):unwrap()
+    end
+
+    $assert_eq(#(record(backend).receipts :: { string }), MAX_RECEIPTS)
+    $assert(not session:has_receipt('p1'))
+    $assert(session:has_receipt(`p{MAX_RECEIPTS + 5}`))
+  end
+end

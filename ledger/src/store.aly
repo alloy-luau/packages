@@ -1,0 +1,448 @@
+--[[
+  Stores. A store is one kind of saved data: a struct for the shape, a
+  schema version with its migrations, and a backend. It opens a session
+  for each key, saves each open session on an interval, and closes them
+  all in `game:BindToClose`.
+
+  `join(player)` opens the key `player_<UserId>` for a player, and closes
+  it when the player leaves. `receipts(grants)` gives a function for
+  `MarketplaceService.ProcessReceipt` that grants each purchase once.
+]]
+
+import Players from '@game/Players'
+import { HashMap, Set } from '@alloy/std/collections'
+import { Deserialize, Serialize, skip } from '@alloy/std/serde'
+import { type Backend, DataStoreBackend, MemoryBackend } from './backend'
+import type { Migration } from './migrate'
+import { claim, type Session, type Settings, type Template } from './session'
+
+--- The seconds between two autosaves of a session, by default.
+const AUTOSAVE = 60
+
+--- The seconds after its last write that a lock goes stale, by default.
+--- It is three autosaves: a server that misses two still keeps its lock.
+const LOCK_TIMEOUT = 180
+
+--- Tries of each DataStore call, by default.
+const ATTEMPTS = 5
+
+--- The seconds that `close_all` waits for the saves. Roblox stops the
+--- server 30 seconds after `BindToClose` starts.
+const SHUTDOWN_WAIT = 25
+
+--- The seconds that a receipt waits for the player's session to load.
+const RECEIPT_WAIT = 60
+
+--- What a game gives a store.
+export interface Options
+  --- The DataStore name, and the name in each error.
+  name: string
+  --- The schema version of the data. Start at 1, and add one with each
+  --- migration.
+  version: number
+  --- One migration for each version before `version`, in order.
+  migrations: { Migration }?
+  --- Where the records go. The default is the DataStore `name`.
+  backend: Backend?
+  --- The seconds between two autosaves. 0 turns autosave off.
+  autosave: number?
+  --- The seconds after its last write that a lock goes stale.
+  lock_timeout: number?
+  --- Tries of each backend call.
+  attempts: number?
+end
+
+--- A grant: what a developer product gives. It must not yield.
+export type Grant<T> = (data: T) -> ()
+
+--- The key of a player's record.
+local function player_key(user_id: number) -> string
+  return `player_{user_id}`
+end
+
+--- One kind of saved data, and its open sessions.
+export struct Store<T>
+  --- The name from the options.
+  read name: string
+  private settings: Settings<T>
+  private autosave: number
+  private bound: boolean = false
+  private watching: boolean = false
+end
+
+impl Store<T>
+  --- A store of the struct `template`. Write the type, as in
+  --- `new Store<<Save>>(Save, options)`: Luau cannot read it from the
+  --- class. A wrong version, a missing migration, or an autosave that
+  --- the lock timeout does not cover three times is a throw, because the
+  --- code is wrong.
+  function new(template: Template<T>, options: Options) -> Store<T>
+    const migrations = options.migrations ?? {}
+    const autosave = options.autosave ?? AUTOSAVE
+    const lock_timeout = options.lock_timeout ?? LOCK_TIMEOUT
+
+    assert(
+      options.version >= 1 and options.version % 1 == 0,
+      'Ledger: version is a whole number from 1'
+    )
+    assert(
+      #migrations == options.version - 1,
+      `Ledger: {options.name} has version {options.version}, so it needs {options.version - 1} migrations; it has {#migrations}`
+    )
+    assert(autosave * 3 <= lock_timeout, 'Ledger: lock_timeout must be at least three autosaves')
+
+    return new Store {
+      name = options.name,
+      autosave = autosave,
+      settings = {
+        name = options.name,
+        version = options.version,
+        template = template,
+        migrations = migrations,
+        backend = options.backend ?? new DataStoreBackend(options.name),
+        attempts = options.attempts ?? ATTEMPTS,
+        lock_timeout = lock_timeout,
+        sessions = {},
+      },
+    }
+  end
+
+  --- Loads the record under `key` with its lock, and keeps it open. The
+  --- session saves on the autosave interval and at shutdown. Yields.
+  --- `user_id` tags the key with its player.
+  function open(self, key: string, user_id: number?) -> Result<Session<T>, string>
+    -- `Store.bind_close(self)`: flux does not see a private method of a
+    -- generic struct through `self`.
+    Store.bind_close(self)
+
+    const session = try claim(self.settings, key, user_id ~= nil ? [ user_id ] : nil)
+
+    if self.autosave > 0 then
+      task.spawn(function() -> ()
+        -- A random first wait, so the sessions of one server, and the
+        -- servers that start together, do not all save in one second.
+        task.wait(math.random() * self.autosave)
+
+        while session:active() do
+          if local Err(message) = session:save() then
+            warn(`[ledger] {message}`)
+          end
+
+          task.wait(self.autosave)
+        end
+      end)
+    end
+
+    return Ok(session)
+  end
+
+  --- Opens the record of `player`, and closes it when the player leaves.
+  --- Yields. An Err means the data did not load: kick the player, or
+  --- play on with nothing saved. Never save over it.
+  function join(self, player: Player) -> Result<Session<T>, string>
+    Store.watch_players(self)
+
+    -- A second join of one player gives the open session. Without this,
+    -- the second load would wait on the first one's lock and fail.
+    if const open = self:get(player) then
+      return Ok(open)
+    end
+
+    const session = try self:open(player_key(player.UserId), player.UserId)
+
+    -- The player left while the record loaded.
+    if player.Parent == nil then
+      session:close()
+
+      return Err(`{self.name}: {player.Name} left before the data loaded`)
+    end
+
+    return Ok(session)
+  end
+
+  --- The open session of `player`, or nil while it loads or after it
+  --- ends.
+  function get(self, player: Player) -> Session<T>?
+    return self.settings.sessions[player_key(player.UserId)]
+  end
+
+  --- The open session under `key`, or nil.
+  function session(self, key: string) -> Session<T>?
+    return self.settings.sessions[key]
+  end
+
+  --- Closes every open session at once, and waits up to SHUTDOWN_WAIT
+  --- seconds for the saves. A close that a leave started already counts:
+  --- the second close waits for it.
+  function close_all(self) -> ()
+    local pending = 0
+
+    for _, session in self.settings.sessions do
+      pending += 1
+
+      task.spawn(function() -> ()
+        if local Err(message) = session:close() then
+          warn(`[ledger] {message}`)
+        end
+
+        pending -= 1
+      end)
+    end
+
+    const started = os.clock()
+
+    while pending > 0 and os.clock() - started < SHUTDOWN_WAIT do
+      task.wait(0.1)
+    end
+  end
+
+  --- A function for `MarketplaceService.ProcessReceipt`. It grants each
+  --- purchase once, by its `PurchaseId`, with the grant of its product,
+  --- and answers `PurchaseGranted` only after the save. It waits for a
+  --- session that still loads. An unknown product, a player with no
+  --- session, and a failed save answer `NotProcessedYet`, so Roblox
+  --- sends the receipt again.
+  function receipts(
+    self,
+    grants: { [number]: Grant<T> }
+  ) -> (receipt: { [string]: unknown }) -> Enum.ProductPurchaseDecision
+    return function(receipt: { [string]: unknown }) -> Enum.ProductPurchaseDecision
+      const later = Enum.ProductPurchaseDecision.NotProcessedYet
+      const purchase = receipt.PurchaseId
+      const user_id = receipt.PlayerId
+      const product = receipt.ProductId
+      const grant = product is number ? grants[product] : nil
+
+      if purchase is not string or user_id is not number or grant == nil then
+        warn(`[ledger] {self.name}: no grant for product {product}`)
+
+        return later
+      end
+
+      const session = Store.wait_for(self, player_key(user_id), user_id)
+
+      if session == nil then
+        return later
+      end
+
+      match session:purchase(purchase, grant) with
+        case Ok(_) then
+          return Enum.ProductPurchaseDecision.PurchaseGranted
+        case Err(message) then
+          warn(`[ledger] {message}`)
+
+          return later
+      end
+    end
+  end
+
+  --- The session under `key`, once it is open. It waits up to
+  --- RECEIPT_WAIT seconds, while the player is in the server.
+  private function wait_for(self, key: string, user_id: number) -> Session<T>?
+    const started = os.clock()
+
+    while os.clock() - started < RECEIPT_WAIT do
+      if const session = self.settings.sessions[key] then
+        return session
+      end
+
+      if Players:GetPlayerByUserId(user_id) == nil then
+        return nil
+      end
+
+      task.wait(0.5)
+    end
+
+    return nil
+  end
+
+  --- Closes every session in `game:BindToClose`, once for each store.
+  private function bind_close(self) -> ()
+    if self.bound then
+      return
+    end
+
+    self.bound = true
+    game:BindToClose(function() -> ()
+      self:close_all()
+    end)
+  end
+
+  --- Closes a player's session when the player leaves, once for each
+  --- store.
+  private function watch_players(self) -> ()
+    if self.watching then
+      return
+    end
+
+    self.watching = true
+    Players.PlayerRemoving:Connect(function(player: Player) -> ()
+      if const session = self:get(player) then
+        if local Err(message) = session:close() then
+          warn(`[ledger] {message}`)
+        end
+      end
+    end)
+  end
+end
+
+@test
+namespace StoreTests
+  @derive(Serialize, Deserialize)
+  struct Save
+    coins: number = 0
+  end
+
+  enum Rarity
+    Common
+    Rare
+  end
+
+  @derive(Serialize, Deserialize)
+  struct Pet
+    kind: string
+    rarity: Rarity = Rarity.Common
+  end
+
+  @derive(Serialize, Deserialize)
+  struct Rich
+    pets: Pet[] = []
+    quests: HashMap<string, number> = new HashMap()
+    badges: Set<string> = new Set()
+    @skip
+    cache: number = 0
+  end
+
+  type SaveV1 = { gold: number? }
+
+  type SaveV2 = { coins: number? }
+
+  private function store_of(backend: MemoryBackend) -> Store<Save>
+    return new Store<<Save>>(Save, {
+      name = 'Test',
+      version = 2,
+      migrations = {
+        function(old: SaveV1) -> SaveV2
+          return { coins = old.gold }
+        end,
+      },
+      backend = backend,
+      autosave = 0,
+    })
+  end
+
+  --- An old record runs the migrations on load, and saves at the new version.
+  public function open_runs_the_migrations() -> ()
+    const backend = new MemoryBackend {}
+    const store = store_of(backend)
+
+    backend:write('k', { version = 1, data = { gold = 5 } })
+
+    const session = store:open('k', nil):unwrap()
+
+    $assert_eq(session.data.coins, 5)
+    session:save():unwrap()
+    $assert_eq((backend:read('k') :: { version: number }).version, 2)
+  end
+
+  --- The serde derives round-trip nested structs, enums, maps, and sets through a backend.
+  public function the_serde_derives_round_trip() -> ()
+    const backend = new MemoryBackend {}
+    const store = new Store<<Rich>>(
+      Rich,
+      { name = 'Test', version = 1, backend = backend, autosave = 0 }
+    )
+    const session = store:open('k', nil):unwrap()
+
+    session:update(function(data)
+      data.pets:push(new Pet { kind = 'cat', rarity = Rarity.Rare })
+      data.quests:set('cave', 3)
+      data.badges:add('first')
+      data.cache = 9
+    end):unwrap()
+    session:close():unwrap()
+
+    const loaded = store:open('k', nil):unwrap().data
+
+    $assert_eq(loaded.pets[1].kind, 'cat')
+    $assert_eq(loaded.pets[1].rarity, Rarity.Rare)
+    $assert_eq(loaded.quests:get('cave'), 3)
+    $assert(loaded.badges:has('first'))
+    $assert_eq(loaded.cache, 0)
+  end
+
+  --- A version with a missing migration is a throw.
+  public function a_missing_migration_throws() -> ()
+    $expect(function() -> ()
+      new Store<<Save>>(Save, { name = 'Test', version = 3, backend = new MemoryBackend {} })
+    end):toThrow('needs 2 migrations')
+  end
+
+  --- An autosave that the lock timeout does not cover three times is a throw.
+  public function a_long_autosave_throws() -> ()
+    $expect(function() -> ()
+      new Store<<Save>>(Save, {
+        name = 'Test',
+        version = 1,
+        backend = new MemoryBackend {},
+        autosave = 120,
+        lock_timeout = 180,
+      })
+    end):toThrow('three autosaves')
+  end
+
+  --- The store keeps each open session by its key, until it closes.
+  public function session_finds_an_open_session() -> ()
+    const store = store_of(new MemoryBackend {})
+    const session = store:open('k', nil):unwrap()
+
+    $assert_eq(store:session('k'), session)
+    session:close():unwrap()
+    $assert_eq(store:session('k'), nil)
+  end
+
+  --- close_all closes every open session and takes each lock off.
+  public function close_all_closes_every_session() -> ()
+    const backend = new MemoryBackend {}
+    const store = store_of(backend)
+    const one = store:open('a', nil):unwrap()
+    const two = store:open('b', nil):unwrap()
+
+    store:close_all()
+
+    $assert(not one:active())
+    $assert(not two:active())
+    $assert_eq((backend:read('a') :: { lock: unknown }).lock, nil)
+    $assert_eq((backend:read('b') :: { lock: unknown }).lock, nil)
+  end
+
+  --- A receipt grants once, however often it comes.
+  public function a_receipt_grants_once() -> ()
+    const store = store_of(new MemoryBackend {})
+    const session = store:open('player_7', 7):unwrap()
+    const process = store:receipts({
+      [10] = function(data: Save) -> ()
+        data.coins += 100
+      end,
+    })
+    const receipt = { PurchaseId = 'p1', PlayerId = 7, ProductId = 10 }
+    const granted = Enum.ProductPurchaseDecision.PurchaseGranted
+
+    $assert_eq(process(receipt), granted)
+    $assert_eq(process(receipt), granted)
+    $assert_eq(session.data.coins, 100)
+  end
+
+  --- A receipt for a product with no grant waits, so Roblox sends it again.
+  public function an_unknown_product_waits() -> ()
+    const store = store_of(new MemoryBackend {})
+    const process = store:receipts({})
+
+    store:open('player_7', 7):unwrap()
+
+    $assert_eq(
+      process({ PurchaseId = 'p1', PlayerId = 7, ProductId = 99 }),
+      Enum.ProductPurchaseDecision.NotProcessedYet
+    )
+  end
+end

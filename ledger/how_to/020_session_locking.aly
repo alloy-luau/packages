@@ -1,0 +1,54 @@
+--[[
+  One server at a time owns a record. A player who leaves one server and
+  joins another can start the new session before the old one saves. With
+  no lock, the old server's late save writes over the new progress, or
+  the new server's save brings back items the player traded away.
+
+  The load takes a lock in the same UpdateAsync that reads the record.
+  The lock names the server (`game.JobId`), the session, and the time of
+  the last write. Every save checks the lock in its own UpdateAsync, and
+  writes nothing when another session holds it.
+]]
+
+import Players from '@game/Players'
+import { Deserialize, Serialize } from '@alloy/std/serde'
+import { Store } from '@packages/ledger'
+
+@derive(Serialize, Deserialize)
+struct Save
+  coins: number = 0
+end
+
+const store = new Store<<Save>>(Save, {
+  name = 'Players',
+  version = 1,
+  -- A lock that no write renewed for this many seconds is stale, and the
+  -- next load takes it over. A crashed server leaves such a lock. The
+  -- default is 180, three autosaves.
+  lock_timeout = 180,
+})
+
+Players.PlayerAdded:Connect(function(player)
+  match store:join(player) with
+    case Ok(session) then
+      -- A session that another server took is lost. Its saves and its
+      -- updates are Errs, and it writes nothing again.
+      print(session:active())
+    case Err(reason) then
+      -- The Err says why: another server still holds the lock after
+      -- the tries, the DataStore failed, or the save is of a newer
+      -- version. Each one means: do not play on this data.
+      warn(reason)
+      player:Kick('Your data is still saving on another server. Rejoin in a minute.')
+  end
+end)
+
+--[[
+  A load that finds a live lock tries again, five times in all, with a
+  wait that doubles from 1 second. A lock usually comes off within a few
+  seconds, when the old server's leave save lands.
+
+  The autosave renews the lock. Keep `autosave` at a third of
+  `lock_timeout` or less; a store that breaks the rule throws when it is
+  made.
+]]

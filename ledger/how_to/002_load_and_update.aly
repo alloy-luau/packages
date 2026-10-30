@@ -1,0 +1,65 @@
+--[[
+  A session holds the data in memory while the player plays. Code reads
+  `session.data`, and changes it inside `update`. Nothing goes to the
+  DataStore until the next save.
+]]
+
+import Players from '@game/Players'
+import { Deserialize, Serialize } from '@alloy/std/serde'
+import { Store } from '@packages/ledger'
+
+@derive(Serialize, Deserialize)
+struct Save
+  coins: number = 0
+  wins: number = 0
+end
+
+const store = new Store<<Save>>(Save, { name = 'Players', version = 1 })
+
+Players.PlayerAdded:Connect(function(player)
+  if local Err(reason) = store:join(player) then
+    warn(reason)
+    player:Kick('Your data did not load. Rejoin in a minute.')
+  end
+end)
+
+--- Gives a player the prize of a round. Other code finds the session
+--- with `store:get(player)`, which is nil while the data loads and after
+--- the player leaves.
+export function reward(player: Player, coins: number) -> ()
+  const session = store:get(player)
+
+  if session == nil then
+    return
+  end
+
+  -- `update` runs the change at once. It is an Err when the session has
+  -- ended, so a change never lands in data that will not save. The
+  -- change must not yield: a save then holds all of it or none of it.
+  const result = session:update(function(data)
+    data.coins += coins
+    data.wins += 1
+  end)
+
+  if local Err(reason) = result then
+    warn(reason)
+  end
+end
+
+--- Saves a player's data now. A save yields, and gives a Result.
+export function save_now(player: Player) -> ()
+  if const session = store:get(player) then
+    if local Err(reason) = session:save() then
+      warn(reason)
+    end
+  end
+end
+
+--[[
+  `session.data` is the struct, so the checker reads each field:
+  `data.coins += 'ten'` does not compile.
+
+  Save at once only after a change that is worth it, such as a trade or
+  a rare drop. The autosave (step 021) and the leave save cover the
+  rest. Each save costs one request from the server's DataStore budget.
+]]

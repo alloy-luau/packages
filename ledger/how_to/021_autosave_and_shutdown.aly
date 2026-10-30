@@ -1,0 +1,58 @@
+--[[
+  A save writes the data and renews the lock. A store saves each open
+  session on an interval, when its player leaves, and when the server
+  shuts down. The game writes none of these itself.
+]]
+
+import Players from '@game/Players'
+import TeleportService from '@game/TeleportService'
+import { Deserialize, Serialize } from '@alloy/std/serde'
+import { Store } from '@packages/ledger'
+
+@derive(Serialize, Deserialize)
+struct Save
+  coins: number = 0
+end
+
+const store = new Store<<Save>>(Save, {
+  name = 'Players',
+  version = 1,
+  -- The seconds between two autosaves of one session. Each session
+  -- waits a random part of it first, so the saves of one server spread
+  -- out. 0 turns autosave off.
+  autosave = 60,
+})
+
+--- Sends a player to another place. The close saves the data and takes
+--- the lock off first, so the next server loads it at once.
+export function send(player: Player, place: number) -> ()
+  if const session = store:get(player) then
+    if local Err(reason) = session:close() then
+      warn(reason)
+    end
+  end
+
+  TeleportService:TeleportAsync(place, [ player ])
+end
+
+Players.PlayerAdded:Connect(function(player)
+  if local Err(reason) = store:join(player) then
+    warn(reason)
+    player:Kick('Your data did not load. Rejoin in a minute.')
+  end
+end)
+
+--[[
+  When a player leaves, the store closes their session: a last save,
+  and the lock comes off. In `game:BindToClose`, the store closes every
+  open session at once, and waits up to 25 seconds for the saves. Roblox
+  stops the server 30 seconds after the shutdown starts.
+
+  Each DataStore call tries five times, with a wait that doubles from 1
+  second, and a random part. An error that no retry fixes, such as a
+  value too large, stops at once. A call waits up to 10 seconds for the
+  server's request budget first.
+
+  A close that fails after its tries still ends the session. The lock
+  then times out, and the next load takes it over.
+]]

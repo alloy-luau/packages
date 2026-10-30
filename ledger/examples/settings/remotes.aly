@@ -1,0 +1,8 @@
+--- The client asks for a new volume, from 0 to 100.
+export remote SetVolume(@u8 percent: number) from client
+
+--- The client turns the music on or off.
+export remote SetMusic(on: boolean) from client
+
+--- The server sends the saved settings once they load.
+export remote Loaded(@u8 volume: number, music: boolean) from server

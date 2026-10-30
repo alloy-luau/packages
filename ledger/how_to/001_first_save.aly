@@ -1,0 +1,50 @@
+--[[
+  It all starts with one store. A store keeps one kind of saved data: a
+  struct for its shape, a schema version, and a DataStore. Each player
+  gets a session. The store loads the player's record when they join,
+  saves it on an interval, and saves it again when they leave. This tour
+  builds on it in every step.
+
+  These files import Ledger from `@packages/ledger`, where `embr install`
+  puts it. They run on the server: a client cannot reach a DataStore.
+]]
+
+import Players from '@game/Players'
+import { Deserialize, Serialize } from '@alloy/std/serde'
+import { Store } from '@packages/ledger'
+
+-- The data is a struct. The two derives write `to_table` and
+-- `from_table`, which turn it into the plain table that a DataStore
+-- keeps, and back. The defaults are what a new player starts with.
+@derive(Serialize, Deserialize)
+struct Save
+  coins: number = 0
+end
+
+-- `<<Save>>` names the type of the data: Luau cannot read it from the
+-- class. `name` is the DataStore name.
+const store = new Store<<Save>>(Save, { name = 'Players', version = 1 })
+
+Players.PlayerAdded:Connect(function(player)
+  -- `join` loads the record and takes its lock. It yields. When the
+  -- player leaves, the store saves the record and takes the lock off.
+  match store:join(player) with
+    case Ok(session) then
+      print(`{player.Name} has {session.data.coins} coins`)
+    case Err(reason) then
+      -- The data did not load. Never give the player a new save: it
+      -- would write over the real one.
+      warn(reason)
+      player:Kick('Your data did not load. Rejoin in a minute.')
+  end
+end)
+
+--[[
+  A load gives a Result. Ledger throws only when the code is wrong, such
+  as a store with a version but no migration for it.
+
+  To run it: put this file in ServerScriptService as a Script, with
+  Ledger in ReplicatedStorage.Packages. Studio needs "Enable Studio
+  Access to API Services" in Game Settings, Security. Step 040 runs the
+  same code with no DataStore.
+]]

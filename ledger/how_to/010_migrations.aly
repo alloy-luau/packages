@@ -1,0 +1,61 @@
+--[[
+  A migration changes old saves to the new shape. The store has a schema
+  version, and one migration for each version before it. Migration 1
+  turns the data of version 1 into the data of version 2, and so on. A
+  load runs the chain from the version of the save up to the store's, in
+  order, then reads the struct.
+]]
+
+import { Deserialize, Serialize } from '@alloy/std/serde'
+import { Store } from '@packages/ledger'
+
+@derive(Serialize, Deserialize)
+struct Save
+  coins: number = 0
+  gems: number = 0
+end
+
+-- A migration works on the saved table, not on the struct: the struct of
+-- an old version is gone. Name each old shape with a `type`. A field is
+-- optional, because an old save may lack it.
+type SaveV1 = { gold: number? }
+
+type SaveV2 = { coins: number?, premium: boolean? }
+
+type SaveV3 = { coins: number?, gems: number? }
+
+const store = new Store<<Save>>(Save, {
+  name = 'Players',
+  version = 3,
+  migrations = {
+    -- 1 to 2: gold became coins.
+    function(old: SaveV1) -> SaveV2
+      return { coins = old.gold ?? 0, premium = false }
+    end,
+    -- 2 to 3: premium players got 100 gems once.
+    function(old: SaveV2) -> SaveV3
+      return { coins = old.coins, gems = old.premium ? 100 : 0 }
+    end,
+  },
+})
+
+print(store.name)
+
+--[[
+  The rules:
+
+  - Never change a migration after it ships. A save may wait years at
+    any version.
+  - A migration must not yield, and it gives a new table.
+  - The count must fit: a store of version 3 with one migration throws
+    when it is made.
+  - A save of a newer version than the server knows does not load. The
+    record stays as it is, so an old server in a rolling update cannot
+    drop the new fields.
+  - A migration that throws stops the load. The record stays as it is,
+    and the lock comes off.
+
+  The checker reads each migration against the shapes it names. It does
+  not link one migration's output to the next one's input: Luau has no
+  way to type a chain of shapes that change.
+]]

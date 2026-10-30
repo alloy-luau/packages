@@ -1,0 +1,57 @@
+--[[
+  The struct is the template. A new player gets the default of each
+  field. An old save that lacks a field gets its default too, because
+  `from_table` fills in each key the table lacks. So a field added in an
+  update needs no migration.
+]]
+
+import { HashMap } from '@alloy/std/collections'
+import { Deserialize, Serialize, skip } from '@alloy/std/serde'
+import { Store } from '@packages/ledger'
+
+enum Quality
+  Low
+  High
+end
+
+@derive(Serialize, Deserialize)
+struct Pet
+  kind: string
+  level: number = 1
+end
+
+@derive(Serialize, Deserialize)
+struct Save
+  coins: number = 0
+  -- Added in the second update. Saves from before it read 0.
+  gems: number = 0
+  -- Each player gets a new table: a default runs for each new struct.
+  badges: string[] = []
+  -- A struct that also derives both nests as a table.
+  pets: Pet[] = []
+  -- A unit enum saves as the name of its variant.
+  quality: Quality = Quality.High
+  -- A map saves as a table. Keep its keys strings: a DataStore cannot
+  -- hold a table of sparse number keys.
+  quests: HashMap<string, number> = new HashMap()
+  -- `@skip` keeps a field out of the save. It takes its default on load.
+  @skip
+  joined_at: number = 0
+end
+
+const store = new Store<<Save>>(Save, { name = 'Players', version = 1 })
+
+print(store.name)
+
+--[[
+  What a DataStore keeps: numbers, strings, booleans, and tables of them.
+  A Vector3, a CFrame, a Color3, or an Instance does not save. Keep such
+  a value as numbers in the struct, and convert it where the code uses
+  it.
+
+  `@rename('old_name')` on a field reads and writes the key under its
+  old name, so a field can take a new name with no migration.
+
+  A field that changes its type or its meaning needs a migration: step
+  010.
+]]

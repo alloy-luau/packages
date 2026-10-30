@@ -1,0 +1,13 @@
+[package]
+name = "alloy/ledger"
+version = "0.1.0"
+description = "Typed player data on Roblox DataStores, with session locks, migrations, and receipts"
+authors = ["savruun"]
+repository = "alloy-luau/packages"
+license = "MIT"
+
+[target]
+environment = "roblox"
+language = "alloy"
+main = "build/index.luau"
+includes = ["src", "build", ".config.aly", "README.md", "CHANGELOG.md", "LICENSE"]

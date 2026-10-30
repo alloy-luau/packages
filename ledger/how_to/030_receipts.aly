@@ -1,0 +1,52 @@
+--[[
+  A developer product sends a receipt to `MarketplaceService.ProcessReceipt`.
+  Roblox can send one receipt twice: when the answer does not reach it,
+  or on two servers at once. `store:receipts(grants)` gives a handler
+  that grants each purchase once.
+
+  The record keeps the `PurchaseId` of each purchase. The grant and the
+  id go into the data together, and one save writes both. The handler
+  answers `PurchaseGranted` only after that save.
+]]
+
+import MarketplaceService from '@game/MarketplaceService'
+import { Deserialize, Serialize } from '@alloy/std/serde'
+import { Store } from '@packages/ledger'
+
+@derive(Serialize, Deserialize)
+struct Save
+  coins: number = 0
+  vip: boolean = false
+end
+
+const store = new Store<<Save>>(Save, { name = 'Players', version = 1 })
+
+-- A grant for each product id. A grant must not yield.
+MarketplaceService.ProcessReceipt = store:receipts({
+  [1001] = function(data: Save)
+    data.coins += 500
+  end,
+  [1002] = function(data: Save)
+    data.vip = true
+  end,
+})
+
+--[[
+  The handler answers `NotProcessedYet`, and Roblox sends the receipt
+  again on the next join or purchase, when:
+
+  - the product has no grant,
+  - the player's session does not open within 60 seconds,
+  - the save fails.
+
+  A receipt that comes again for a granted purchase grants nothing and
+  saves again. The record keeps the newest 100 purchase ids: Roblox
+  sends a receipt again only until it is granted.
+
+  A game has one `ProcessReceipt`. The store that holds the purchases
+  sets it.
+
+  `session:purchase(id, grant)` is the step under the handler, for code
+  that grants by its own id. Ok(true) means the grant ran now, Ok(false)
+  that it ran before.
+]]

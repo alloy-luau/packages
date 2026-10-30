@@ -1,0 +1,68 @@
+--[[
+  Coins that persist. A player earns a coin each time they touch the pad,
+  and the coins show on the leaderboard. Studio keeps the data in memory,
+  so the example runs with no API access.
+]]
+
+import Players from '@game/Players'
+import RunService from '@game/RunService'
+import { MemoryBackend, Store } from '@packages/ledger'
+import { Save } from './Save'
+
+const store = new Store<<Save>>(Save, {
+  name = 'Coins',
+  version = 1,
+  backend = RunService:IsStudio() ? new MemoryBackend {} : nil,
+})
+
+--- Shows the coins of a player on the leaderboard.
+local function show(player: Player, coins: number) -> ()
+  const stats = player->leaderstats
+    ?? new Instance('Folder') { Name = 'leaderstats', Parent = player }
+  local value = stats->Coins ?? new Instance('IntValue') { Name = 'Coins', Parent = stats }
+
+  if value is IntValue then
+    value.Value = coins
+  end
+end
+
+--- Adds coins to a player's data, and shows the new count.
+local function pay(player: Player, amount: number) -> ()
+  const session = store:get(player)
+
+  if session == nil then
+    return
+  end
+
+  if local Ok(_) = session:update(function(data) data.coins += amount end) then
+    show(player, session.data.coins)
+  end
+end
+
+Players.PlayerAdded:Connect(function(player)
+  match store:join(player) with
+    case Ok(session) then
+      show(player, session.data.coins)
+    case Err(reason) then
+      warn(reason)
+      player:Kick('Your coins did not load. Rejoin in a minute.')
+  end
+end)
+
+const pad = new Instance('Part') {
+  Name = 'CoinPad',
+  Anchored = true,
+  Size = new Vector3(8, 1, 8),
+  Position = new Vector3(0, 0.5, 0),
+  Parent = workspace,
+}
+
+pad.Touched:Connect(function(hit)
+  const character = hit.Parent
+
+  if character is Model then
+    if const player = Players:GetPlayerFromCharacter(character) then
+      pay(player, 1)
+    end
+  end
+end)

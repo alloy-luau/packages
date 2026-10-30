@@ -12,4 +12,4 @@ private = true
 [target]
 environment = "roblox"
 language = "alloy"
-workspace = ["forge", "bevel", "gear"]
+workspace = ["forge", "bevel", "gear", "ledger"]

@@ -1,0 +1,49 @@
+--[[
+  Ledger's project configuration.
+
+  Ledger is a package. It lands where the game that uses it mounts its
+  build output, so it writes no project file and no sourcemap.
+]]
+
+export default {
+  build = {
+    ['in'] = 'src',
+    out = 'build',
+    exclude = {},
+    clean = true,
+    artifact = 'ship',
+  },
+  emit = {
+    wait_timeout = 5,
+  },
+  std = {
+    globals = 'none',
+  },
+  fmt = {
+    recommended = true,
+    column_width = 100,
+    indent_type = 'spaces',
+    indent_width = 2,
+    quote_style = 'force-single',
+  },
+  lint = {
+    recommended = true,
+    strict = true,
+  },
+  flux = {
+    typecheck = true,
+    definitions = {},
+  },
+  test = {
+    out = 'tests',
+    suite = 'ledger',
+    lest = true,
+    shim = true,
+  },
+  project = {
+    name = 'Ledger',
+    sourcemap = false,
+    source_of_truth = false,
+    mount_aliases = false,
+  },
+}

@@ -1,0 +1,19 @@
+import type { Grant } from '@packages/ledger'
+import type { Save } from './Save'
+
+--- The developer products of the shop. Each id comes from the Creator
+--- Dashboard; these are stand-ins.
+export const COINS_500 = 1001
+
+--- Gives VIP for good.
+export const VIP = 1002
+
+--- What each product gives. A grant must not yield.
+export const GRANTS: { [number]: Grant<Save> } = {
+  [COINS_500] = function(data: Save)
+    data.coins += 500
+  end,
+  [VIP] = function(data: Save)
+    data.vip = true
+  end,
+}

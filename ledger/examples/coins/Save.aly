@@ -1,0 +1,7 @@
+import { Deserialize, Serialize } from '@alloy/std/serde'
+
+--- What each player keeps: the coins they earned.
+@derive(Serialize, Deserialize)
+export struct Save
+  coins: number = 0
+end
