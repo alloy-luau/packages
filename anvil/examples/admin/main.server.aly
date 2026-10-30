@@ -1,0 +1,13 @@
+--[[
+  Admin commands for moderators. The levels are the ranks of a Roblox
+  group (`ranks.aly`), and the commands are kick, ban, and unban
+  (`commands.aly`). A moderator writes them in the console of
+  `main.client.aly`.
+]]
+
+import { serve } from '@packages/anvil'
+import { rank_of } from './ranks'
+
+import('./commands')
+
+serve(rank_of)

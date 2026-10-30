@@ -1,0 +1,12 @@
+--[[
+  Teleport commands. The owner of the place may teleport, and so may
+  each player in a Studio test.
+]]
+
+import RunService from '@game/RunService'
+import { serve } from '@packages/anvil'
+import { TELEPORTER } from './commands'
+
+serve(function(player)
+  return (player.UserId == game.CreatorId or RunService:IsStudio()) ? TELEPORTER : 0
+end)

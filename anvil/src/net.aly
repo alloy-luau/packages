@@ -1,0 +1,66 @@
+--[[
+  The remote between a console and the server. A client sends the line
+  as text; the server parses it, checks the level, runs the command, and
+  answers. The client knows no levels and parses nothing, so a client
+  that sends anything gains nothing.
+
+  Anvil ships no UI. A console UI calls `run` with each line and shows
+  the answer, and calls `list` for the commands to list or complete.
+]]
+
+import Players from '@game/Players'
+import { type Entry, type Reply, answer, entries, levels } from './command'
+
+--- The answer when the server drops a line under its rate limit.
+const BUSY: Reply = { ok = false, text = 'Too many lines. Wait a moment, then try again.' }
+
+--- A line from a client, and the server's answer. The rate limit drops
+--- a flood before the server reads it.
+@ratelimit(20, 10)
+remote function AnvilLine(line: string) -> Reply? from client
+
+--- The commands that a client may run.
+@ratelimit(5, 10)
+remote function AnvilList() -> { Entry }? from client
+
+--[[
+  Runs a line as `caller` on the server, with each player in the server
+  as a player the line can name, and gives the answer. `serve` answers
+  each client with it; a server hook, such as a chat command, calls it
+  as well.
+]]
+export function execute(caller: Player, line: string) -> Reply
+  return answer(caller, line, Players:GetPlayers())
+end
+
+--- Starts the commands on the server. `level` gives each player a
+--- level; each command names the lowest level that may run it. Call it
+--- once.
+export function serve(level: (Player) -> number) -> ()
+  levels(level)
+  AnvilLine.on(execute)
+  AnvilList.on(entries)
+end
+
+--- Sends a line to the server, and gives the answer. It waits for the
+--- server's `serve`.
+export async function run(line: string) -> Reply
+  return (await AnvilLine.call(line)) ?? BUSY
+end
+
+--- The commands that this player may run, as the server knows them.
+export async function list() -> { Entry }
+  return (await AnvilList.call()) ?? {}
+end
+
+@test
+namespace NetTests
+  --- serve answers both remotes.
+  public function serve_answers_both_remotes() -> ()
+    serve(function(_: Player) -> number return 0 end)
+
+    $assert_eq(#AnvilLine.calls, 1)
+    $assert_eq(AnvilLine.calls[1].name, 'on')
+    $assert_eq(#AnvilList.calls, 1)
+  end
+end

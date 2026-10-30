@@ -1,0 +1,43 @@
+--[[
+  It all starts with one command. A command is a `remote function`
+  marked `@command`. The declaration says what the command takes, and
+  Anvil reads it: the name of each parameter, its type, and its default.
+  `on` gives the command its handler, and `serve` starts Anvil on the
+  server. This tour builds on it in every step.
+
+  These files import Anvil from `@packages/anvil`, where `embr install`
+  puts it. Each one runs on the server, except 020, which is the
+  client's part.
+]]
+
+import { command, on, serve } from '@packages/anvil'
+
+-- `@command(level, help)`: the lowest level that may run the command,
+-- and one line that says what it does.
+@command(0, 'Answers pong.')
+remote function Ping() -> string from client
+
+-- `on(Ping)` reads the declaration; the second call takes the handler.
+-- The handler gets the player who wrote the line first, and its answer
+-- is the line that the player reads.
+on(Ping)(function(caller)
+  return `Pong, {caller.Name}.`
+end)
+
+-- `serve` takes the game's resolver: the level of each player. Here
+-- each player is at level 0, so anyone may ping.
+serve(function(_) return 0 end)
+
+--[[
+  A player writes `ping` and reads `Pong, Builderman.`
+
+  The rules:
+
+  - Write a command as `remote function Name(...) -> string from client`.
+    `from client` gives the handler the caller first, and `-> string`
+    makes the handler answer. The type check holds the handler to it.
+  - The command is the name in lower case: `Ping` runs as `ping`.
+  - Anvil never makes the remote's Roblox object. Each line comes over
+    Anvil's own remote, and any use of `Ping` as a remote raises.
+  - Call `serve` once, on the server.
+]]

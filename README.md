@@ -11,6 +11,7 @@ a version of its own.
 | [Gear](gear) | `alloy/gear` | State machines over Alloy enums, with transitions that a `match` checks. |
 | [Ledger](ledger) | `alloy/ledger` | Typed player data on DataStores: session locks, migrations, autosave, and purchase receipts. |
 | [Foundry](foundry) | `alloy/foundry` | Worker pools on Roblox actors, with typed jobs and a serial fallback. |
+| [Anvil](anvil) | `alloy/anvil` | Console commands typed from their remote functions: arguments, permissions, and help. |
 
 Each package folder holds:
 

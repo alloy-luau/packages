@@ -1,0 +1,67 @@
+--[[
+  Arguments. Each parameter of the declaration is one argument, and its
+  type says how Anvil reads the word. The handler gets each value as
+  its declared type, so `sides` below is a number, not a string.
+
+    number              a number: 2, 0.5, -3
+    @u8 number          a whole number from 0 to 255; @u16, @u32, @i8,
+                        @i16, and @i32 set other ranges
+    boolean             true, yes, on, 1, or false, no, off, 0
+    string              one word, or words in double quotes
+    the last string     the rest of the line
+]]
+
+import { command, fail, on } from '@packages/anvil'
+
+--- Rolls a die.
+@command(0, 'Rolls a die with as many sides as you ask.')
+remote function Roll(@u8 sides: number = 6) -> string from client
+
+--- Says a message to the server.
+@command(0, 'Says a message to the server, loud or not.')
+remote function Say(loud: boolean, message: string) -> string from client
+
+--- Scales the caller's character.
+@command(0, 'Makes your character bigger or smaller.')
+remote function Grow(size: number) -> string from client
+
+on(Roll)(function(caller, sides)
+  if sides < 2 then
+    -- `fail` ends the command, and its text is the answer.
+    return fail('A die needs 2 sides at least.')
+  end
+
+  return `{caller.Name} rolls {math.random(1, sides)} of {sides}.`
+end)
+
+-- `message` is the last string, so it takes the rest of the line:
+-- `say yes hello there` gives `hello there`.
+on(Say)(function(caller, loud, message)
+  return loud ? `{caller.Name} shouts: {string.upper(message)}` : `{caller.Name} says: {message}`
+end)
+
+on(Grow)(function(caller, size)
+  const character = caller.Character ?? fail('You have no character.')
+  character:ScaleTo(math.clamp(size, 0.5, 3))
+
+  return `You are {character:GetScale()} times your size.`
+end)
+
+--[[
+  A wrong word answers in the player's words. It names the argument,
+  what it got, and what it wanted:
+
+    roll 300     sides wants a whole number from 0 to 255, but got "300".
+    grow big     size wants a number, but got "big".
+    say          say needs loud: true or false. Write it as: say <loud> <message>
+    grow 2 3     grow takes 1 argument, but got 2. Write it as: grow <size>
+
+  The rules:
+
+  - A width attribute makes a number whole, and bounds it.
+  - Only the last string takes the rest of the line. Any other string
+    takes one word; double quotes hold words together as one.
+  - A parameter that Anvil cannot read, such as a Vector3, raises when
+    `on` reads the declaration. Step 011 writes an argument type of the
+    game's own.
+]]

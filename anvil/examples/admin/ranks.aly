@@ -1,0 +1,43 @@
+--[[
+  The levels of the admin commands: the ranks of one Roblox group. A
+  moderator holds rank 252 or above, and a developer rank 254 or above,
+  as in Strata.
+]]
+
+import GroupService from '@game/GroupService'
+
+--- The group whose ranks are the levels. Put the id of your group here.
+export const GROUP = 1234567
+
+--- The lowest rank of a moderator.
+export const MODERATOR = 252
+
+--- The lowest rank of a developer.
+export const DEVELOPER = 254
+
+--[[
+  A user's rank in the group: the highest rank of their roles, or 0 out
+  of the group. It reads users who are not in the server too, so a ban
+  can check the rank of a user who left. Roblox keeps each answer for a
+  time.
+]]
+export function rank_of_user(id: number) -> number
+  const answer = GroupService:GetRolesInGroupAsync(id, GROUP) :: {
+    IsMember: boolean,
+    Roles: { { Rank: number } },
+  }
+  local best = 0
+
+  if answer.IsMember then
+    for _, role in answer.Roles do
+      best = math.max(best, role.Rank)
+    end
+  end
+
+  return best
+end
+
+--- A player's rank, for `serve`.
+export function rank_of(player: Player) -> number
+  return rank_of_user(player.UserId)
+end
