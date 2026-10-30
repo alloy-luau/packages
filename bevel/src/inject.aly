@@ -21,16 +21,36 @@ local instances: { [unknown]: unknown } = {}
 -- The hook that a service may write: Angular's `ngOnDestroy`.
 type Hooks = { on_destroy: ((unknown) -> ())? }
 
+--- The type of the instance that a class builds: what its `new`
+--- returns. Luau builds a struct class field by field, and a generic
+--- such as `<T>(class: { new: () -> T })` infers nothing from that
+--- table, so a type function reads the type.
+export type function instance_of(class)
+  const new = class:readproperty(types.singleton('new'))
+
+  if new and new:is('function') then
+    const head = new:returns().head
+
+    if head and head[1] then
+      return head[1]
+    end
+  end
+
+  return types.unknown
+end
+
 --- Angular's `inject()`. The instance that the nearest `provide` holds,
---- or else the one root instance, built on the first call.
-export function inject<T>(class: { new: () -> T }) -> T
+--- or else the one root instance, built on the first call. The result
+--- types as the class's instance: `inject(Wallet)` is a `Wallet`.
+@allow(explicit_any)
+export function inject<C>(class: C) -> instance_of<C>
   local owner = current_owner()
 
   while owner ~= nil do
     const services = owner.services
 
     if services ~= nil and services[class] ~= nil then
-      return services[class] :: T
+      return services[class] :: any
     end
 
     owner = owner.parent
@@ -43,10 +63,10 @@ export function inject<T>(class: { new: () -> T }) -> T
   const existing = instances[class]
 
   if existing ~= nil then
-    return existing :: T
+    return existing :: any
   end
 
-  const instance = class.new()
+  const instance = (class :: any).new()
   instances[class] = instance
   return instance
 end
@@ -135,7 +155,7 @@ namespace InjectTests
   public function a_nested_provide_reads_the_services_above_it() -> ()
     const same = provide([ Draft ], function()
       const draft = inject(Draft)
-      return provide([ Counter ], function() return inject(Draft) == draft end)
+      return provide([ Counter ], function() return rawequal(inject(Draft), draft) :: boolean end)
     end)
 
     $assert(same)

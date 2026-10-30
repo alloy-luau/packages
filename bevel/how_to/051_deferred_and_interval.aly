@@ -1,0 +1,36 @@
+--[[
+  Two tools from Fluid for work that should not run at each write:
+
+  - `deferred(fn)` is an effect that runs at once, and after a change
+    runs on the next frame, once for all the writes in between. Use it
+    for work that costs more than a write: a layout pass, a save.
+  - `interval(seconds, fn)` is a signal that runs `fn` again every
+    `seconds`, and holds what it gives. Use it to poll a value that no
+    signal holds, such as the time.
+]]
+
+import { deferred, effect, interval, signal } from '@packages/bevel'
+
+const score = signal(0)
+
+-- Runs once now, then once on the next frame, however many writes came.
+deferred(function()
+  print(`save the score: {score()}`)
+end)
+
+for _ = 1, 10 do
+  score:update(function(n) return n + 1 end)
+end
+
+-- The clock, read again each second.
+const clock = interval(1, function() return os.date('%H:%M:%S') end)
+
+effect(function()
+  print(`the time is {clock()}`)
+end)
+
+--[[
+  Both run on Bevel's frame loop, which connects to Heartbeat while it
+  has work. `step(dt)` moves it by hand, and `manual_frames()` turns the
+  connection off, for a test or a loop of the game's own.
+]]

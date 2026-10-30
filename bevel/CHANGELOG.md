@@ -14,4 +14,11 @@ The first release.
   hooks `on_init` and `on_destroy`.
 - Services: `@injectable`, `inject`, and `provide`, with scoped services and
   injectors that walk up the tree.
-- A `how_to` tour in numbered steps, and three example games.
+- Animation: `spring` with Apple's parameters (duration and bounce, response
+  and damping ratio, or mass, stiffness, and damping), the presets in
+  `Springs`, `tween` with the curves in `Easing`, and `lerp`. A spring solves
+  its motion exactly, so the frame rate does not change it.
+- Async: `resource`, after Angular, with the loader on a thread of its own;
+  `deferred`; and `interval`.
+- A frame loop, `step` and `manual_frames`, that drives the animations.
+- A `how_to` tour in numbered steps, and four example games.

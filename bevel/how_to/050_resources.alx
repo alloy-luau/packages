@@ -1,0 +1,64 @@
+--[[
+  Angular's `resource()`: a value that code loads, and may wait for.
+
+    const profile = resource(function(set) ... return value end)
+
+  The loader runs on a thread of its own, so it may yield: an HTTP call,
+  a DataStore read, a `task.wait`. The resource gives signals:
+
+  - `profile.value()`: the value, or nil until it loads.
+  - `profile.status()`: 'loading', 'ready', or 'error'.
+  - `profile.error()`: the message of a failed load.
+  - `profile.is_loading()`: whether a load runs now.
+  - `profile.reload()`: load again.
+
+  The signals that the loader reads before its first yield link it: a
+  change of them starts a new load, and the new load cancels the old
+  one. `set(value)` gives a value before the loader ends, as Fluid's
+  `async` does.
+]]
+
+import Players from '@game/Players'
+import { component, create, mount, resource, signal, when } from '@packages/bevel'
+
+struct ProfileComponent
+end
+
+@component
+impl ProfileComponent
+  function new(_props: {}) -> ProfileComponent
+    return new ProfileComponent {}
+  end
+
+  function template(self) -> Instance
+    const user_id = signal(Players.LocalPlayer.UserId)
+
+    const name = resource(function(_set) -> string?
+      -- Read before the first yield, so a new id loads again.
+      const id = user_id()
+      return Players:GetNameFromUserIdAsync(id)
+    end)
+
+    return (
+      <Frame Size={new UDim2(0, 240, 0, 40)}>
+        {when(name.is_loading, function()
+          return <TextLabel Size={UDim2.fromScale(1, 1)}>Loading...</TextLabel>
+        end)}
+
+        {when(function() return name.status() == 'ready' end, function()
+          return <TextLabel Size={UDim2.fromScale(1, 1)}>{name.value() ?? ''}</TextLabel>
+        end)}
+
+        {when(function() return name.status() == 'error' end, function()
+          return <TextButton
+            Size={UDim2.fromScale(1, 1)}
+            Text="Retry"
+            Activated={function() name.reload() end}
+          />
+        end)}
+      </Frame>
+    )
+  end
+end
+
+return mount(ProfileComponent)

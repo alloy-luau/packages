@@ -1,0 +1,65 @@
+--[[
+  The frame loop that springs, tweens, deferred effects, and intervals
+  share. One Heartbeat connection runs while any of them is active, and
+  goes when the last one stops.
+
+  `step(dt)` moves everything by `dt` seconds. Bevel calls it each frame;
+  a test or a loop of the game's own can call it as well.
+]]
+
+import RunService from '@game/RunService'
+import { batch } from './reactive'
+
+--- One job of the frame loop. It gives true when it is done.
+export type Job = (dt: number) -> boolean
+
+-- The jobs that run each frame.
+local jobs: { [Job]: boolean } = {}
+
+-- The Heartbeat connection, while a job is active.
+local connection: RBXScriptConnection? = nil
+
+-- Whether Bevel connects to Heartbeat by itself.
+local automatic = true
+
+--- Moves every active job by `dt` seconds, in one batch: the effects that
+--- the jobs mark run once, at the end.
+export function step(dt: number) -> ()
+  batch(function() -> ()
+    for job in table.clone(jobs) do
+      if job(dt) then
+        jobs[job] = nil
+      end
+    end
+  end)
+
+  if next(jobs) == nil and connection ~= nil then
+    connection:Disconnect()
+    connection = nil
+  end
+end
+
+--- Adds a job to the frame loop, and connects the loop when it was idle.
+export function start(job: Job) -> ()
+  jobs[job] = true
+
+  if connection == nil and automatic then
+    connection = RunService.Heartbeat:Connect(step)
+  end
+end
+
+--- Takes a job off the frame loop.
+export function stop(job: Job) -> ()
+  jobs[job] = nil
+end
+
+--- Stops the Heartbeat connection, so only calls to `step` move time.
+--- A test, or a game that runs its own loop, calls it once.
+export function manual_frames() -> ()
+  automatic = false
+
+  if connection ~= nil then
+    connection:Disconnect()
+    connection = nil
+  end
+end

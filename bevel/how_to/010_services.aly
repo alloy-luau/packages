@@ -26,16 +26,15 @@ impl Wallet
 end
 
 -- The root injector builds the instance on the first call and keeps it.
--- `<<Wallet>>` names the type that comes back.
-const wallet = inject<<Wallet>>(Wallet)
+-- The result types as the class's instance: `wallet` is a `Wallet`.
+const wallet = inject(Wallet)
 wallet:earn(10)
 
-print(inject<<Wallet>>(Wallet) == wallet) -- true
+print(rawequal(inject(Wallet), wallet)) -- true
 print(wallet.coins()) -- 10
 
 --[[
-  A component reads the service in its `new`, into a field. The field's
-  type gives the type, so no `<<Wallet>>` is needed there:
+  A component reads the service in its `new`, into a field:
 
     struct ShopComponent
       read wallet: Wallet

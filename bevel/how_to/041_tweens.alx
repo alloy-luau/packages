@@ -1,0 +1,61 @@
+--[[
+  A tween follows a target signal too, but over a fixed time and along a
+  curve: `tween(target, { duration = 0.3, easing = ..., delay = 0 })`.
+  Each new target starts a move from the value now.
+
+  The curves:
+
+  - `Easing.linear`
+  - `Easing.ease_in`, `Easing.ease_out`, `Easing.ease_in_out`: the curves
+    of Core Animation and CSS. `ease_in_out` is the default.
+  - `Easing.cubic_bezier(x1, y1, x2, y2)`: any curve as CSS writes it.
+  - `Easing.style('Quad', 'Out')`: the shapes of Roblox's
+    `Enum.EasingStyle`, by name.
+
+  Any function from 0..1 to 0..1 is a curve too.
+]]
+
+import { component, create, Easing, mount, signal, tween } from '@packages/bevel'
+
+struct ToastComponent
+end
+
+@component
+impl ToastComponent
+  function new(_props: {}) -> ToastComponent
+    return new ToastComponent {}
+  end
+
+  function template(self) -> Instance
+    const open = signal(false)
+
+    -- The panel slides in along Roblox's Back curve: it overshoots a
+    -- little, then settles.
+    const position = tween(function()
+      return if open() then new UDim2(0.5, 0, 0, 20) else new UDim2(0.5, 0, 0, -80)
+    end, { duration = 0.35, easing = Easing.style('Back', 'Out') })
+
+    -- The color blends in Oklab, so the midpoint keeps its lightness.
+    const color = tween(function()
+      return if open() then new Color3(0.2, 0.7, 0.4) else new Color3(0.3, 0.3, 0.3)
+    end, { duration = 0.5, easing = Easing.cubic_bezier(0.2, 0.8, 0.2, 1) })
+
+    return (
+      <TextButton
+        AnchorPoint={new Vector2(0.5, 0)}
+        Size={new UDim2(0, 260, 0, 60)}
+        Position={position}
+        BackgroundColor3={color}
+        Text="Saved"
+        Activated={function() open:update(function(o) return not o end) end}
+      />
+    )
+  end
+end
+
+return mount(ToastComponent)
+
+--[[
+  `lerp(a, b, t)` is the blend that a tween uses, for code of your own:
+  `lerp(new Color3(1, 0, 0), new Color3(0, 0, 1), 0.5)`.
+]]

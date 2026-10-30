@@ -7,6 +7,9 @@
   - template: create, each, when, model
   - component: @component, mount, bootstrap
   - inject: @injectable, inject, provide
+  - animate: spring, tween, lerp, Easing, Springs
+  - async: deferred, resource, interval
+  - frame: step, manual_frames
 ]]
 
 export {
@@ -27,3 +30,15 @@ export {
 export { create, each, when, model, type Directive, type Model } from './template'
 export { component, mount, bootstrap } from './component'
 export { injectable, inject, provide } from './inject'
+export {
+  spring,
+  tween,
+  lerp,
+  Easing,
+  Springs,
+  type Spring,
+  type SpringOptions,
+  type TweenOptions,
+} from './animate'
+export { deferred, resource, interval, type Resource, type ResourceStatus } from './async'
+export { step, manual_frames } from './frame'

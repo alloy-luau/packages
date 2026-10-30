@@ -1,6 +1,6 @@
 # Bevel
 
-Components, services, injectors, and signals for
+Components, services, injectors, signals, and springs for
 [Alloy](https://github.com/alloy-luau/alloy), after
 [Angular](https://angular.dev).
 
@@ -10,19 +10,20 @@ each one: a component needs `new` and `template`, and a service needs a `new()`
 with no parameters. Signals hold the state, and a template binds to them, so
 the view follows each change.
 
-Bevel has its own reactive core and its own `.alx` factory. It depends on no
-other package.
+Bevel has its own reactive core, its own `.alx` factory, and its own
+animation: springs with Apple's parameters, tweens, and easing curves. It
+depends on no other package.
 
-Bevel needs Alloy 0.1.4 or later and embr 0.8.1 or later.
+Bevel needs Alloy 0.1.5 or later and embr 0.8.1 or later.
 
 ## Learn
 
 - [how_to](https://github.com/alloy-luau/packages/tree/main/bevel/how_to) is a
   tour of Bevel in numbered steps, from `001_hello_world.alx` to
-  `030_control_flow.alx`. Read them in order.
+  `051_deferred_and_interval.aly`. Read them in order.
 - [examples](https://github.com/alloy-luau/packages/tree/main/bevel/examples)
-  holds small games: a todo list, a shared counter, and two forms with a state
-  each.
+  holds small games: a todo list, a shared counter, two forms with a state
+  each, and a menu that springs open.
 
 ## Install
 
@@ -226,10 +227,8 @@ parameters, because the injector calls `new()` itself.
 class. With none, it returns the root instance. The root injector builds that
 instance on the first call and keeps it.
 
-In a component's `new`, the field gives the type:
-`new ShopComponent { wallet = inject(Wallet) }`. In a local, write the type of
-the result: `const wallet = inject<<Wallet>>(Wallet)`. Luau cannot read the
-type of an instance from its struct, so the result is `unknown` without it.
+The result types as the class's instance: `const wallet = inject(Wallet)` is a
+`Wallet`, with its fields and methods.
 
 `inject` stops with an error when the class has no `@injectable`.
 
@@ -253,6 +252,99 @@ function template(self) -> Instance
 end
 ```
 
+## Springs
+
+A spring follows a target signal, and reads as a signal of its own. A template
+binds to it as to any signal, so the property moves:
+
+```alx
+const hovered = signal(false)
+const size = spring(function()
+  return if hovered() then new UDim2(0, 220, 0, 130) else new UDim2(0, 200, 0, 120)
+end, Springs.bouncy(0.4))
+
+return <TextButton Size={size} MouseEnter={function() hovered:set(true) end} />
+```
+
+The options take one of three forms, as Apple's springs do:
+
+| Form | Fields | Apple |
+| --- | --- | --- |
+| Perceptual | `duration` (0.5), `bounce` (0) | `Spring(duration:bounce:)` |
+| Response | `response`, `damping_ratio` | `.spring(response:dampingFraction:)` |
+| Physical | `mass` (1), `stiffness` (100), `damping` (10) | `Spring(mass:stiffness:damping:)` |
+
+- `bounce` is 0 for no overshoot, up to 1 for more, and below 0 for an
+  overdamped spring. The damping ratio is `1 - bounce`.
+- `velocity` sets the start velocity, and `threshold` how near the target the
+  spring rests (0.001).
+- `Springs.smooth(duration?, extra_bounce?)`, `Springs.snappy(...)`, and
+  `Springs.bouncy(...)` are Apple's presets, with a bounce of 0, 0.15, and 0.3.
+  `Springs.interactive()` is for a value that follows a drag.
+
+A spring moves numbers, Vector2, Vector3, UDim, UDim2, Color3, CFrame, and
+Rect. A Color3 moves in Oklab, so a blend keeps its lightness.
+
+The spring solves the damped oscillator exactly at each frame. It moves the
+same at any frame rate, and a new target keeps the velocity of the motion
+before it.
+
+The controls:
+
+- `s:set_position(v)` jumps to a value, and keeps the velocity.
+- `s:set_velocity(v)` sets the velocity, in units a second.
+- `s:impulse(v)` adds to the velocity.
+- `s:velocity()` reads the velocity.
+- `s:resting()` reads as a signal: true once the spring rests.
+
+## Tweens
+
+A tween moves to each new target over a fixed time, along a curve:
+
+```aly
+const position = tween(target, { duration = 0.35, easing = Easing.style('Back', 'Out') })
+```
+
+- `duration` is 0.25 by default, `delay` 0, and `easing` `Easing.ease_in_out`.
+- `Easing.ease_in`, `Easing.ease_out`, and `Easing.ease_in_out` are the curves
+  of Core Animation and CSS. `Easing.linear` is no curve.
+- `Easing.cubic_bezier(x1, y1, x2, y2)` is any curve as CSS writes it.
+- `Easing.style(name, direction?)` gives the shapes of Roblox's
+  `Enum.EasingStyle` by name: `'Quad'`, `'Back'`, `'Elastic'`, and the rest.
+  The direction is `'Out'` by default.
+- Any function from 0..1 to 0..1 is a curve too.
+
+`lerp(a, b, t)` is the blend that a tween uses, for code of your own.
+
+Springs and tweens run on Bevel's frame loop. It connects to Heartbeat while an
+animation moves. `step(dt)` moves it by hand, and `manual_frames()` turns the
+connection off, for a test or a loop of the game's own.
+
+## Async and deferred
+
+`resource(loader)` is Angular's `resource()`. The loader runs on a thread of
+its own, so it may yield:
+
+```aly
+const name = resource(function(_set) -> string?
+  return Players:GetNameFromUserIdAsync(user_id())
+end)
+```
+
+- `name.value()` is the value, or nil until it loads.
+- `name.status()` is `'loading'`, `'ready'`, or `'error'`, and `name.error()`
+  the message of a failed load. `name.is_loading()` reads the status.
+- `name.reload()` loads again.
+
+The signals that the loader reads before its first yield start a new load when
+they change, and the new load cancels the old one, as Fluid's `async` does. The
+loader may call `set(value)` to give a value before it ends.
+
+`deferred(fn)` is Fluid's deferred effect: it runs at once, and after a change
+runs on the next frame, once for all the writes in between.
+
+`interval(seconds, fn)` is a signal that runs `fn` again every `seconds`.
+
 ## API
 
 | Name | What it is |
@@ -275,6 +367,15 @@ end
 | `@injectable(scope = 'root')` | Marks a service struct. Requires `new()`. |
 | `inject(Class)` | The instance of the nearest `provide`, else the root instance. |
 | `provide(classes, build)` | Runs `build` with a new instance of each class. |
+| `spring(target, options?)` | A `Spring` that follows `target`. |
+| `Springs.smooth`, `.snappy`, `.bouncy`, `.interactive` | Apple's spring presets. |
+| `tween(target, options?)` | A `Signal` that tweens to each new target. |
+| `Easing` | Curves for `tween`: `linear`, `ease_in_out`, `cubic_bezier`, `style`. |
+| `lerp(a, b, t)` | A blend of two values of one kind. |
+| `resource(loader)` | A `Resource`: a value that code loads, and may wait for. |
+| `deferred(fn)` | An effect that runs again on the next frame. |
+| `interval(seconds, fn)` | A signal that polls `fn`. |
+| `step(dt)`, `manual_frames()` | Move the frame loop by hand. |
 | `Signal<T>`, `WritableSignal<T>`, `Readable<T>` | The types of signals, and of what Bevel reads. |
 
 ## Development

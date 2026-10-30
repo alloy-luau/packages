@@ -64,6 +64,7 @@ struct Node
   sources: { [Node]: boolean } = {}
   compute: ((OnCleanup) -> unknown)? = nil
   effect: boolean = false
+  deferred: boolean = false
   dirty: boolean = false
   alive: boolean = true
   cleanups: { () -> () } = {}
@@ -83,6 +84,11 @@ local queue: { Node } = {}
 -- How deep the batches go, and whether the queue runs now.
 local batching = 0
 local flushing = false
+
+-- The deferred effects that wait for the next frame, and the hook that
+-- asks the frame loop for one. The async module sets the hook.
+local waiting: { Node } = {}
+local wake_frame: (() -> ())? = nil
 
 -- An effect that writes a signal that it reads would run forever. Past
 -- this many runs in one flush, Bevel stops with an error.
@@ -170,7 +176,15 @@ local function mark(node: Node) -> ()
     if not reader.dirty then
       reader.dirty = true
 
-      if reader.effect then
+      if reader.deferred then
+        table.insert(waiting, reader)
+
+        const hook = wake_frame
+
+        if hook ~= nil then
+          hook()
+        end
+      elseif reader.effect then
         table.insert(queue, reader)
       else
         mark(reader)
@@ -369,12 +383,20 @@ computed_of = computed
 --- that `fn` read changes. `fn` gets `on_cleanup`, which keeps a function
 --- that runs before the next run and when the effect stops.
 export function effect(fn: (on_cleanup: OnCleanup) -> ()) -> EffectRef
+  return effect_of(fn, false)
+end
+
+--- An effect that runs at once, and after a change runs again on the
+--- next frame in place of at the write. `deferred` in the async module
+--- is the public form.
+export function effect_of(fn: (on_cleanup: OnCleanup) -> (), deferred: boolean) -> EffectRef
   const node = new Node {
     compute = function(on_cleanup: OnCleanup) -> unknown
       fn(on_cleanup)
       return nil
     end,
     effect = true,
+    deferred = deferred,
     owner = current,
   }
   const destroy = function() stop_node(node) end
@@ -387,19 +409,53 @@ export function effect(fn: (on_cleanup: OnCleanup) -> ()) -> EffectRef
   return { destroy = destroy }
 end
 
+--- Sets the function that asks the frame loop for a frame, when a
+--- deferred effect waits.
+export function set_frame_hook(hook: () -> ()) -> ()
+  wake_frame = hook
+end
+
+--- Runs the deferred effects that wait, in one batch. Gives true when
+--- none wait after the run.
+export function run_deferred() -> boolean
+  const pending = waiting
+  waiting = {}
+
+  batching += 1
+
+  const result = Result.pcall(function() -> ()
+    for _, node in pending do
+      if node.alive and node.dirty then
+        run_effect(node)
+      end
+    end
+  end)
+
+  batching -= 1
+  flush()
+
+  match result with
+    case Ok(_) then return #waiting == 0
+    case Err(message) then error(message, 0)
+  end
+end
+
 --- Angular's `untracked()`. It runs `fn`, and the reads inside link to
 --- nothing.
-export function untracked<T>(fn: () -> T) -> T
+--- `fn` may give any number of values, or none.
+@allow(explicit_any, raw_pcall)
+export function untracked<T...>(fn: () -> T...) -> T...
   const previous = observer
   observer = nil
 
-  const result = Result.pcall(fn)
+  const result = table.pack(pcall(fn :: any))
   observer = previous
 
-  match result with
-    case Ok(value) then return value
-    case Err(message) then error(message, 0)
+  if not result[1] then
+    error(result[2], 0)
   end
+
+  return (table.unpack :: any)(result, 2, result.n)
 end
 
 --- Runs `fn`, and runs the effects that its writes mark once, at the

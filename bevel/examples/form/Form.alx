@@ -19,7 +19,7 @@ impl FormComponent
   function template(self) -> Instance
     -- A new FormState for this form. The fields inside read it.
     return provide([ FormState ], function()
-      const state = inject<<FormState>>(FormState)
+      const state = inject(FormState)
 
       return (
         <Frame Size={new UDim2(1, 0, 0, 140)}>

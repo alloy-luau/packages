@@ -1,0 +1,86 @@
+--[[
+  A spring follows a target signal, and reads as a signal of its own. A
+  template binds to it as to any signal, so the property moves.
+
+  The parameters follow Apple's springs:
+
+  - `{ duration = 0.5, bounce = 0.3 }`: Apple's `Spring(duration:bounce:)`.
+    `duration` is how long the motion feels; `bounce` is 0 for no
+    overshoot, up to 1 for more, and below 0 for an overdamped spring.
+  - `{ response = 0.3, damping_ratio = 0.8 }`: SwiftUI's
+    `.spring(response:dampingFraction:)`.
+  - `{ mass = 1, stiffness = 170, damping = 26 }`: the physical form.
+
+  `Springs.smooth()`, `Springs.snappy()`, and `Springs.bouncy()` are
+  Apple's presets. Each takes a duration and an extra bounce.
+  `Springs.interactive()` is for a value that follows a drag.
+
+  A spring moves numbers, Vector2, Vector3, UDim, UDim2, Color3 (in
+  Oklab), CFrame, and Rect.
+]]
+
+import { component, create, mount, signal, spring, Springs } from '@packages/bevel'
+
+struct CardComponent
+end
+
+@component
+impl CardComponent
+  function new(_props: {}) -> CardComponent
+    return new CardComponent {}
+  end
+
+  function template(self) -> Instance
+    const hovered = signal(false)
+    const pressed = signal(false)
+
+    -- The target size: bigger on hover, smaller while pressed.
+    const size = function() -> UDim2
+      return if pressed() then new UDim2(0, 180, 0, 110)
+        elseif hovered() then new UDim2(0, 220, 0, 130)
+        else new UDim2(0, 200, 0, 120)
+    end
+
+    -- The spring follows the target. A press that ends mid-motion keeps
+    -- the velocity, so the card bounces back the way a finger expects.
+    const shown = spring(size, Springs.bouncy(0.4))
+
+    -- A second spring with its own feel: a slow, smooth tilt.
+    const tilt = spring(
+      function() return if hovered() then 4 else 0 end,
+      { duration = 0.8, bounce = 0 }
+    )
+
+    return (
+      <TextButton
+        Size={shown}
+        Rotation={tilt}
+        AnchorPoint={new Vector2(0.5, 0.5)}
+        Text="Press me"
+        MouseEnter={function() hovered:set(true) end}
+        MouseLeave={function() hovered:set(false) end}
+        MouseButton1Down={function() pressed:set(true) end}
+        MouseButton1Up={function()
+          pressed:set(false)
+          -- A push on top of the motion: the controls move a spring by hand.
+          tilt:impulse(-60)
+        end}
+      />
+    )
+  end
+end
+
+return mount(CardComponent)
+
+--[[
+  The controls of a spring:
+
+  - `s:set_position(v)` jumps to a value and keeps the velocity.
+  - `s:set_velocity(v)` sets the velocity, in units a second.
+  - `s:impulse(v)` adds to the velocity.
+  - `s:velocity()` reads the velocity.
+  - `s:resting()` reads as a signal: true once the spring rests.
+
+  The spring solves its motion exactly at each frame, so it moves the
+  same at any frame rate.
+]]

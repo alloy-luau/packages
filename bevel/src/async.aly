@@ -1,0 +1,215 @@
+--[[
+  Async and deferred logic: `resource`, `deferred`, and `interval`.
+
+  `resource` is Angular's: it loads a value with code that may yield, and
+  gives its value, its status, and its error as signals. As in Fluid's
+  `async`, the loader runs on a thread of its own, the signals it reads
+  before its first yield link it, and a change of them starts a new load
+  that cancels the old one.
+
+  `deferred` is an effect that runs at once, and after a change runs on
+  the next frame, once for all the writes in between. `interval` polls a
+  value at a fixed rate.
+]]
+
+import {
+  current_owner,
+  effect,
+  effect_of,
+  on_destroy,
+  run_deferred,
+  set_frame_hook,
+  signal,
+  untracked,
+  type EffectRef,
+  type OnCleanup,
+  type Signal,
+} from './reactive'
+import { manual_frames, start, step, stop } from './frame'
+
+-- The frame job that runs the deferred effects. It stays while any wait.
+local function deferred_job(_dt: number) -> boolean
+  return run_deferred()
+end
+
+set_frame_hook(function() start(deferred_job) end)
+
+--- Fluid's `deferred`. It runs `fn` now, and after a change of a signal
+--- that `fn` read, runs it again on the next frame, once for all the
+--- writes in between. `fn` gets `on_cleanup`, as an effect does.
+export function deferred(fn: (on_cleanup: OnCleanup) -> ()) -> EffectRef
+  return effect_of(fn, true)
+end
+
+--- Where a resource stands.
+export type ResourceStatus = 'loading' | 'ready' | 'error'
+
+--- What `resource` gives: signals of its value, its status, and its
+--- error, and `reload()` to load again.
+export type Resource<T> = {
+  value: Signal<T?>,
+  status: Signal<ResourceStatus>,
+  error: Signal<string?>,
+  is_loading: Signal<boolean>,
+  reload: () -> (),
+}
+
+--- Angular's `resource()`. It runs `loader` on a thread of its own. The
+--- loader may yield, and gives the value; it may also call `set` to give
+--- a value before it ends. The signals that the loader reads before its
+--- first yield start a new load when they change, and a new load cancels
+--- the one before it.
+@allow(explicit_any)
+export function resource<T>(loader: (set: (value: T) -> ()) -> T?) -> Resource<T>
+  const value = signal(nil :: T?)
+  const status = signal('loading' :: ResourceStatus)
+  const failure = signal(nil :: string?)
+  const trigger = signal(0)
+  local version = 0
+
+  effect(function(on_cleanup)
+    trigger()
+    version += 1
+
+    const mine = version
+    status:set('loading')
+    failure:set(nil)
+
+    const thread = task.spawn(function() -> ()
+      const result = Result.pcall(loader, function(given: T) -> ()
+        if mine == version then
+          value:set(given)
+        end
+      end)
+
+      if mine ~= version then
+        return
+      end
+
+      match result with
+        case Ok(loaded) then
+          if loaded ~= nil then
+            value:set(loaded)
+          end
+
+          status:set('ready')
+        case Err(message) then
+          failure:set(message)
+          status:set('error')
+      end
+    end)
+
+    on_cleanup(function() -> ()
+      if coroutine.status(thread) == 'suspended' then
+        task.cancel(thread)
+      end
+    end)
+  end)
+
+  return {
+    value = (value :: any) :: Signal<T?>,
+    status = (status :: any) :: Signal<ResourceStatus>,
+    error = (failure :: any) :: Signal<string?>,
+    is_loading = function() return status() == 'loading' end :: any,
+    reload = function() -> ()
+      trigger:update(function(n) return n + 1 end)
+    end,
+  }
+end
+
+--- Fluid's `interval`. A signal that runs `fn` again every `seconds`, and
+--- holds what it gives. The reads in `fn` link to nothing.
+@allow(explicit_any)
+export function interval<T>(seconds: number, fn: () -> T) -> Signal<T>
+  const out = signal(untracked(fn))
+  local elapsed = 0
+
+  const job = function(dt: number) -> boolean
+    elapsed += dt
+
+    if elapsed >= seconds then
+      elapsed %= seconds
+      out:set(untracked(fn))
+    end
+
+    return false
+  end
+
+  start(job)
+
+  if current_owner() ~= nil then
+    on_destroy(function() stop(job) end)
+  end
+
+  return (out :: any) :: Signal<T>
+end
+
+@test
+namespace AsyncTests
+  --- A loader that gives a value at once makes the resource ready.
+  public function a_resource_loads_its_value() -> ()
+    const loaded = resource(function(_set) return 42 end)
+
+    $assert_eq(loaded.value(), 42)
+    $assert_eq(loaded.status(), 'ready')
+    $assert(not loaded.is_loading())
+  end
+
+  --- A loader that throws gives the error and the status.
+  public function a_failed_load_gives_its_error() -> ()
+    const loaded = resource(function(_set) -> number
+      error('no data', 0)
+    end)
+
+    $assert_eq(loaded.status(), 'error')
+    $assert_eq(loaded.error(), 'no data')
+    $assert(loaded.value() == nil)
+  end
+
+  --- A change of a signal that the loader read loads again; so does reload.
+  public function a_resource_loads_again() -> ()
+    const id = signal(1)
+    local loads = 0
+    const loaded = resource(function(_set)
+      loads += 1
+      return id() * 10
+    end)
+
+    id:set(2)
+    $assert_eq(loaded.value(), 20)
+
+    loaded.reload()
+    $assert_eq(loads, 3)
+  end
+
+  --- A deferred effect runs at once, then once on the next frame for all
+  --- the writes in between.
+  public function a_deferred_effect_waits_for_the_frame() -> ()
+    manual_frames()
+    const count = signal(0)
+    const seen: { number } = {}
+
+    deferred(function() table.insert(seen, count()) end)
+    count:set(1)
+    count:set(2)
+    $assert_eq(table.concat(seen, ','), '0')
+
+    step(1 / 60)
+    $assert_eq(table.concat(seen, ','), '0,2')
+  end
+
+  --- An interval reads its function again each period.
+  public function an_interval_polls_at_its_rate() -> ()
+    manual_frames()
+    local reads = 0
+    const polled = interval(1, function()
+      reads += 1
+      return reads
+    end)
+
+    step(0.5)
+    $assert_eq(polled(), 1)
+    step(0.6)
+    $assert_eq(polled(), 2)
+  end
+end

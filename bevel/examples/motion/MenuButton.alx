@@ -1,0 +1,50 @@
+import { component, create, Easing, mount, signal, spring, Springs, tween } from '@packages/bevel'
+
+interface MenuButtonProps
+  label: string
+  chosen: () -> ()
+end
+
+struct MenuButtonComponent
+  read props: MenuButtonProps
+end
+
+@component
+impl MenuButtonComponent
+  function new(props: MenuButtonProps) -> MenuButtonComponent
+    return new MenuButtonComponent { props = props }
+  end
+
+  function template(self) -> Instance
+    const hovered = signal(false)
+    const pressed = signal(false)
+
+    -- A press squashes the button with a snappy spring.
+    const scale = spring(
+      function() return if pressed() then 0.92 elseif hovered() then 1.04 else 1 end,
+      Springs.snappy(0.3)
+    )
+
+    -- A hover blends the color with a short tween.
+    const color = tween(function()
+      return if hovered() then new Color3(0.35, 0.55, 1) else new Color3(0.2, 0.22, 0.28)
+    end, { duration = 0.15, easing = Easing.ease_out })
+
+    return (
+      <TextButton
+        Size={new UDim2(1, 0, 0, 44)}
+        BackgroundColor3={color}
+        Text={self.props.label}
+        MouseEnter={function() hovered:set(true) end}
+        MouseLeave={function() hovered:set(false) end}
+        MouseButton1Down={function() pressed:set(true) end}
+        MouseButton1Up={function() pressed:set(false) end}
+        Activated={function() self.props.chosen() end}
+      >
+        <UIScale Scale={scale} />
+      </TextButton>
+    )
+  end
+end
+
+return mount(MenuButtonComponent)

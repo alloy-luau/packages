@@ -1,0 +1,46 @@
+import { component, create, mount, signal, spring } from '@packages/bevel'
+import MenuButton from './MenuButton'
+
+struct MenuComponent
+end
+
+@component
+impl MenuComponent
+  function new(_props: {}) -> MenuComponent
+    return new MenuComponent {}
+  end
+
+  function template(self) -> Instance
+    const open = signal(false)
+
+    -- The panel slides in with a bounce. Its own spring, with Apple's
+    -- duration and bounce.
+    const position = spring(function()
+      return if open() then new UDim2(0, 20, 0.5, 0) else new UDim2(0, -240, 0.5, 0)
+    end, { duration = 0.5, bounce = 0.25 })
+
+    return (
+      <Frame Size={UDim2.fromScale(1, 1)} BackgroundTransparency={1}>
+        <TextButton
+          Size={new UDim2(0, 120, 0, 40)}
+          Position={new UDim2(1, -140, 0, 20)}
+          Text="Menu"
+          Activated={function() open:update(function(o) return not o end) end}
+        />
+
+        <Frame
+          Size={new UDim2(0, 220, 0, 160)}
+          AnchorPoint={new Vector2(0, 0.5)}
+          Position={position}
+        >
+          <UIListLayout Padding={new UDim(0, 6)} />
+          <MenuButton label="Play" chosen={function() print('play') end} />
+          <MenuButton label="Shop" chosen={function() print('shop') end} />
+          <MenuButton label="Close" chosen={function() open:set(false) end} />
+        </Frame>
+      </Frame>
+    )
+  end
+end
+
+return mount(MenuComponent)

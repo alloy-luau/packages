@@ -1,0 +1,714 @@
+--[[
+  Animation: springs, tweens, easing curves, and `lerp`.
+
+  A spring and a tween each follow a target signal, and each reads as a
+  signal of its own. A template binds to them as to any signal:
+  `Position={spring(target)}`.
+
+  Both move the parts of a value: a number, a Vector2, a Vector3, a UDim,
+  a UDim2, a Color3, a CFrame, or a Rect. A Color3 moves in Oklab, so a
+  blend of two colors keeps its lightness.
+
+  The spring solves the damped oscillator exactly at each frame, so it
+  moves the same at 30 or 240 frames a second, and a new target keeps
+  the velocity of the old motion. Its parameters follow Apple's: a
+  perceptual `duration` and a `bounce`, or `response` and
+  `damping_ratio`, or `mass`, `stiffness`, and `damping`.
+]]
+
+import {
+  effect,
+  on_destroy,
+  current_owner,
+  read,
+  signal,
+  untracked,
+  type Readable,
+  type Signal,
+} from './reactive'
+import { manual_frames, start, step, stop } from './frame'
+
+-- The kinds of value that move, and how many parts each has.
+type Kind = 'number' | 'Vector2' | 'Vector3' | 'UDim' | 'UDim2' | 'Color3' | 'CFrame' | 'Rect'
+
+-- sRGB to linear light, and back.
+local function to_linear(c: number) -> number
+  return if c <= 0.04045 then c / 12.92 else ((c + 0.055) / 1.055) ^ 2.4
+end
+
+local function to_gamma(c: number) -> number
+  return if c <= 0.0031308 then c * 12.92 else 1.055 * c ^ (1 / 2.4) - 0.055
+end
+
+-- A Color3 in Oklab: lightness, then two axes of hue.
+local function to_oklab(color: Color3) -> { number }
+  const r, g, b = to_linear(color.R), to_linear(color.G), to_linear(color.B)
+  const l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b) ^ (1 / 3)
+  const m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b) ^ (1 / 3)
+  const s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b) ^ (1 / 3)
+
+  return [
+    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+  ]
+end
+
+local function from_oklab(lab: { number }) -> Color3
+  const l = (lab[1] + 0.3963377774 * lab[2] + 0.2158037573 * lab[3]) ^ 3
+  const m = (lab[1] - 0.1055613458 * lab[2] - 0.0638541728 * lab[3]) ^ 3
+  const s = (lab[1] - 0.0894841775 * lab[2] - 1.291485548 * lab[3]) ^ 3
+  const r = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s
+  const g = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s
+  const b = -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s
+
+  return new Color3(
+    math.clamp(to_gamma(r), 0, 1),
+    math.clamp(to_gamma(g), 0, 1),
+    math.clamp(to_gamma(b), 0, 1)
+  )
+end
+
+-- The kind of a value and its parts, as plain numbers.
+local function pack(value: unknown) -> (Kind, { number })
+  if value is number then
+    return 'number', [ value ]
+  elseif value is Vector2 then
+    return 'Vector2', [ value.X, value.Y ]
+  elseif value is Vector3 then
+    return 'Vector3', [ value.X, value.Y, value.Z ]
+  elseif value is UDim then
+    return 'UDim', [ value.Scale, value.Offset ]
+  elseif value is UDim2 then
+    return 'UDim2', [ value.X.Scale, value.X.Offset, value.Y.Scale, value.Y.Offset ]
+  elseif value is Color3 then
+    return 'Color3', to_oklab(value)
+  elseif value is CFrame then
+    return 'CFrame', [ value:GetComponents() ]
+  elseif value is Rect then
+    return 'Rect', [ value.Min.X, value.Min.Y, value.Max.X, value.Max.Y ]
+  end
+
+  error(
+    `Bevel cannot animate a {typeof(value)}; it moves numbers, Vector2, Vector3, UDim, UDim2, Color3, CFrame, and Rect`,
+    0
+  )
+end
+
+-- The value of a kind from its parts.
+local function unpack(kind: Kind, p: { number }) -> unknown
+  match kind with
+    case 'number' then return p[1]
+    case 'Vector2' then return new Vector2(p[1], p[2])
+    case 'Vector3' then return new Vector3(p[1], p[2], p[3])
+    case 'UDim' then return new UDim(p[1], p[2])
+    case 'UDim2' then return new UDim2(p[1], p[2], p[3], p[4])
+    case 'Color3' then return from_oklab(p)
+    case 'CFrame' then
+      const frame = new CFrame(
+        p[1],
+        p[2],
+        p[3],
+        p[4],
+        p[5],
+        p[6],
+        p[7],
+        p[8],
+        p[9],
+        p[10],
+        p[11],
+        p[12]
+      )
+      return frame:Orthonormalize()
+    default return new Rect(p[1], p[2], p[3], p[4])
+  end
+end
+
+--- A blend of two values of one kind: `a` at 0, `b` at 1. A Color3
+--- blends in Oklab; a CFrame blends its rotation the short way round.
+@allow(explicit_any)
+export function lerp<T>(a: T, b: T, t: number) -> T
+  if a is CFrame and b is CFrame then
+    const from, to = (a :: any) :: CFrame, (b :: any) :: CFrame
+    return (from:Lerp(to, t) :: any) :: T
+  end
+
+  const kind, from = pack(a)
+  const _, to = pack(b)
+  local out: { number } = {}
+
+  for i, x in from do
+    out[i] = x + (to[i] - x) * t
+  end
+
+  return unpack(kind, out) :: T
+end
+
+--- The options of a spring. Write one of three forms; the first form
+--- that has a field wins, in this order:
+---
+--- - `duration` and `bounce`, as Apple's `Spring(duration:bounce:)`.
+---   `duration` is the perceptual time to settle, 0.5 by default.
+---   `bounce` is 0 for no overshoot, up to 1 for more, and below 0 for an
+---   overdamped spring.
+--- - `response` and `damping_ratio`, as SwiftUI's
+---   `.spring(response:dampingFraction:)`. A `damping_ratio` of 1 is
+---   critical damping.
+--- - `mass`, `stiffness`, and `damping`, the physical form.
+---
+--- `velocity` sets the start velocity. `threshold` sets how near the
+--- target the spring rests, 0.001 by default.
+export type SpringOptions = {
+  duration: number?,
+  bounce: number?,
+  response: number?,
+  damping_ratio: number?,
+  mass: number?,
+  stiffness: number?,
+  damping: number?,
+  velocity: unknown?,
+  threshold: number?,
+}
+
+-- A spring's natural frequency and damping ratio, from its options.
+local function tuning(options: SpringOptions) -> (number, number)
+  const physical = options.mass ~= nil or options.stiffness ~= nil or options.damping ~= nil
+
+  if physical and options.duration == nil and options.response == nil then
+    const mass = options.mass ?? 1
+    const stiffness = options.stiffness ?? 100
+    const damping = options.damping ?? 10
+
+    return math.sqrt(stiffness / mass), damping / (2 * math.sqrt(stiffness * mass))
+  end
+
+  if options.response ~= nil and options.duration == nil then
+    return 2 * math.pi / options.response, options.damping_ratio ?? 1
+  end
+
+  const duration = options.duration ?? 0.5
+  const bounce = math.clamp(options.bounce ?? 0, -1, 0.999)
+  const omega = 2 * math.pi / duration
+  const damping = if bounce >= 0
+    then (1 - bounce) * 4 * math.pi / duration
+    else 4 * math.pi / (duration * (1 + bounce))
+
+  return omega, damping / (2 * omega)
+end
+
+-- Moves one part of a spring by `dt`: the exact solution of the damped
+-- oscillator from the offset `x` from the target and the velocity `v`.
+local function solve(
+  x: number,
+  v: number,
+  omega: number,
+  zeta: number,
+  dt: number
+) -> (number, number)
+  if math.abs(zeta - 1) < 1e-6 then
+    const decay = math.exp(-omega * dt)
+    const b = v + omega * x
+
+    return (x + b * dt) * decay, (v - omega * b * dt) * decay
+  elseif zeta < 1 then
+    const wd = omega * math.sqrt(1 - zeta * zeta)
+    const a = zeta * omega
+    const b = (v + a * x) / wd
+    const decay = math.exp(-a * dt)
+    const c, s = math.cos(wd * dt), math.sin(wd * dt)
+
+    return decay * (x * c + b * s), decay * ((wd * b - a * x) * c - (a * b + wd * x) * s)
+  else
+    const root = omega * math.sqrt(zeta * zeta - 1)
+    const r1, r2 = -zeta * omega + root, -zeta * omega - root
+    const c2 = (v - r1 * x) / (r2 - r1)
+    const c1 = x - c2
+    const e1, e2 = math.exp(r1 * dt), math.exp(r2 * dt)
+
+    return c1 * e1 + c2 * e2, c1 * r1 * e1 + c2 * r2 * e2
+  end
+end
+
+--- A signal that follows its target with a spring. Call it to read the
+--- value now. The methods move it by hand.
+export type Spring<T> = typeof(
+  setmetatable(
+    {} :: {
+      set_position: (self: unknown, value: T) -> (),
+      set_velocity: (self: unknown, value: T) -> (),
+      impulse: (self: unknown, value: T) -> (),
+      velocity: (self: unknown) -> T,
+      resting: (self: unknown) -> boolean,
+    },
+    {} :: { __call: (self: unknown) -> T }
+  )
+)
+
+-- The state of one spring.
+struct SpringState
+  kind: Kind
+  current: { number }
+  speeds: { number }
+  goal: { number }
+  omega: number
+  zeta: number
+  threshold: number
+  output: unknown
+  resting_now: unknown
+  job: ((dt: number) -> boolean)? = nil
+end
+
+-- Writes the position into the output signal.
+@allow(explicit_any)
+local function publish(state: SpringState) -> ()
+  (state.output :: any):set(unpack(state.kind, state.current))
+end
+
+-- Starts the frame job of a spring, once.
+@allow(explicit_any)
+local function wake(state: SpringState) -> ()
+  if state.job ~= nil then
+    return
+  end
+
+  (state.resting_now :: any):set(false)
+
+  const job = function(dt: number) -> boolean
+    local still = true
+
+    for i, target in state.goal do
+      const x, v = solve(state.current[i] - target, state.speeds[i], state.omega, state.zeta, dt)
+      state.current[i] = target + x
+      state.speeds[i] = v
+
+      if math.abs(x) > state.threshold or math.abs(v) > state.threshold then
+        still = false
+      end
+    end
+
+    if still then
+      for i, target in state.goal do
+        state.current[i] = target
+        state.speeds[i] = 0
+      end
+
+      state.job = nil
+      (state.resting_now :: any):set(true)
+    end
+
+    publish(state)
+    return still
+  end
+
+  state.job = job
+  start(job)
+end
+
+-- Sets a new goal, and moves toward it.
+local function retarget(state: SpringState, goal: { number }) -> ()
+  state.goal = goal
+  wake(state)
+end
+
+-- Takes the spring off the frame loop.
+local function halt(state: SpringState) -> ()
+  if state.job ~= nil then
+    stop(state.job)
+    state.job = nil
+  end
+end
+
+impl SpringState
+  function __call(self) -> unknown
+    return (self.output :: () -> unknown)()
+  end
+
+  --- Jumps to a value, and keeps the velocity.
+  function set_position(self, value: unknown) -> ()
+    const _, parts = pack(value)
+    self.current = parts
+    publish(self)
+    wake(self)
+  end
+
+  --- Sets the velocity, in units a second.
+  function set_velocity(self, value: unknown) -> ()
+    const _, parts = pack(value)
+    self.speeds = parts
+    wake(self)
+  end
+
+  --- Adds to the velocity: a push.
+  function impulse(self, value: unknown) -> ()
+    const _, parts = pack(value)
+
+    for i, v in parts do
+      self.speeds[i] += v
+    end
+
+    wake(self)
+  end
+
+  --- The velocity now, as a value of the spring's kind.
+  function velocity(self) -> unknown
+    return unpack(self.kind, table.clone(self.speeds))
+  end
+
+  --- Whether the spring rests at its target. It reads as a signal.
+  function resting(self) -> boolean
+    return (self.resting_now :: () -> boolean)()
+  end
+end
+
+--- A spring that follows `target`. It reads as the value now, and moves
+--- toward each new target with the velocity it has.
+---
+---   const scale = signal(1)
+---   const shown = spring(scale, { duration = 0.4, bounce = 0.3 })
+---   scale:set(1.2)  -- `shown()` springs to 1.2
+@allow(explicit_any)
+export function spring<T>(target: Readable<T>, options: SpringOptions?) -> Spring<T>
+  const tuned: SpringOptions = options ?? {}
+  const omega, zeta = tuning(tuned)
+  const first = untracked(function() return read(target) end)
+  const kind, parts = pack(first)
+  local start_velocity: { number } = table.create(#parts, 0)
+
+  if tuned.velocity ~= nil then
+    const _, given = pack(tuned.velocity)
+    start_velocity = given
+  end
+
+  const state = new SpringState {
+    kind = kind,
+    current = table.clone(parts),
+    speeds = start_velocity,
+    goal = parts,
+    omega = omega,
+    zeta = zeta,
+    threshold = tuned.threshold ?? 0.001,
+    output = signal(first),
+    resting_now = signal(true),
+  }
+
+  effect(function()
+    const next_kind, next_parts = pack(read(target))
+    assert(next_kind == state.kind, `a spring of {state.kind} cannot move to a {next_kind}`)
+    untracked(function() retarget(state, next_parts) end)
+  end)
+
+  if current_owner() ~= nil then
+    on_destroy(function() halt(state) end)
+  end
+
+  return (state :: any) :: Spring<T>
+end
+
+--- An easing curve: progress from 0 to 1 in, eased progress out.
+export type Easing = (t: number) -> number
+
+--- Easing curves for `tween`.
+export namespace Easing
+  --- A curve as CSS and Core Animation write it: a cubic Bézier from
+  --- (0, 0) to (1, 1), with the control points (x1, y1) and (x2, y2).
+  public function cubic_bezier(x1: number, y1: number, x2: number, y2: number) -> Easing
+    -- The x and y of the curve at the parameter u.
+    local function curve(a: number, b: number, u: number) -> number
+      return 3 * a * (1 - u) ^ 2 * u + 3 * b * (1 - u) * u ^ 2 + u ^ 3
+    end
+
+    return function(t: number) -> number
+      if t <= 0 or t >= 1 then
+        return math.clamp(t, 0, 1)
+      end
+
+      -- Find the u where x is t: bisection, which cannot diverge.
+      local low, high = 0, 1
+
+      for _ = 1, 30 do
+        const mid = (low + high) / 2
+
+        if curve(x1, x2, mid) < t then
+          low = mid
+        else
+          high = mid
+        end
+      end
+
+      return curve(y1, y2, (low + high) / 2)
+    end
+  end
+
+  --- No easing.
+  public function linear(t: number) -> number
+    return t
+  end
+
+  --- Core Animation's ease in: slow at the start.
+  public const ease_in: Easing = cubic_bezier(0.42, 0, 1, 1)
+
+  --- Core Animation's ease out: slow at the end.
+  public const ease_out: Easing = cubic_bezier(0, 0, 0.58, 1)
+
+  --- Core Animation's ease in and out: slow at both ends.
+  public const ease_in_out: Easing = cubic_bezier(0.42, 0, 0.58, 1)
+
+  --- The shapes of Roblox's `Enum.EasingStyle`, by name.
+  public type Style = 'Linear' | 'Sine' | 'Quad' | 'Cubic' | 'Quart' | 'Quint' | 'Exponential' | 'Circular' | 'Back' | 'Elastic' | 'Bounce'
+
+  --- The sides of a curve that ease, as `Enum.EasingDirection` names them.
+  public type Direction = 'In' | 'Out' | 'InOut'
+
+  -- The In form of each style.
+  local function ease_in_of(style: Style, t: number) -> number
+    match style with
+      case 'Linear' then return t
+      case 'Sine' then return 1 - math.cos(t * math.pi / 2)
+      case 'Quad' then return t ^ 2
+      case 'Cubic' then return t ^ 3
+      case 'Quart' then return t ^ 4
+      case 'Quint' then return t ^ 5
+      case 'Exponential' then return if t == 0 then 0 else 2 ^ (10 * t - 10)
+      case 'Circular' then return 1 - math.sqrt(1 - t * t)
+      case 'Back' then return 2.70158 * t ^ 3 - 1.70158 * t ^ 2
+      case 'Elastic' then
+        if t == 0 or t == 1 then
+          return t
+        end
+
+        return -(2 ^ (10 * t - 10)) * math.sin((t * 10 - 10.75) * (2 * math.pi / 3))
+      default
+        const u = 1 - t
+        local out = 0
+
+        if u < 1 / 2.75 then
+          out = 7.5625 * u * u
+        elseif u < 2 / 2.75 then
+          const w = u - 1.5 / 2.75
+          out = 7.5625 * w * w + 0.75
+        elseif u < 2.5 / 2.75 then
+          const w = u - 2.25 / 2.75
+          out = 7.5625 * w * w + 0.9375
+        else
+          const w = u - 2.625 / 2.75
+          out = 7.5625 * w * w + 0.984375
+        end
+
+        return 1 - out
+    end
+  end
+
+  --- A Roblox easing style as a curve: `style('Quad', 'Out')`. The
+  --- direction is `Out` by default, as it is in a `TweenInfo`.
+  public function style(name: Style, direction: Direction?) -> Easing
+    const side = direction ?? 'Out'
+
+    return function(t: number) -> number
+      match side with
+        case 'In' then return ease_in_of(name, t)
+        case 'Out' then return 1 - ease_in_of(name, 1 - t)
+        default
+          return if t < 0.5
+            then ease_in_of(name, 2 * t) / 2
+            else 1 - ease_in_of(name, 2 - 2 * t) / 2
+      end
+    end
+  end
+end
+
+--- The options of a tween: `duration` in seconds, 0.25 by default; the
+--- `easing` curve, `Easing.ease_in_out` by default; and a `delay` before
+--- it starts.
+export type TweenOptions = { duration: number?, easing: Easing?, delay: number? }
+
+--- A signal that follows `target` with a tween: each new target starts a
+--- move from the value now, over `duration`, along the `easing` curve.
+@allow(explicit_any)
+export function tween<T>(target: Readable<T>, options: TweenOptions?) -> Signal<T>
+  const tuned: TweenOptions = options ?? {}
+  const duration = math.max(tuned.duration ?? 0.25, 1e-6)
+  const delay = tuned.delay ?? 0
+  const output = signal(untracked(function() return read(target) end))
+  local job: ((dt: number) -> boolean)? = nil
+
+  effect(function()
+    const goal = read(target)
+    const from = untracked(function() return output() end)
+    local elapsed = -delay
+
+    if job ~= nil then
+      stop(job)
+    end
+
+    const ease = tuned.easing ?? Easing.ease_in_out
+    const run = function(dt: number) -> boolean
+      elapsed += dt
+
+      const t = math.clamp(elapsed / duration, 0, 1)
+      output:set(lerp(from, goal, ease(t)))
+
+      if t >= 1 then
+        job = nil
+        return true
+      end
+
+      return false
+    end
+
+    job = run
+    untracked(function() start(run) end)
+  end)
+
+  if current_owner() ~= nil then
+    on_destroy(function()
+      if job ~= nil then
+        stop(job)
+      end
+    end)
+  end
+
+  return (output :: any) :: Signal<T>
+end
+
+--- Apple's spring presets. Each takes a `duration`, 0.5 by default, and
+--- an `extra_bounce` to add on top of its own.
+export namespace Springs
+  --- No bounce: a smooth settle.
+  public function smooth(duration: number?, extra_bounce: number?) -> SpringOptions
+    return { duration = duration ?? 0.5, bounce = 0 + (extra_bounce ?? 0) }
+  end
+
+  --- A small bounce, quick to settle.
+  public function snappy(duration: number?, extra_bounce: number?) -> SpringOptions
+    return { duration = duration ?? 0.5, bounce = 0.15 + (extra_bounce ?? 0) }
+  end
+
+  --- A clear bounce.
+  public function bouncy(duration: number?, extra_bounce: number?) -> SpringOptions
+    return { duration = duration ?? 0.5, bounce = 0.3 + (extra_bounce ?? 0) }
+  end
+
+  --- SwiftUI's interactive spring, for a value that follows a finger or a
+  --- drag: quick, and damped near critical.
+  public function interactive() -> SpringOptions
+    return { response = 0.15, damping_ratio = 0.86 }
+  end
+end
+
+@test
+namespace AnimateTests
+  -- Moves time by `seconds`, in frames of `dt`.
+  private function run_for(seconds: number, dt: number) -> ()
+    for _ = 1, math.round(seconds / dt) do
+      step(dt)
+    end
+  end
+
+  --- A spring comes to rest at its target.
+  public function a_spring_rests_at_its_target() -> ()
+    manual_frames()
+    const goal = signal(0)
+    const moving = spring(goal, { duration = 0.5 })
+
+    goal:set(10)
+    $assert(moving() < 10)
+    run_for(3, 1 / 60)
+
+    $assert_eq(moving(), 10)
+    $assert(moving:resting())
+  end
+
+  --- A bounce goes past the target; a smooth spring never does.
+  public function a_bounce_overshoots_and_a_smooth_spring_does_not() -> ()
+    manual_frames()
+    const goal = signal(0)
+    const bouncy = spring(goal, Springs.bouncy(0.5, 0.2))
+    const smooth = spring(goal, Springs.smooth(0.5))
+    local bouncy_peak, smooth_peak = 0, 0
+
+    goal:set(1)
+
+    for _ = 1, 180 do
+      step(1 / 60)
+      bouncy_peak = math.max(bouncy_peak, bouncy())
+      smooth_peak = math.max(smooth_peak, smooth())
+    end
+
+    $assert(bouncy_peak > 1.05)
+    $assert(smooth_peak <= 1 + 1e-9)
+  end
+
+  --- The solver is exact, so the frame rate does not change the motion:
+  --- one second in 30 steps lands where one second in 240 steps does.
+  public function the_solver_gives_one_motion_at_any_frame_rate() -> ()
+    for _, zeta in [ 0.4, 1, 1.8 ] do
+      local x30, v30 = 5, 0
+      local x240, v240 = 5, 0
+
+      for _ = 1, 30 do
+        x30, v30 = solve(x30, v30, 12, zeta, 1 / 30)
+      end
+
+      for _ = 1, 240 do
+        x240, v240 = solve(x240, v240, 12, zeta, 1 / 240)
+      end
+
+      $assert(math.abs(x30 - x240) < 1e-9)
+      $assert(math.abs(v30 - v240) < 1e-9)
+    end
+  end
+
+  --- Apple's duration and bounce give a damping ratio of 1 - bounce.
+  public function a_bounce_sets_the_damping_ratio() -> ()
+    const omega, zeta = tuning({ duration = 0.5, bounce = 0.3 })
+
+    $assert(math.abs(omega - 4 * math.pi) < 1e-9)
+    $assert(math.abs(zeta - 0.7) < 1e-9)
+  end
+
+  --- An impulse moves a spring at rest, and it comes back.
+  public function an_impulse_moves_a_spring_at_rest() -> ()
+    manual_frames()
+    const moving = spring(signal(0), { duration = 0.4 })
+
+    moving:impulse(20)
+    step(1 / 60)
+    $assert(moving() > 0)
+
+    run_for(3, 1 / 60)
+    $assert_eq(moving(), 0)
+  end
+
+  --- A tween reaches its target at the end of its duration, along its curve.
+  public function a_tween_follows_its_curve() -> ()
+    manual_frames()
+    const goal = signal(0)
+    const moving = tween(goal, { duration = 1, easing = Easing.linear })
+
+    goal:set(10)
+    run_for(0.5, 0.1)
+    $assert(math.abs(moving() - 5) < 1e-9)
+
+    run_for(0.6, 0.1)
+    $assert_eq(moving(), 10)
+  end
+
+  --- The curves give what CSS and Roblox give.
+  public function the_easing_curves_match_their_sources() -> ()
+    $assert(math.abs(Easing.cubic_bezier(0, 0, 1, 1)(0.3) - 0.3) < 1e-6)
+    $assert(math.abs(Easing.ease_in_out(0.5) - 0.5) < 1e-6)
+    $assert_eq(Easing.style('Quad', 'In')(0.5), 0.25)
+    $assert_eq(Easing.style('Quad', 'Out')(0.5), 0.75)
+    $assert_eq(Easing.style('Quad', 'InOut')(0.25), 0.125)
+  end
+
+  --- lerp blends each kind of value part by part.
+  public function lerp_blends_the_parts() -> ()
+    const half = lerp(new UDim2(0, 0, 1, 10), new UDim2(1, 100, 1, 30), 0.5)
+
+    $assert_eq(half, new UDim2(0.5, 50, 1, 20))
+
+    const color = lerp(new Color3(1, 0, 0), new Color3(1, 0, 0), 0.5)
+    $assert(math.abs(color.R - 1) < 1e-6 and math.abs(color.G) < 1e-6)
+  end
+end
