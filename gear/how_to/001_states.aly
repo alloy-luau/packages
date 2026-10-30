@@ -1,0 +1,67 @@
+--[[
+  A state machine is a value that is in one state at a time, and moves
+  to another state when an event comes. Gear writes both as enums of
+  the game: one enum for the states, one for the events.
+
+  Each variant is a state. A payload holds data that only that state
+  has: a locked door keeps the key that locks it, and no other state has
+  a key.
+
+  These files import Gear from `@packages/gear`, where `embr install`
+  puts it.
+]]
+
+import { Machine } from '@packages/gear'
+
+--- The states of a door.
+export enum DoorState
+  Closed
+  Opening
+  Open
+  Closing
+  Locked(string)
+end
+
+--- What can happen to a door. Step 002 gives each one a meaning.
+export enum DoorEvent
+  Push
+  Done
+  Lock(string)
+  Unlock(string)
+end
+
+-- Luau cannot infer the two types from a unit variant such as
+-- `DoorState.Closed`, so write them with `<<...>>`.
+const door = new Machine<<DoorState, DoorEvent>>({
+  initial = DoorState.Closed,
+  -- The next state for a state and an event. This first door only
+  -- opens; step 002 writes the full door.
+  transition = function(state, event)
+    return match state, event with
+      case Closed, Push then DoorState.Opening
+      default nil
+    end
+  end,
+})
+
+door:send(DoorEvent.Push)
+
+-- `state()` gives the state now. A match on it takes the payload apart.
+const label = match door:state() with
+  case Closed then 'shut'
+  case Opening or Closing then 'moving'
+  case Open then 'open'
+  case Locked(key) then `locked with the {key} key`
+end
+
+print(label) -- moving
+
+--[[
+  - `new Machine<<S, E>>(options)` makes a machine and puts it in
+    `options.initial`.
+  - `machine:state()` gives the state now. Code outside the machine
+    cannot set it; only `send` moves it.
+  - A unit variant such as `DoorState.Open` is a string, so `==`
+    compares it. A payload variant is a table: `==` compares its
+    identity, unless the enum has `@derive(Eq)`. A `match` reads both.
+]]

@@ -1,0 +1,52 @@
+--[[
+  The transition decides. The hooks act. `enter` runs when the machine
+  enters a state, and `exit` runs when it leaves one. Each hook gets the
+  state and the machine.
+
+  Write a hook as a `match` over the state with no `default`. Then the
+  compiler checks that the hook has an arm for each state, and a new
+  state that the hook forgets does not compile.
+]]
+
+import { Machine, type Hook } from '@packages/gear'
+import { DoorEvent, DoorState } from './001_states'
+import { door_step } from './002_events_and_transitions'
+
+local part = new Instance('Part') { Anchored = true, Name = 'Door' }
+
+-- A named hook takes the `Hook` type, or writes its parameters out.
+const on_enter: Hook<DoorState, DoorEvent> = function(state)
+  match state with
+    case Closed then part.Transparency = 0
+    case Opening or Closing then part.BrickColor = new BrickColor('Bright yellow')
+    case Open then part.Transparency = 0.8
+    case Locked(key) then part:SetAttribute('Key', key)
+  end
+end
+
+const door = new Machine<<DoorState, DoorEvent>>({
+  initial = DoorState.Closed,
+  transition = door_step,
+  enter = on_enter,
+  -- An inline hook gets its types from the machine.
+  exit = function(state)
+    match state with
+      case Locked(_) then part:SetAttribute('Key', nil)
+      case Closed or Opening or Open or Closing then
+    end
+  end,
+})
+
+-- One move runs `exit` of the old state, then `enter` of the new one.
+door:send(DoorEvent.Push)
+
+--[[
+  - `new` runs `enter` of the initial state, so the part starts in the
+    look of `Closed`.
+  - An arm with no body is fine: `case Closed or Open then`. List the
+    states by name, and keep `default` out, so the check holds.
+  - A hook may call `machine:send(event)`. The event waits until the
+    move in progress ends, then runs. Step 004 shows the order.
+  - An error in a hook stops that `send` with the error. The machine is
+    in the new state, and the next `send` runs as usual.
+]]

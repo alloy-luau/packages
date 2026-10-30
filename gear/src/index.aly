@@ -1,0 +1,9 @@
+--[[
+  Gear: state machines over Alloy enums. This module sends out the
+  public API; each part lives in its own module beside it.
+
+  - machine: Machine, its Options, and the Hook type
+  - timers: the timers of a machine, on a clock that `update` moves
+]]
+
+export { Machine, type Options, type Hook } from './machine'

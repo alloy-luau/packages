@@ -1,0 +1,444 @@
+--[[
+  A state machine over two enums of the game: one for the states, one for
+  the events. The game writes the transition as a function from a state
+  and an event to the next state, with a `match`, so the compiler checks
+  that each state has an arm.
+
+  The transition returns nil for "no change". A payload variant compares
+  by identity, so "return the same state" could not tell a new
+  `Chase(target)` from the old one. Nil says it in one word, and
+  `default nil` covers every pair that does nothing. Any state that the
+  function returns is a transition, the same state too: the machine
+  leaves it and enters it again, and that starts its timers again.
+
+  One step goes in this order: `exit` of the old state, the timers drop,
+  the new state, `enter` of the new state, then `changed`. An event that
+  a hook or a `changed` handler sends waits in a queue, and runs after
+  the step that is in progress. So `changed` always fires in the order of
+  the steps.
+]]
+
+import { Queue } from '@alloy/std/collections'
+import { Signal } from '@alloy/std/signal'
+import { Timers } from './timers'
+
+--- A hook of a state: `enter` or `exit`. It gets the state and the
+--- machine, so a hook can set a timer or send an event.
+export type Hook<S, E> = (state: S, machine: Machine<S, E>) -> ()
+
+--- How a machine starts and moves.
+export interface Options<S, E>
+  -- The state that the machine enters first.
+  initial: S
+  -- The next state for a state and an event, or nil for no change. It
+  -- must not change the game: `can` calls it to ask.
+  transition: (state: S, event: E) -> S?
+  -- Runs when the machine enters a state, the initial state too.
+  enter: Hook<S, E>?
+  -- Runs when the machine leaves a state.
+  exit: Hook<S, E>?
+  -- How many states `history` keeps. The default is 10.
+  history: number?
+end
+
+-- The default length of the history.
+const HISTORY = 10
+
+-- A state that enters itself again on a timer of zero seconds loops
+-- forever in one update. Past this many timers in one update, Gear
+-- stops with an error, so the server does not hang.
+const MAX_TIMERS = 10000
+
+--- A state machine over the enums `S` and `E` of the game. Luau cannot
+--- infer `S` from a unit variant, so write both types:
+--- `new Machine<<DoorState, DoorEvent>>({ ... })`.
+export struct Machine<S, E>
+  --- Fires `(from, to, event)` after each step.
+  read changed: Signal<S, S, E>
+  private current: S
+  private options: Options<S, E>
+  private events: Queue<E>
+  private busy: boolean
+  private timers: Timers<E>
+  private clock: number
+  private entered: number
+  private trail: Queue<S>
+  private keep: number
+end
+
+impl Machine<S, E>
+  --- A machine in `options.initial`. It runs `enter` of that state now.
+  function new(options: Options<S, E>) -> Machine<S, E>
+    const machine = new Machine<<S, E>> {
+      changed = new Signal<<S, S, E>>(),
+      current = options.initial,
+      options = options,
+      events = new Queue(),
+      busy = false,
+      timers = new Timers<<E>>(),
+      clock = 0,
+      entered = 0,
+      trail = new Queue(),
+      keep = options.history ?? HISTORY,
+    }
+
+    Machine.run(machine, function() Machine.arrive(machine, options.initial) end)
+    return machine
+  end
+
+  --- The state that the machine is in.
+  function state(self) -> S
+    return self.current
+  end
+
+  --- Moves the machine with an event. An event with no transition
+  --- changes nothing. From inside a hook, the event waits until the
+  --- step in progress ends.
+  function send(self, event: E) -> ()
+    self.events:push(event)
+
+    if not self.busy then
+      Machine.run(self, function() end)
+    end
+  end
+
+  --- Whether `event` moves the machine from the state that it is in.
+  function can(self, event: E) -> boolean
+    return self.options.transition(self.current, event) ~= nil
+  end
+
+  --- Sends `event` after `seconds` on the clock of the machine, unless
+  --- the machine leaves the state first. Call it in `enter`.
+  function after(self, seconds: number, event: E) -> ()
+    self.timers:add(self.clock + seconds, event)
+  end
+
+  --- Moves the clock by `dt` seconds and fires each timer that falls
+  --- due, earliest first. Each timer fires at its own time, so a long
+  --- step runs a chain of timed states in full.
+  function update(self, dt: number) -> ()
+    const target = self.clock + dt
+    local fired = 0
+
+    while const timer = self.timers:take(target) do
+      fired += 1
+      assert(fired <= MAX_TIMERS, `update(): more than {MAX_TIMERS} timers in one step`)
+      self.clock = timer.at
+      self:send(timer.event)
+    end
+
+    self.clock = target
+  end
+
+  --- The seconds since the machine entered its state, on its clock.
+  function elapsed(self) -> number
+    return self.clock - self.entered
+  end
+
+  --- The last states, oldest first, as a new array. The last one is
+  --- the state now. `history():join(' > ')` gives a line for a log.
+  function history(self) -> S[]
+    return self.trail:to_array()
+  end
+
+  -- The private methods below go through `Machine.name(self)`, not
+  -- `self:name()`. The type that Alloy writes for a generic struct
+  -- leaves out its private methods, so luau-lsp cannot find them on
+  -- `self`.
+
+  -- Runs `first`, then each event that waits. An error in a hook drops
+  -- the events that wait and clears `busy`, so the next send runs.
+  private function run(self, first: () -> ()) -> ()
+    self.busy = true
+
+    const result = Result.pcall(function() -> ()
+      first()
+
+      while const event = self.events:pop() do
+        Machine.step(self, event)
+      end
+    end)
+
+    self.busy = false
+
+    if local Err(message) = result then
+      self.events:clear()
+      error(message, 0)
+    end
+  end
+
+  -- One transition: exit, drop the timers, enter, then changed.
+  private function step(self, event: E) -> ()
+    const next = self.options.transition(self.current, event)
+
+    if next == nil then
+      return
+    end
+
+    const from = self.current
+    const exit = self.options.exit
+
+    if exit ~= nil then
+      exit(from, self)
+    end
+
+    self.timers:clear()
+    Machine.arrive(self, next)
+    self.changed:Fire(from, next, event)
+  end
+
+  -- Makes `state` the state now, keeps it in the history, and runs its
+  -- enter hook.
+  private function arrive(self, state: S) -> ()
+    self.current = state
+    self.entered = self.clock
+
+    if self.keep > 0 then
+      self.trail:push(state)
+
+      if self.trail:len() > self.keep then
+        self.trail:pop()
+      end
+    end
+
+    const enter = self.options.enter
+
+    if enter ~= nil then
+      enter(state, self)
+    end
+  end
+end
+
+@test
+namespace MachineTests
+  enum Door
+    Closed
+    Opening
+    Open
+    Closing
+    Locked(string)
+  end
+
+  enum Input
+    Push
+    Done
+    Lock(string)
+    Unlock(string)
+  end
+
+  -- A door that opens in one second, stays open for three, and closes
+  -- in one. A lock with a key keeps it shut until the same key.
+  private function door(state: Door, input: Input) -> Door?
+    return match state, input with
+      case Closed, Push then Door.Opening
+      case Closed, Lock(key) then Door.Locked(key)
+      case Opening, Done then Door.Open
+      case Open, Done or Push then Door.Closing
+      case Closing, Done then Door.Closed
+      case Locked(key), Unlock(given) where given == key then Door.Closed
+      default nil
+    end
+  end
+
+  -- The door, with timers on its moving states, and a log of the hooks.
+  private function machine(log: { string }) -> Machine<Door, Input>
+    return new Machine<<Door, Input>>({
+      initial = Door.Closed,
+      transition = door,
+      enter = function(state, m)
+        table.insert(log, `enter {state}`)
+
+        match state with
+          case Opening or Closing then m:after(1, Input.Done)
+          case Open then m:after(3, Input.Done)
+          case Closed or Locked(_) then
+        end
+      end,
+      exit = function(state) table.insert(log, `exit {state}`) end,
+    })
+  end
+
+  --- A new machine enters its initial state.
+  public function a_machine_enters_its_initial_state() -> ()
+    const log: { string } = {}
+    const m = machine(log)
+
+    $assert_eq(m:state(), Door.Closed)
+    $assert_eq(table.concat(log, ','), 'enter Closed')
+  end
+
+  --- An event moves the machine, with exit before enter.
+  public function send_moves_the_machine() -> ()
+    const log: { string } = {}
+    const m = machine(log)
+    m:send(Input.Push)
+
+    $assert_eq(m:state(), Door.Opening)
+    $assert_eq(table.concat(log, ','), 'enter Closed,exit Closed,enter Opening')
+  end
+
+  --- An event with no transition changes nothing and runs no hook.
+  public function an_event_with_no_transition_changes_nothing() -> ()
+    const log: { string } = {}
+    const m = machine(log)
+    m:send(Input.Done)
+
+    $assert_eq(m:state(), Door.Closed)
+    $assert_eq(#log, 1)
+  end
+
+  --- A guard in the match decides with the payload.
+  public function a_guard_reads_the_payload() -> ()
+    const m = machine({})
+    m:send(Input.Lock('red'))
+    m:send(Input.Unlock('blue'))
+
+    $assert(m:can(Input.Unlock('red')))
+    $assert(not m:can(Input.Unlock('blue')))
+
+    m:send(Input.Unlock('red'))
+
+    $assert_eq(m:state(), Door.Closed)
+  end
+
+  --- A timer sends its event when the clock reaches it.
+  public function a_timer_fires_on_update() -> ()
+    const m = machine({})
+    m:send(Input.Push)
+    m:update(0.5)
+
+    $assert_eq(m:state(), Door.Opening)
+    $assert_eq(m:elapsed(), 0.5)
+
+    m:update(0.5)
+
+    $assert_eq(m:state(), Door.Open)
+    $assert_eq(m:elapsed(), 0)
+  end
+
+  --- One long update runs a chain of timers, each at its own time.
+  public function a_long_update_runs_the_whole_chain() -> ()
+    const m = machine({})
+    m:send(Input.Push)
+    m:update(5.5)
+
+    $assert_eq(m:state(), Door.Closed)
+    $assert_eq(m:elapsed(), 0.5)
+  end
+
+  --- A timer drops when the machine leaves its state.
+  public function a_timer_drops_when_the_state_leaves() -> ()
+    const m = machine({})
+    m:send(Input.Push)
+    m:update(1)
+    m:send(Input.Push)
+
+    $assert_eq(m:state(), Door.Closing)
+
+    m:update(1)
+
+    -- The timer of Open, due at 4, is gone. Closing closes at 2.
+    $assert_eq(m:state(), Door.Closed)
+    m:update(5)
+    $assert_eq(m:state(), Door.Closed)
+  end
+
+  --- Changed fires with the old state, the new state, and the event.
+  public function changed_fires_with_both_states() -> ()
+    const m = machine({})
+    const seen: { string } = {}
+
+    m.changed:Connect(function(from, to, event) table.insert(seen, `{from}>{to}:{event}`) end)
+    m:send(Input.Push)
+    m:send(Input.Done)
+
+    $assert_eq(table.concat(seen, ','), 'Closed>Opening:Push,Opening>Open:Done')
+  end
+
+  --- A send from a hook waits for the step in progress.
+  public function a_send_from_a_hook_waits() -> ()
+    const seen: { string } = {}
+    const m = new Machine<<Door, Input>>({
+      initial = Door.Closed,
+      transition = door,
+      enter = function(state, machine)
+        if state == Door.Opening then
+          machine:send(Input.Done)
+        end
+      end,
+    })
+
+    m.changed:Connect(function(from, to) table.insert(seen, `{from}>{to}`) end)
+    m:send(Input.Push)
+
+    $assert_eq(m:state(), Door.Open)
+    $assert_eq(table.concat(seen, ','), 'Closed>Opening,Opening>Open')
+  end
+
+  --- The same state again is a transition: exit, enter, new timers.
+  public function the_same_state_enters_again() -> ()
+    local enters = 0
+    const m = new Machine<<Door, Input>>({
+      initial = Door.Open,
+      transition = function(state, input)
+        return match state, input with
+          case Open, Push then Door.Open
+          default nil
+        end
+      end,
+      enter = function() enters += 1 end,
+    })
+
+    m:send(Input.Push)
+
+    $assert_eq(enters, 2)
+    $assert_eq(m:state(), Door.Open)
+  end
+
+  --- The history keeps the last states, oldest first.
+  public function history_keeps_the_last_states() -> ()
+    const m = new Machine<<Door, Input>>({ initial = Door.Closed, transition = door, history = 3 })
+    m:send(Input.Push)
+    m:send(Input.Done)
+    m:send(Input.Done)
+
+    $assert_eq(m:history():join(','), 'Opening,Open,Closing')
+  end
+
+  --- A loop of zero-second timers stops with an error.
+  public function a_loop_of_zero_timers_stops() -> ()
+    const m = new Machine<<Door, Input>>({
+      initial = Door.Open,
+      transition = function(state, input)
+        return match state, input with
+          case Open, Done then Door.Open
+          default nil
+        end
+      end,
+      enter = function(_, machine) machine:after(0, Input.Done) end,
+    })
+
+    $expect(function() m:update(1) end):toThrow('timers in one step')
+  end
+
+  --- An error in a hook leaves the machine ready for the next event.
+  public function an_error_in_a_hook_leaves_the_machine_ready() -> ()
+    local fail = true
+    const m = new Machine<<Door, Input>>({
+      initial = Door.Closed,
+      transition = door,
+      enter = function(state)
+        if fail and state == Door.Opening then
+          error('jammed')
+        end
+      end,
+    })
+
+    $expect(function() m:send(Input.Push) end):toThrow('jammed')
+
+    fail = false
+    m:send(Input.Done)
+
+    $assert_eq(m:state(), Door.Open)
+  end
+end

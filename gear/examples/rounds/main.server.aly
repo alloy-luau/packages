@@ -1,0 +1,66 @@
+--[[
+  A round loop: a lobby that waits for two players, an intermission, a
+  round that ends on a win or on time, and the results. The first
+  player who touches `Workspace.Goal` wins the round.
+
+  The status board is a StringValue, `ReplicatedStorage.Status`, that a
+  client UI can show. The server writes it on each frame, because the
+  countdown changes on each frame.
+]]
+
+import Players from '@game/Players'
+import ReplicatedStorage from '@game/ReplicatedStorage'
+import RunService from '@game/RunService'
+import Workspace from '@game/Workspace'
+import { RoundEvent, round, status } from './Round'
+
+const arena = Workspace->'Arena'! :: BasePart
+const lobby = Workspace->'Lobby'! :: BasePart
+const goal = Workspace->'Goal'! :: BasePart
+
+local board = new Instance('StringValue') { Name = 'Status', Parent = ReplicatedStorage }
+
+-- Moves each character to a part.
+function send_all(to: BasePart) -> ()
+  for _, player in Players:GetPlayers() do
+    player.Character?:PivotTo(to.CFrame + new Vector3(0, 4, 0))
+  end
+end
+
+const loop = round({
+  players = function() return #Players:GetPlayers() end,
+  start = function(number)
+    print(`round {number} starts`)
+    send_all(arena)
+  end,
+  finish = function(winner)
+    print(`{winner} wins`)
+    send_all(lobby)
+  end,
+})
+
+-- A log of the phases, for the server output.
+loop.changed:Connect(function(from, to) print(`[round] {from} -> {to}`) end)
+
+const count = function() loop:send(RoundEvent.Count(#Players:GetPlayers())) end
+Players.PlayerAdded:Connect(count)
+Players.PlayerRemoving:Connect(function() task.defer(count) end)
+
+-- The player whose character holds a part, or nil.
+function owner(part: BasePart) -> Player?
+  const character = part.Parent
+  return character is Model ? Players:GetPlayerFromCharacter(character) : nil
+end
+
+-- Only a round in play has a move on `Won`, so a touch in the lobby
+-- changes nothing.
+goal.Touched:Connect(function(hit)
+  if const player = owner(hit) then
+    loop:send(RoundEvent.Won(player.Name))
+  end
+end)
+
+RunService.Heartbeat:Connect(function(dt)
+  loop:update(dt)
+  board.Value = status(loop)
+end)

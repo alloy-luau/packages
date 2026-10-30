@@ -1,0 +1,54 @@
+--[[
+  The transition is a function from a state and an event to the next
+  state. Write it as a `match` over the pair, one arm for each move.
+
+  Return nil for "no change". Gear then drops the event: no hook runs
+  and `changed` does not fire. `default nil` covers every pair that does
+  nothing, so the match lists only the moves.
+]]
+
+import { Machine } from '@packages/gear'
+import { DoorEvent, DoorState } from './001_states'
+
+--- The moves of a door. `match a, b with` matches both values at once.
+export function door_step(state: DoorState, event: DoorEvent) -> DoorState?
+  return match state, event with
+    case Closed, Push then DoorState.Opening
+    case Closed, Lock(key) then DoorState.Locked(key)
+    case Opening, Done then DoorState.Open
+    case Open, Push or Done then DoorState.Closing
+    case Closing, Done then DoorState.Closed
+    case Locked(key), Unlock(given) where given == key then DoorState.Closed
+    default nil
+  end
+end
+
+const door = new Machine<<DoorState, DoorEvent>>({
+  initial = DoorState.Closed,
+  transition = door_step,
+})
+
+door:send(DoorEvent.Lock('red'))
+door:send(DoorEvent.Push) -- Locked has no move on Push: no change
+print(door:state()) -- DoorState.Locked("red")
+
+-- `can` asks the transition without a move, for a button that greys out.
+print(door:can(DoorEvent.Unlock('blue'))) -- false
+print(door:can(DoorEvent.Unlock('red'))) -- true
+
+door:send(DoorEvent.Unlock('red'))
+print(door:state()) -- Closed
+
+--[[
+  - Gear takes nil, not the same state, as "no change". A payload
+    variant compares by identity, so the machine could not tell a new
+    `Locked('red')` from the old one. Nil says it in one word.
+  - Any state that the transition returns is a move, the same state
+    too. The machine leaves the state and enters it again, so its
+    hooks run and its timers start again. Step 010 uses that.
+  - Keep the transition free of side effects. `can` calls it to ask,
+    and so does every `send`. The hooks of step 003 change the game.
+  - The parameter types of a named transition give the match its enum,
+    so the compiler checks each pattern against `DoorState` and
+    `DoorEvent`.
+]]

@@ -1,0 +1,98 @@
+--[[
+  The timers of one machine. A timer holds an event and the time when it
+  falls due, on the clock of the machine. The clock moves only when the
+  game calls `update(dt)`, so a test steps it with no real time.
+
+  The timers sit in a heap, earliest first. Two timers at the same time
+  fire in the order that code set them.
+]]
+
+import { Heap } from '@alloy/std/collections'
+
+--- One timer: the event, and the time when it falls due.
+export type Timer<E> = { at: number, order: number, event: E }
+
+--- The timers of one machine, earliest first.
+export struct Timers<E>
+  private heap: Heap<Timer<E>>
+  private count: number
+end
+
+impl Timers<E>
+  --- An empty set of timers.
+  function new() -> Timers<E>
+    return new Timers<<E>> {
+      heap = new Heap(function(a: Timer<E>, b: Timer<E>) -> boolean
+        return a.at < b.at or (a.at == b.at and a.order < b.order)
+      end),
+      count = 0,
+    }
+  end
+
+  --- Sets a timer that falls due at `at`.
+  function add(self, at: number, event: E) -> ()
+    self.count += 1
+    self.heap:push({ at = at, order = self.count, event = event })
+  end
+
+  --- Takes the earliest timer when it falls due at `time` or before.
+  function take(self, time: number) -> Timer<E>?
+    const next = self.heap:peek()
+
+    if next == nil or next.at > time then
+      return nil
+    end
+
+    return self.heap:pop()
+  end
+
+  --- Drops every timer.
+  function clear(self) -> ()
+    self.heap:clear()
+  end
+
+  --- How many timers wait.
+  function len(self) -> number
+    return self.heap:len()
+  end
+end
+
+@test
+namespace TimersTests
+  --- A timer waits until its time.
+  public function a_timer_waits_for_its_time() -> ()
+    const timers = new Timers<<string>>()
+    timers:add(2, 'ring')
+
+    $assert_eq(timers:take(1), nil)
+    $assert_eq(timers:take(2)?.event, 'ring')
+    $assert_eq(timers:len(), 0)
+  end
+
+  --- The earliest timer comes first, and a tie keeps the order of add.
+  public function timers_come_out_earliest_first() -> ()
+    const timers = new Timers<<string>>()
+    timers:add(3, 'c')
+    timers:add(1, 'a')
+    timers:add(3, 'd')
+    timers:add(2, 'b')
+
+    const order: { string } = {}
+
+    while const timer = timers:take(10) do
+      table.insert(order, timer.event)
+    end
+
+    $assert_eq(table.concat(order, ','), 'a,b,c,d')
+  end
+
+  --- Clear drops every timer.
+  public function clear_drops_every_timer() -> ()
+    const timers = new Timers<<string>>()
+    timers:add(1, 'a')
+    timers:add(2, 'b')
+    timers:clear()
+
+    $assert_eq(timers:take(10), nil)
+  end
+end

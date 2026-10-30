@@ -1,0 +1,71 @@
+import TweenService from '@game/TweenService'
+import { Machine } from '@packages/gear'
+
+--- The states of a sliding door.
+export enum DoorState
+  Closed
+  Opening
+  Open
+  Closing
+end
+
+--- A push on the prompt, and the end of a slide or of a wait.
+export enum DoorEvent
+  Push
+  Done
+end
+
+--- The machine of one door.
+export type DoorMachine = Machine<DoorState, DoorEvent>
+
+-- The seconds of one slide, and of the wait before the door closes.
+const SLIDE = 1
+const STAY = 4
+
+function step(state: DoorState, event: DoorEvent) -> DoorState?
+  return match state, event with
+    case Closed, Push then DoorState.Opening
+    case Opening, Done then DoorState.Open
+    case Open, Push or Done then DoorState.Closing
+    case Closing, Done then DoorState.Closed
+    -- A push on a door that closes opens it again.
+    case Closing, Push then DoorState.Opening
+    default nil
+  end
+end
+
+--- A machine for a door part with a ProximityPrompt in it. The door
+--- slides up by its height.
+export function door(part: BasePart, prompt: ProximityPrompt) -> DoorMachine
+  const closed = part.CFrame
+  const open = closed + new Vector3(0, part.Size.Y, 0)
+  const slide = new TweenInfo(SLIDE)
+
+  const machine = new Machine<<DoorState, DoorEvent>>({
+    initial = DoorState.Closed,
+    transition = step,
+    enter = function(state, m)
+      match state with
+        case Opening then
+          TweenService:Create(part, slide, { CFrame = open }):Play()
+          m:after(SLIDE, DoorEvent.Done)
+        case Open then m:after(STAY, DoorEvent.Done)
+        case Closing then
+          TweenService:Create(part, slide, { CFrame = closed }):Play()
+          m:after(SLIDE, DoorEvent.Done)
+        case Closed then
+      end
+    end,
+  })
+
+  -- The prompt says what a push does now.
+  machine.changed:Connect(function(_, to)
+    prompt.ActionText = match to with
+      case Closed or Closing then 'Open'
+      case Opening or Open then 'Close'
+    end
+  end)
+
+  prompt.Triggered:Connect(function() machine:send(DoorEvent.Push) end)
+  return machine
+end

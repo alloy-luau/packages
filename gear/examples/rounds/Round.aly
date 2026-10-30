@@ -1,0 +1,87 @@
+import { Machine } from '@packages/gear'
+
+--- The phases of a round. `Playing` keeps the round number, and
+--- `Results` keeps the name of the winner.
+export enum RoundState
+  Lobby
+  Intermission
+  Playing(number)
+  Results(string)
+end
+
+--- What moves a round: the player count, the end of a timer, and a win.
+export enum RoundEvent
+  Count(number)
+  TimeUp
+  Won(string)
+end
+
+--- The machine of the round loop.
+export type Round = Machine<RoundState, RoundEvent>
+
+-- The players that a round needs, and the seconds of each phase.
+const MIN_PLAYERS = 2
+const INTERMISSION = 10
+const ROUND = 90
+const RESULTS = 6
+
+--- What the round needs from the game: how many players there are,
+--- and what to do when a phase starts.
+export interface Stage
+  players: () -> number
+  start: (round: number) -> ()
+  finish: (winner: string) -> ()
+end
+
+-- The round number goes up by one on each new round.
+local played = 0
+
+function step(state: RoundState, event: RoundEvent) -> RoundState?
+  return match state, event with
+    case Lobby, Count(n) where n >= MIN_PLAYERS then RoundState.Intermission
+    case Intermission, Count(n) where n < MIN_PLAYERS then RoundState.Lobby
+    case Intermission, TimeUp then RoundState.Playing(played + 1)
+    case Playing(_), Won(name) then RoundState.Results(name)
+    case Playing(_), TimeUp then RoundState.Results('nobody')
+    case Results(_), TimeUp then RoundState.Intermission
+    default nil
+  end
+end
+
+--- The round loop over a stage of the game.
+export function round(stage: Stage) -> Round
+  return new Machine<<RoundState, RoundEvent>>({
+    initial = RoundState.Lobby,
+    transition = step,
+    enter = function(state, m)
+      match state with
+        case Lobby then
+        case Intermission then
+          m:after(INTERMISSION, RoundEvent.TimeUp)
+          -- The count can fall below the minimum while the round plays.
+          m:send(RoundEvent.Count(stage.players()))
+        case Playing(number) then
+          played = number
+          stage.start(number)
+          m:after(ROUND, RoundEvent.TimeUp)
+        case Results(winner) then
+          stage.finish(winner)
+          m:after(RESULTS, RoundEvent.TimeUp)
+      end
+    end,
+  })
+end
+
+--- The line that the status board shows, with a countdown.
+export function status(machine: Round) -> string
+  const left = function(total: number) -> number
+    return math.ceil(total - machine:elapsed())
+  end
+
+  return match machine:state() with
+    case Lobby then `Waiting for {MIN_PLAYERS} players`
+    case Intermission then `Next round in {left(INTERMISSION)}`
+    case Playing(number) then `Round {number}: {left(ROUND)} left`
+    case Results(winner) then `{winner} wins!`
+  end
+end

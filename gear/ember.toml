@@ -1,0 +1,13 @@
+[package]
+name = "alloy/gear"
+version = "0.1.0"
+description = "State machines over Alloy enums: transitions as a match, enter and exit hooks, timers, and history"
+authors = ["savruun"]
+repository = "alloy-luau/packages"
+license = "MIT"
+
+[target]
+environment = "roblox"
+language = "alloy"
+main = "build/index.luau"
+includes = ["src", "build", ".config.aly", "README.md", "CHANGELOG.md", "LICENSE"]

@@ -1,0 +1,57 @@
+--[[
+  Mobs that idle, chase the nearest player, attack in reach, and die.
+  A spawner clones `ServerStorage.Mob` every few seconds, up to a cap.
+  Each mob gets a brain of its own, and one Heartbeat runs them all.
+
+  A dead mob stays for three seconds, then goes. The loop reads that
+  from the clock of its machine.
+]]
+
+import RunService from '@game/RunService'
+import ServerStorage from '@game/ServerStorage'
+import Workspace from '@game/Workspace'
+import { HashMap } from '@alloy/std/collections'
+import { MobState, brain, think, type Brain } from './Brain'
+
+-- The most mobs at once, the seconds between spawns, and how long a
+-- dead mob stays.
+const MAX_MOBS = 6
+const SPAWN_EVERY = 5
+const CORPSE = 3
+
+const template = ServerStorage->'Mob'! :: Model
+const spawn_point = Workspace->'MobSpawn'! :: BasePart
+
+type Mob = { humanoid: Humanoid, brain: Brain }
+
+const mobs: HashMap<Model, Mob> = new HashMap()
+local since_spawn = 0
+
+function spawn_mob() -> ()
+  local model = template:Clone()
+  model:PivotTo(spawn_point.CFrame)
+  model.Parent = Workspace
+
+  if const humanoid = model:FindFirstChildOfClass('Humanoid') then
+    mobs:set(model, { humanoid = humanoid, brain = brain(model, humanoid) })
+  end
+end
+
+RunService.Heartbeat:Connect(function(dt)
+  since_spawn += dt
+
+  if since_spawn >= SPAWN_EVERY and mobs:len() < MAX_MOBS then
+    since_spawn = 0
+    spawn_mob()
+  end
+
+  for model, mob in mobs:entries() do
+    think(model, mob.humanoid, mob.brain)
+    mob.brain:update(dt)
+
+    if mob.brain:state() == MobState.Dead and mob.brain:elapsed() >= CORPSE then
+      mobs:remove(model)
+      model:Destroy()
+    end
+  end
+end)

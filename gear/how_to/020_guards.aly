@@ -1,0 +1,57 @@
+--[[
+  A guard is a condition on a move. Gear needs no guard API: a `where`
+  on an arm of the transition is the guard. The arm moves only when the
+  condition holds; otherwise the match tries the next arm.
+
+  A guard can read the payloads of the state and the event, and any
+  value of the game that the transition can see.
+]]
+
+import { Machine } from '@packages/gear'
+
+--- The power of the lift, which a guard reads.
+local powered = true
+
+--- A lift between floors. `Moving` keeps the floor that it goes to.
+export enum LiftState
+  Idle(number)
+  Moving(number)
+end
+
+--- A call from a button, and the end of a trip.
+export enum LiftEvent
+  Call(number)
+  Arrived
+end
+
+-- A guard reads a payload (`floor ~= at`) and a game value (`powered`).
+-- The order of the arms matters: the first arm that fits wins.
+function lift_step(state: LiftState, event: LiftEvent) -> LiftState?
+  return match state, event with
+    case Idle(at), Call(floor) where floor ~= at and powered then LiftState.Moving(floor)
+    case Moving(floor), Arrived then LiftState.Idle(floor)
+    default nil
+  end
+end
+
+const lift = new Machine<<LiftState, LiftEvent>>({
+  initial = LiftState.Idle(1),
+  transition = lift_step,
+})
+
+print(lift:can(LiftEvent.Call(1))) -- false: the lift is there
+print(lift:can(LiftEvent.Call(3))) -- true
+
+powered = false
+print(lift:can(LiftEvent.Call(3))) -- false: no power
+
+--[[
+  - A guard on an arm proves nothing for the exhaustive check, so a
+    transition with guards keeps its `default nil`.
+  - `can(event)` runs the transition and gives whether it moves. A
+    button can grey out with it. It runs the guards too, so keep them
+    free of side effects.
+  - A guard that reads a game value reads it at the time of the
+    `send`. A machine for each entity closes over that entity, as the
+    mob of step 040 does.
+]]

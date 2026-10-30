@@ -1,0 +1,78 @@
+--[[
+  A machine needs no game to test. The transition is a plain function,
+  the hooks are plain functions, and the clock moves only when code
+  calls `update`. So a test sends events, moves the clock by hand, and
+  reads the state and the history, with no wait and no real time.
+
+  Put the tests in a `@test namespace` at the end of the module, and
+  run them with `alloy test --run`.
+]]
+
+import { Machine } from '@packages/gear'
+import { DoorEvent, DoorState } from './001_states'
+import { door_step } from './002_events_and_transitions'
+
+--- A door that opens and closes on timers, as in step 010.
+export function timed_door() -> Machine<DoorState, DoorEvent>
+  return new Machine<<DoorState, DoorEvent>>({
+    initial = DoorState.Closed,
+    transition = door_step,
+    enter = function(state, machine)
+      match state with
+        case Opening or Closing then machine:after(1, DoorEvent.Done)
+        case Open then machine:after(3, DoorEvent.Done)
+        case Closed or Locked(_) then
+      end
+    end,
+  })
+end
+
+@test
+namespace DoorTests
+  --- A push opens the door, and the timers close it again.
+  public function a_push_opens_then_closes() -> ()
+    const door = timed_door()
+    door:send(DoorEvent.Push)
+    door:update(1)
+
+    $assert_eq(door:state(), DoorState.Open)
+
+    -- One long step runs Open and Closing in full.
+    door:update(4)
+
+    $assert_eq(door:state(), DoorState.Closed)
+    $assert_eq(door:history():join(','), 'Closed,Opening,Open,Closing,Closed')
+  end
+
+  --- A push on an open door closes it early, and the old timer drops.
+  public function a_push_closes_early() -> ()
+    const door = timed_door()
+    door:send(DoorEvent.Push)
+    door:update(1.5)
+    door:send(DoorEvent.Push)
+
+    $assert_eq(door:state(), DoorState.Closing)
+    $assert_eq(door:elapsed(), 0)
+  end
+
+  --- Only the right key opens a locked door.
+  public function only_the_key_unlocks() -> ()
+    const door = timed_door()
+    door:send(DoorEvent.Lock('red'))
+
+    $assert(not door:can(DoorEvent.Unlock('blue')))
+    $assert(door:can(DoorEvent.Unlock('red')))
+  end
+end
+
+--[[
+  - `update(dt)` fires each timer at its own time, so `update(4)` and
+    four calls of `update(1)` end in the same state.
+  - `elapsed()` reads the clock of the machine. After `update(1.5)` and
+    a move, it is 0, and the next timer counts from 1.5.
+  - A test of a payload state compares the payload in a match, or
+    with `$matches(door:state(), Locked(_))`. `==` on two payload
+    variants compares identity, unless the enum has `@derive(Eq)`.
+  - Test the transition alone too: `door_step(DoorState.Open,
+    DoorEvent.Push)` is a plain call.
+]]

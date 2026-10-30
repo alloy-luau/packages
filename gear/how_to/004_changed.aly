@@ -1,0 +1,44 @@
+--[[
+  `machine.changed` is a signal. It fires after each move, with the old
+  state, the new state, and the event that moved the machine. A UI or a
+  log listens to it, and the machine does not need to know them.
+
+  It is the std `Signal` from `@alloy/std/signal`, so it has the shape
+  of an `RBXScriptSignal`: `Connect`, `Once`, `Wait`.
+]]
+
+import { Machine } from '@packages/gear'
+import { DoorEvent, DoorState } from './001_states'
+import { door_step } from './002_events_and_transitions'
+
+const door = new Machine<<DoorState, DoorEvent>>({
+  initial = DoorState.Closed,
+  transition = door_step,
+  enter = function(state, machine)
+    -- A send from a hook waits for the move in progress.
+    if state == DoorState.Opening then
+      machine:send(DoorEvent.Done)
+    end
+  end,
+})
+
+const connection = door.changed:Connect(function(from, to, event)
+  print(`{from} -> {to} on {event}`)
+end)
+
+door:send(DoorEvent.Push)
+-- Closed -> Opening on Push
+-- Opening -> Open on Done
+
+connection:Disconnect()
+
+--[[
+  - One move goes in this order: `exit` of the old state, its timers
+    drop, `enter` of the new state, then `changed`.
+  - A send from a hook or from a `changed` handler waits in a queue. It
+    runs when the move in progress ends, so `changed` fires in the
+    order of the moves.
+  - An event with no move fires nothing.
+  - `changed` does not fire for the initial state, because no event
+    moved the machine there. Read `state()` once at the start.
+]]

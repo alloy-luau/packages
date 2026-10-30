@@ -1,0 +1,52 @@
+--[[
+  A state can ask for an event later: `machine:after(seconds, event)`.
+  Call it in `enter`. When the machine leaves the state first, the
+  timer drops, so a door that closes early gets no stale `Done`.
+
+  The timers run on a clock of the machine's own. `machine:update(dt)`
+  moves it and fires each timer that falls due. Connect it to
+  `Heartbeat` in a game; a test moves it by hand (step 050).
+]]
+
+import RunService from '@game/RunService'
+import { Machine } from '@packages/gear'
+import { DoorEvent, DoorState } from './001_states'
+import { door_step } from './002_events_and_transitions'
+
+const door = new Machine<<DoorState, DoorEvent>>({
+  initial = DoorState.Closed,
+  transition = door_step,
+  enter = function(state, machine)
+    match state with
+      case Opening or Closing then machine:after(1, DoorEvent.Done)
+      case Open then machine:after(3, DoorEvent.Done)
+      case Closed or Locked(_) then
+    end
+  end,
+})
+
+RunService.Heartbeat:Connect(function(dt) door:update(dt) end)
+
+door:send(DoorEvent.Push)
+-- After 1 second: Open. After 3 more: Closing. After 1 more: Closed.
+
+-- `elapsed()` gives the seconds in the state now, for a countdown.
+door.changed:Connect(function(_, to)
+  if to == DoorState.Open then
+    print(`open, closes in {3 - door:elapsed()} seconds`)
+  end
+end)
+
+--[[
+  - A timer fires at its own time, not at the end of the frame. One
+    long `update(5)` runs Opening, Open, Closing, and Closed in full,
+    and each `after` counts from the time when its state began.
+  - A move out of a state drops every timer of that state. A timer
+    belongs to the state that is current when code sets it.
+  - A move back into the same state is a move too: the timers drop,
+    and `enter` sets them again. A sword that swings every second
+    returns `Attack` on each `Swing`, and `enter` of `Attack` asks for
+    the next `Swing`.
+  - Two timers at the same time fire in the order that code set them.
+  - A machine with no timers needs no `update`.
+]]

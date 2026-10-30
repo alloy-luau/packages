@@ -1,0 +1,146 @@
+--[[
+  A mob AI is a state machine with a payload. `Chase` and `Attack` keep
+  the target, so no field of the mob can hold a stale target while the
+  mob idles.
+
+  Each mob gets a machine of its own, and one `Heartbeat` loop runs
+  them all. That loop does three things for each mob: it senses and
+  sends events, it acts on the state now with a `match`, and it moves
+  the clock of the machine.
+]]
+
+import Players from '@game/Players'
+import RunService from '@game/RunService'
+import Workspace from '@game/Workspace'
+import { HashMap } from '@alloy/std/collections'
+import { Machine } from '@packages/gear'
+
+--- What a mob does. The target is part of the state.
+export enum MobState
+  Idle
+  Chase(Model)
+  Attack(Model)
+  Dead
+end
+
+--- What a mob senses, and the beat of its attack.
+export enum MobEvent
+  Saw(Model)
+  Lost
+  InRange
+  OutOfRange
+  Swing
+  Died
+end
+
+-- How far a mob sees, and how far it hits, in studs.
+const SIGHT = 40
+const REACH = 5
+
+-- The first arms win: a dead mob ignores all, and any live state dies.
+function mob_step(state: MobState, event: MobEvent) -> MobState?
+  return match state, event with
+    case Dead, _ then nil
+    case _, Died then MobState.Dead
+    case Idle, Saw(target) then MobState.Chase(target)
+    case Chase(target), InRange then MobState.Attack(target)
+    case Attack(target), OutOfRange then MobState.Chase(target)
+    -- The same state again: `enter` runs, and the next swing starts.
+    case Attack(target), Swing then MobState.Attack(target)
+    case Chase(_) or Attack(_), Lost then MobState.Idle
+    default nil
+  end
+end
+
+-- The nearest character in sight, or nil.
+function nearest(from: Vector3) -> Model?
+  local best: Model? = nil
+  local distance = SIGHT
+
+  for _, player in Players:GetPlayers() do
+    if const character = player.Character then
+      const gap = (character:GetPivot().Position - from).Magnitude
+
+      if gap < distance then
+        best, distance = character, gap
+      end
+    end
+  end
+
+  return best
+end
+
+-- A machine for one mob. The hooks close over its humanoid.
+function brain(model: Model, humanoid: Humanoid) -> Machine<MobState, MobEvent>
+  const machine = new Machine<<MobState, MobEvent>>({
+    initial = MobState.Idle,
+    transition = mob_step,
+    enter = function(state, m)
+      match state with
+        case Idle then humanoid.WalkSpeed = 8
+        case Chase(_) then humanoid.WalkSpeed = 16
+        case Attack(target) then
+          target:FindFirstChildOfClass('Humanoid')?:TakeDamage(10)
+          m:after(1, MobEvent.Swing)
+        case Dead then model:SetAttribute('Dead', true)
+      end
+    end,
+  })
+
+  humanoid.Died:Connect(function() machine:send(MobEvent.Died) end)
+  return machine
+end
+
+-- Sensing turns the world into events. The machine decides what they mean.
+function sense(model: Model, machine: Machine<MobState, MobEvent>) -> ()
+  const here = model:GetPivot().Position
+
+  match machine:state() with
+    case Idle then
+      if const target = nearest(here) then
+        machine:send(MobEvent.Saw(target))
+      end
+    case Chase(target) or Attack(target) then
+      const gap = (target:GetPivot().Position - here).Magnitude
+
+      if target.Parent == nil or gap > SIGHT then
+        machine:send(MobEvent.Lost)
+      elseif gap <= REACH then
+        machine:send(MobEvent.InRange)
+      else
+        machine:send(MobEvent.OutOfRange)
+      end
+    case Dead then
+  end
+end
+
+const mobs: HashMap<Model, Machine<MobState, MobEvent>> = new HashMap()
+
+for _, model in Workspace->'Mobs'!:GetChildren() where model is Model do
+  if const humanoid = model:FindFirstChildOfClass('Humanoid') then
+    mobs:set(model, brain(model, humanoid))
+  end
+end
+
+RunService.Heartbeat:Connect(function(dt)
+  for model, machine in mobs do
+    sense(model, machine)
+
+    -- Acting on the state now: only a chasing mob walks.
+    if local Chase(target) = machine:state() then
+      model:FindFirstChildOfClass('Humanoid')?:MoveTo(target:GetPivot().Position)
+    end
+
+    machine:update(dt)
+  end
+end)
+
+--[[
+  - An event that has no move in the state now changes nothing, so
+    `sense` can send `OutOfRange` on each frame while a mob chases.
+  - Code that runs on each frame matches `machine:state()`. Code that
+    runs once on a change goes in `enter` or `exit`.
+  - A machine holds no thread and no connection of its own. A mob that
+    goes takes its machine with it; drop it from the map.
+  - `examples/mob` is this AI as a whole game, with a spawner.
+]]

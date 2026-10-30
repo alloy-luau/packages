@@ -1,0 +1,108 @@
+import Players from '@game/Players'
+import { Machine } from '@packages/gear'
+
+--- What a mob does. `Chase` and `Attack` keep the target.
+export enum MobState
+  Idle
+  Chase(Model)
+  Attack(Model)
+  Dead
+end
+
+--- What a mob senses, and the beat of its attack.
+export enum MobEvent
+  Saw(Model)
+  Lost
+  InRange
+  OutOfRange
+  Swing
+  Died
+end
+
+--- The machine of one mob.
+export type Brain = Machine<MobState, MobEvent>
+
+-- How far a mob sees and hits, in studs, and the damage of one hit.
+const SIGHT = 50
+const REACH = 5
+const DAMAGE = 15
+
+function step(state: MobState, event: MobEvent) -> MobState?
+  return match state, event with
+    case Dead, _ then nil
+    case _, Died then MobState.Dead
+    case Idle, Saw(target) then MobState.Chase(target)
+    case Chase(target), InRange then MobState.Attack(target)
+    case Attack(target), OutOfRange then MobState.Chase(target)
+    case Attack(target), Swing then MobState.Attack(target)
+    case Chase(_) or Attack(_), Lost then MobState.Idle
+    default nil
+  end
+end
+
+-- The nearest live character in sight, or nil.
+function nearest(from: Vector3) -> Model?
+  local best: Model? = nil
+  local distance = SIGHT
+
+  for _, player in Players:GetPlayers() do
+    const character = player.Character
+    const humanoid = character?:FindFirstChildOfClass('Humanoid')
+
+    if character ~= nil and humanoid ~= nil and humanoid.Health > 0 then
+      const gap = (character:GetPivot().Position - from).Magnitude
+
+      if gap < distance then
+        best, distance = character, gap
+      end
+    end
+  end
+
+  return best
+end
+
+--- A brain for a mob model with a Humanoid in it.
+export function brain(model: Model, humanoid: Humanoid) -> Brain
+  const machine = new Machine<<MobState, MobEvent>>({
+    initial = MobState.Idle,
+    transition = step,
+    enter = function(state, m)
+      match state with
+        case Idle then humanoid.WalkSpeed = 8
+        case Chase(_) then humanoid.WalkSpeed = 16
+        case Attack(target) then
+          target:FindFirstChildOfClass('Humanoid')?:TakeDamage(DAMAGE)
+          m:after(1, MobEvent.Swing)
+        case Dead then humanoid.WalkSpeed = 0
+      end
+    end,
+  })
+
+  humanoid.Died:Connect(function() machine:send(MobEvent.Died) end)
+  return machine
+end
+
+--- One frame of a mob: sense, then act on the state now.
+export function think(model: Model, humanoid: Humanoid, machine: Brain) -> ()
+  const here = model:GetPivot().Position
+
+  match machine:state() with
+    case Idle then
+      if const target = nearest(here) then
+        machine:send(MobEvent.Saw(target))
+      end
+    case Chase(target) or Attack(target) then
+      const gap = (target:GetPivot().Position - here).Magnitude
+      const alive = (target:FindFirstChildOfClass('Humanoid')?.Health ?? 0) > 0
+
+      if target.Parent == nil or not alive or gap > SIGHT then
+        machine:send(MobEvent.Lost)
+      elseif gap <= REACH then
+        machine:send(MobEvent.InRange)
+      else
+        machine:send(MobEvent.OutOfRange)
+        humanoid:MoveTo(target:GetPivot().Position)
+      end
+    case Dead then
+  end
+end

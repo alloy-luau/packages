@@ -1,0 +1,41 @@
+--[[
+  A machine keeps its last states, so a bug report can say how it got
+  where it is. `machine:history()` gives them, oldest first, and the
+  last one is the state now.
+]]
+
+import { Machine } from '@packages/gear'
+import { DoorEvent, DoorState } from './001_states'
+import { door_step } from './002_events_and_transitions'
+
+const door = new Machine<<DoorState, DoorEvent>>({
+  initial = DoorState.Closed,
+  transition = door_step,
+  -- The default is 10. Zero keeps none.
+  history = 4,
+})
+
+door:send(DoorEvent.Push)
+door:send(DoorEvent.Done)
+door:send(DoorEvent.Done)
+door:send(DoorEvent.Done)
+door:send(DoorEvent.Lock('red'))
+
+-- The history is an array, so `join` makes a line for a log.
+print(door:history():join(' > ')) -- Open > Closing > Closed > DoorState.Locked("red")
+
+-- A log of each move, with the event, is one `changed` handler.
+door.changed:Connect(function(from, to, event)
+  print(`[door] {from} --{event}--> {to}`)
+end)
+
+door:send(DoorEvent.Unlock('red')) -- [door] DoorState.Locked("red") --DoorEvent.Unlock("red")--> Closed
+
+--[[
+  - `history()` gives a new array each time. A change to it does not
+    reach the machine.
+  - A unit variant prints as its name. A payload variant prints as
+    `Enum.Variant(payload)`.
+  - `$dbg(door:state())` prints the state with its line, and keeps
+    the value, so it fits inside an expression.
+]]

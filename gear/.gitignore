@@ -1,0 +1,7 @@
+# Build output, installed packages, and generated test specs.
+build/
+tests/
+packages/
+.ember-patch/
+.lest/
+.alloy/outputs.txt

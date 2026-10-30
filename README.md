@@ -8,6 +8,7 @@ a version of its own.
 | --- | --- | --- |
 | [Forge](forge) | `alloy/forge` | OOP providers, after Chief: lifecycles, dependencies, traits, and Bin. |
 | [Bevel](bevel) | `alloy/bevel` | Components, services, injectors, and signals, after Angular. |
+| [Gear](gear) | `alloy/gear` | State machines over Alloy enums, with transitions that a `match` checks. |
 
 Each package folder holds:
 
