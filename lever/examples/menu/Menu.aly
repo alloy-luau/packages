@@ -1,0 +1,117 @@
+--[[
+  The pause menu, from plain instances: a panel with one button for
+  each entry and a line of key hints. The Lever actions step through the
+  entries. A click or a tap picks an entry too.
+]]
+
+import Players from '@game/Players'
+import { Device } from '@packages/lever'
+import { Action, Context, controls } from './Controls'
+
+--- The color of the entry that a press of Confirm picks.
+const LIT = Color3.fromRGB(255, 200, 60)
+
+--- The color of the other entries.
+const DIM = Color3.fromRGB(60, 60, 70)
+
+--- The entries of the menu, top to bottom.
+const ENTRIES = { 'Resume', 'Settings', 'Leave' }
+
+local gui = new Instance('ScreenGui') { Name = 'Menu', ResetOnSpawn = false, Enabled = false }
+
+const panel = new Instance('Frame') {
+  Name = 'Panel',
+  AnchorPoint = new Vector2(0.5, 0.5),
+  Position = new UDim2(0.5, 0, 0.5, 0),
+  Size = new UDim2(0, 280, 0, 260),
+  BackgroundColor3 = Color3.fromRGB(25, 25, 30),
+  Parent = gui,
+}
+
+new Instance('UIListLayout') {
+  Padding = new UDim(0, 8),
+  HorizontalAlignment = Enum.HorizontalAlignment.Center,
+  SortOrder = Enum.SortOrder.LayoutOrder,
+  Parent = panel,
+}
+
+local hints = new Instance('TextLabel') {
+  Name = 'Hints',
+  LayoutOrder = #ENTRIES + 1,
+  Size = new UDim2(1, -16, 0, 32),
+  BackgroundTransparency = 1,
+  TextColor3 = new Color3(1, 1, 1),
+  Parent = panel,
+}
+
+local selected = 1
+const buttons: { TextButton } = {}
+
+--- Lights the selected entry.
+local function paint() -> ()
+  for index, each in buttons do
+    each.BackgroundColor3 = index == selected ? LIT : DIM
+  end
+end
+
+--- Writes the key hints for the device of the player now.
+local function hint() -> ()
+  if controls:device() == Device.Touch then
+    hints.Text = 'Tap an entry'
+  else
+    hints.Text = `{controls:label(Action.Confirm)} Select    {controls:label(Action.Back)} Back`
+  end
+end
+
+--- Opens or closes the menu. The game stops while it shows.
+export function show(open: boolean) -> ()
+  gui.Enabled = open
+
+  if open then
+    selected = 1
+    paint()
+    hint()
+    controls:disable(Context.Gameplay)
+    controls:enable(Context.Menu)
+  else
+    controls:disable(Context.Menu)
+    controls:enable(Context.Gameplay)
+  end
+end
+
+--- Runs an entry.
+local function pick(index: number) -> ()
+  const entry = ENTRIES[index]
+  print(`picked {entry}`)
+
+  if entry == 'Resume' then
+    show(false)
+  end
+end
+
+--- Moves the light by `by` entries, round the ends.
+export function step(by: number) -> ()
+  selected = (selected - 1 + by) % #ENTRIES + 1
+  paint()
+end
+
+--- Runs the selected entry.
+export function confirm() -> ()
+  pick(selected)
+end
+
+for index, entry in ENTRIES do
+  const each = new Instance('TextButton') {
+    Name = entry,
+    Text = entry,
+    LayoutOrder = index,
+    Size = new UDim2(1, -16, 0, 48),
+    TextColor3 = new Color3(1, 1, 1),
+    Parent = panel,
+  }
+  each.Activated:Connect(function() pick(index) end)
+  table.insert(buttons, each)
+end
+
+controls.device_changed:connect(hint)
+gui.Parent = Players.LocalPlayer->PlayerGui

@@ -1,0 +1,67 @@
+--[[
+  The controls of the game: a walk under a pause menu. The menu has a
+  context of its own over the game, so the gamepad's A confirms in the
+  menu and does nothing else.
+]]
+
+import {
+  Lever,
+  axis2,
+  button,
+  wasd,
+  type ActionSpec,
+  type ContextSpec,
+} from '@packages/lever'
+
+--- What the player can do.
+export enum Action
+  Move
+  Pause
+  Up
+  Down
+  Confirm
+  Back
+end
+
+--- When the actions apply.
+export enum Context
+  Gameplay
+  Menu
+end
+
+--- The keys of each action. The menu reads the arrows, W and S, the
+--- D-pad, and the left stick, so any device steps through it.
+local function action(each: Action) -> ActionSpec<Context>
+  return match each with
+    case Move then axis2(Context.Gameplay, { wasd(), Enum.KeyCode.Thumbstick1 })
+    case Pause then button(Context.Gameplay, { Enum.KeyCode.P, Enum.KeyCode.ButtonY })
+    case Up then
+      button(Context.Menu, {
+        Enum.KeyCode.Up,
+        Enum.KeyCode.W,
+        Enum.KeyCode.DPadUp,
+        Enum.KeyCode.Thumbstick1Up,
+      })
+    case Down then
+      button(Context.Menu, {
+        Enum.KeyCode.Down,
+        Enum.KeyCode.S,
+        Enum.KeyCode.DPadDown,
+        Enum.KeyCode.Thumbstick1Down,
+      })
+    case Confirm then
+      button(Context.Menu, { Enum.KeyCode.Return, Enum.KeyCode.Space, Enum.KeyCode.ButtonA })
+    case Back then button(Context.Menu, { Enum.KeyCode.Backspace, Enum.KeyCode.ButtonB })
+  end
+end
+
+--- The menu sits over the game and starts off.
+local function context(each: Context) -> ContextSpec
+  return match each with
+    case Gameplay then { priority = 0 }
+    case Menu then { priority = 100, sink = true, enabled = false }
+  end
+end
+
+--- The controls of the game.
+export const controls = new Lever(Action, Context, action, context)

@@ -1,0 +1,216 @@
+--[[
+  Bindings as data. A binding is a table of keys by part: `key` for one
+  input, or `up`, `down`, `left`, and `right` for a composite direction
+  such as WASD. Lever writes each binding onto an InputBinding.
+
+  A save holds the names of the keys, so a DataStore or JSON can keep
+  it. `decode` reads a saved binding back and drops what it does not
+  know, because a save can come from an older version of the game.
+]]
+
+import { type Device, device_of, key_named, label } from './keys'
+
+--- A part of a binding, as InputBinding names it: `key` is its
+--- KeyCode, and the others are its composite directions.
+export type Part = 'key' | 'up' | 'down' | 'left' | 'right'
+
+--- One input that drives an action: a key, a button, a stick, or the
+--- keys of a composite direction.
+export type Binding = { [Part]: Enum.KeyCode }
+
+--- A binding, or a bare KeyCode for a binding of one key.
+export type Input = Enum.KeyCode | Binding
+
+--- A binding in a save: the name of each key by its part.
+export type SavedBinding = { [Part]: string }
+
+--- Each part, in the order that a save and a check read them.
+export const PARTS: { Part } = { 'key', 'up', 'down', 'left', 'right' }
+
+--- The parts in the order a label shows them: "W/A/S/D".
+const SHOWN: { Part } = { 'key', 'up', 'left', 'down', 'right' }
+
+--- The composite of W, A, S, and D, for an Axis2 such as a move.
+export function wasd() -> Binding
+  return {
+    up = Enum.KeyCode.W,
+    down = Enum.KeyCode.S,
+    left = Enum.KeyCode.A,
+    right = Enum.KeyCode.D,
+  }
+end
+
+--- The composite of the arrow keys, for an Axis2.
+export function arrows() -> Binding
+  return {
+    up = Enum.KeyCode.Up,
+    down = Enum.KeyCode.Down,
+    left = Enum.KeyCode.Left,
+    right = Enum.KeyCode.Right,
+  }
+end
+
+--- A binding of its own for an input, so that a change to it does not
+--- reach the caller's table.
+export function normal(input: Input) -> Binding
+  if input is EnumItem then
+    return { key = input }
+  end
+
+  return table.clone(input)
+end
+
+--- The device of a binding: the device of its first key.
+export function binding_device(binding: Binding) -> Device
+  for _, part in PARTS do
+    if const key = binding[part] then
+      return device_of(key)
+    end
+  end
+
+  error('BadArgument: a binding holds no key', 0)
+end
+
+--- The text of a binding for a prompt: "E", or "W/A/S/D" for a
+--- composite. `name` gives the text of each key, `label` when nil.
+export function text(binding: Binding, name: ((key: Enum.KeyCode) -> string)?) -> string
+  const name_of = name ?? label
+  const labels: { string } = {}
+
+  for _, part in SHOWN do
+    if const key = binding[part] then
+      table.insert(labels, name_of(key))
+    end
+  end
+
+  return table.concat(labels, '/')
+end
+
+--- The saved form of a binding.
+export function encode(binding: Binding) -> SavedBinding
+  local saved: SavedBinding = {}
+
+  for _, part in PARTS do
+    if const key = binding[part] then
+      saved[part] = key.Name
+    end
+  end
+
+  return saved
+end
+
+--[[
+  The binding that a save holds, or nil when it is no binding of
+  `device`. A key name that Lever does not know, or a key of another
+  device, drops the whole binding: half of a composite is worse than
+  none.
+]]
+export function decode(raw: unknown, device: Device) -> Binding?
+  if raw is not table then
+    return nil
+  end
+
+  local binding: Binding = {}
+  local found = false
+
+  for _, part in PARTS do
+    const name = raw[part]
+
+    if name == nil then
+      continue
+    end
+
+    const key = name is string ? key_named(name) : nil
+
+    if key == nil or device_of(key) ~= device then
+      return nil
+    end
+
+    binding[part] = key
+    found = true
+  end
+
+  return found ? binding : nil
+end
+
+--- One line for a binding, the same for two bindings with the same
+--- keys. A save compares bindings by it.
+local function line(binding: Binding) -> string
+  const parts: { string } = {}
+
+  for _, part in PARTS do
+    if const key = binding[part] then
+      table.insert(parts, `{part}={key.Name}`)
+    end
+  end
+
+  return table.concat(parts, ',')
+end
+
+--- Whether two lists hold the same bindings in the same order.
+export function same(a: { Binding }, b: { Binding }) -> boolean
+  if #a ~= #b then
+    return false
+  end
+
+  for index, binding in a do
+    if line(binding) ~= line(b[index]) then
+      return false
+    end
+  end
+
+  return true
+end
+
+@test
+namespace BindingTests
+  --- A bare key becomes a binding of one key, and a table is copied.
+  public function an_input_becomes_a_binding_of_its_own() -> ()
+    $assert_eq(normal(Enum.KeyCode.E).key, Enum.KeyCode.E)
+
+    const move = wasd()
+    local copy = normal(move)
+    copy.up = Enum.KeyCode.I
+    $assert_eq(move.up, Enum.KeyCode.W)
+  end
+
+  --- A binding shows its keys and has the device of its keys.
+  public function a_binding_has_a_text_and_a_device() -> ()
+    $assert_eq(text(normal(Enum.KeyCode.LeftShift)), 'Left Shift')
+    $assert_eq(text(wasd()), 'W/A/S/D')
+    $assert_eq(binding_device(wasd()), 'Keyboard')
+    $assert_eq(binding_device(normal(Enum.KeyCode.ButtonX)), 'Gamepad')
+  end
+
+  --- A saved binding reads back as the same binding.
+  public function a_saved_binding_reads_back() -> ()
+    const saved = encode(wasd())
+    $assert_eq(saved.up, 'W')
+
+    if const binding = decode(saved, 'Keyboard') then
+      $assert(same({ binding }, { wasd() }))
+    else
+      error('the binding did not read back')
+    end
+  end
+
+  --- A save with a key of another device, or a name Lever does not
+  --- know, reads as no binding.
+  public function a_bad_save_reads_as_nothing() -> ()
+    $assert_eq(decode({ key = 'ButtonA' }, 'Keyboard'), nil)
+    $assert_eq(decode({ key = 'NotAKey' }, 'Keyboard'), nil)
+    $assert_eq(decode({ up = 'W', down = 42 }, 'Keyboard'), nil)
+    $assert_eq(decode({}, 'Keyboard'), nil)
+    $assert_eq(decode('E', 'Keyboard'), nil)
+  end
+
+  --- Two lists are the same only with the same keys in the same order.
+  public function same_reads_keys_and_order() -> ()
+    const e = normal(Enum.KeyCode.E)
+    const f = normal(Enum.KeyCode.F)
+
+    $assert(same({ e, f }, { normal(Enum.KeyCode.E), f }))
+    $assert(not same({ e, f }, { f, e }))
+    $assert(not same({ e }, { e, f }))
+  end
+end

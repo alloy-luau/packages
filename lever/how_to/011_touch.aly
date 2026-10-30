@@ -1,0 +1,118 @@
+--[[
+  Touch has no keys. A touch button is a GuiButton of the game's own:
+  `touch` links it to a Button action, and the engine holds the action
+  while a finger holds the button. A touch stick is the game's own too:
+  it drives the move with `fire`.
+]]
+
+import Players from '@game/Players'
+import UserInputService from '@game/UserInputService'
+import {
+  Device,
+  Lever,
+  axis2,
+  button,
+  wasd,
+  type ActionSpec,
+  type ContextSpec,
+} from '@packages/lever'
+
+--- What the player can do.
+enum Action
+  Move
+  Jump
+end
+
+--- When the actions apply.
+enum Context
+  Gameplay
+end
+
+local function action(each: Action) -> ActionSpec<Context>
+  return match each with
+    case Move then axis2(Context.Gameplay, { wasd(), Enum.KeyCode.Thumbstick1 })
+    case Jump then button(Context.Gameplay, { Enum.KeyCode.Space, Enum.KeyCode.ButtonA })
+  end
+end
+
+local function context(_each: Context) -> ContextSpec
+  return { priority = 0 }
+end
+
+const controls = new Lever(Action, Context, action, context)
+
+local gui = new Instance('ScreenGui') { Name = 'Touch', ResetOnSpawn = false }
+
+-- The jump button. The engine drives Jump while a finger holds it.
+const jump = new Instance('TextButton') {
+  Name = 'Jump',
+  Text = 'Jump',
+  AnchorPoint = new Vector2(1, 1),
+  Position = new UDim2(1, -24, 1, -24),
+  Size = new UDim2(0, 96, 0, 96),
+  Parent = gui,
+}
+controls:touch(Action.Jump, jump)
+
+-- The stick: a pad on the left. A finger that starts on it moves the
+-- player by how far it leans from the middle.
+const pad = new Instance('Frame') {
+  Name = 'Stick',
+  AnchorPoint = new Vector2(0, 1),
+  Position = new UDim2(0, 24, 1, -24),
+  Size = new UDim2(0, 160, 0, 160),
+  BackgroundTransparency = 0.6,
+  Parent = gui,
+}
+
+--- The touch that holds the stick, while one does.
+local holding: InputObject? = nil
+
+--- Moves the player by where a touch is on the pad.
+local function lean(touch: InputObject) -> ()
+  const middle = pad.AbsolutePosition + pad.AbsoluteSize / 2
+  const offset = (new Vector2(touch.Position.X, touch.Position.Y) - middle)
+    / (pad.AbsoluteSize.X / 2)
+  const clamped = offset.Magnitude > 1 ? offset.Unit : offset
+
+  -- A screen's Y grows down, and a move's Y grows forward.
+  controls:fire(Action.Move, new Vector2(clamped.X, -clamped.Y))
+end
+
+pad.InputBegan:Connect(function(input: InputObject)
+  if input.UserInputType == Enum.UserInputType.Touch and holding == nil then
+    holding = input
+    lean(input)
+  end
+end)
+
+UserInputService.TouchMoved:Connect(function(touch: InputObject)
+  if touch == holding then
+    lean(touch)
+  end
+end)
+
+UserInputService.TouchEnded:Connect(function(touch: InputObject)
+  if touch == holding then
+    holding = nil
+    controls:fire(Action.Move, Vector2.zero)
+  end
+end)
+
+-- The buttons show only while the player plays by touch.
+gui.Enabled = controls:device() == Device.Touch
+controls.device_changed:connect(function(device)
+  gui.Enabled = device == Device.Touch
+end)
+gui.Parent = Players.LocalPlayer->PlayerGui
+
+--[[
+  - `touch` takes a Button action alone. Give it nil to take the link
+    away.
+  - `fire` drives an action through a Scriptable InputBinding, which the
+    engine treats as any other binding. The value fits the kind: a
+    boolean, a number, or a Vector2.
+  - `fire` serves a tutorial too: a script can press Jump for the player.
+  - Roblox shows its own thumbstick and jump button on a phone. Turn them
+    off with GuiService.TouchControlsEnabled when the game shows its own.
+]]

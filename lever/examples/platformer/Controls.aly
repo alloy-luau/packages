@@ -1,0 +1,42 @@
+--[[
+  The controls of the platformer: its actions, their keys, and the one
+  Lever that reads them.
+]]
+
+import {
+  Lever,
+  axis2,
+  button,
+  wasd,
+  type ActionSpec,
+  type ContextSpec,
+} from '@packages/lever'
+
+--- What the player can do.
+export enum Action
+  Move
+  Jump
+  Dash
+end
+
+--- When the actions apply.
+export enum Context
+  Gameplay
+end
+
+--- The keys of each action.
+local function action(each: Action) -> ActionSpec<Context>
+  return match each with
+    case Move then axis2(Context.Gameplay, { wasd(), Enum.KeyCode.Thumbstick1 })
+    case Jump then button(Context.Gameplay, { Enum.KeyCode.Space, Enum.KeyCode.ButtonA })
+    case Dash then button(Context.Gameplay, { Enum.KeyCode.LeftShift, Enum.KeyCode.ButtonX })
+  end
+end
+
+--- The one context of the game.
+local function context(_each: Context) -> ContextSpec
+  return { priority = 0 }
+end
+
+--- The controls of the game.
+export const controls = new Lever(Action, Context, action, context)

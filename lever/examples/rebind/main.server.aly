@@ -1,0 +1,46 @@
+--[[
+  The server half of the rebind example. It keeps each player's
+  bindings in a DataStore and sends them back when the player joins.
+
+  A real game keeps the bindings with the rest of the player's data,
+  in the save layer that it has, and saves them as that layer saves.
+]]
+
+import DataStoreService from '@game/DataStoreService'
+import Players from '@game/Players'
+import { LoadBindings, SaveBindings } from './Remotes'
+
+--- The store of every player's bindings.
+const store = DataStoreService:GetDataStore('Bindings')
+
+--- The key of one player in the store.
+local function key_of(player: Player) -> string
+  return `player_{player.UserId}`
+end
+
+--- Reads a player's bindings and sends them. A player with no save
+--- keeps the defaults, so nothing goes.
+local function send(player: Player) -> ()
+  match Result.pcall(function() return store:GetAsync(key_of(player)) end) with
+    case Ok(save) then
+      if save ~= nil then
+        LoadBindings.fire(player, save)
+      end
+    case Err(message) then warn(`the bindings of {player.Name} did not load: {message}`)
+  end
+end
+
+-- The remote's @validate drops a save that is too big before this runs.
+SaveBindings.on(function(player, save)
+  const saved = Result.pcall(function() store:SetAsync(key_of(player), save) end)
+
+  if local Err(message) = saved then
+    warn(`the bindings of {player.Name} did not save: {message}`)
+  end
+end)
+
+Players.PlayerAdded:Connect(send)
+
+for _, player in Players:GetPlayers() do
+  task.spawn(send, player)
+end

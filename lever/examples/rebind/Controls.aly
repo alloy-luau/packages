@@ -1,0 +1,52 @@
+--[[
+  The controls of the rebind example: a walk, a jump, a sprint, and a
+  key that opens the settings.
+]]
+
+import {
+  Lever,
+  axis2,
+  button,
+  wasd,
+  type ActionSpec,
+  type ContextSpec,
+} from '@packages/lever'
+
+--- What the player can do.
+export enum Action
+  Move
+  Jump
+  Sprint
+  Interact
+  Settings
+end
+
+--- When the actions apply. The settings screen turns Gameplay off.
+export enum Context
+  Gameplay
+  Menu
+end
+
+--- The default keys of each action.
+local function action(each: Action) -> ActionSpec<Context>
+  return match each with
+    case Move then axis2(Context.Gameplay, { wasd(), Enum.KeyCode.Thumbstick1 })
+    case Jump then button(Context.Gameplay, { Enum.KeyCode.Space, Enum.KeyCode.ButtonA })
+    case Sprint then button(Context.Gameplay, { Enum.KeyCode.LeftShift, Enum.KeyCode.ButtonL3 })
+    case Interact then button(Context.Gameplay, { Enum.KeyCode.E, Enum.KeyCode.ButtonX })
+    -- The settings key sits in the menu context too, so it closes the
+    -- screen that it opened.
+    case Settings then button(Context.Menu, { Enum.KeyCode.P, Enum.KeyCode.ButtonY })
+  end
+end
+
+--- Both contexts start on. The settings screen turns Gameplay off.
+local function context(each: Context) -> ContextSpec
+  return match each with
+    case Gameplay then { priority = 0 }
+    case Menu then { priority = 100 }
+  end
+end
+
+--- The controls of the game.
+export const controls = new Lever(Action, Context, action, context)

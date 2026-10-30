@@ -1,0 +1,83 @@
+--[[
+  A binding is what drives an action: a key, a mouse button, a gamepad
+  button or stick, or the four keys of a composite such as WASD. An
+  action holds bindings for each device: the keyboard and mouse, the
+  gamepad, and touch.
+]]
+
+import {
+  Device,
+  Lever,
+  arrows,
+  axis2,
+  button,
+  wasd,
+  type ActionSpec,
+  type ContextSpec,
+} from '@packages/lever'
+
+--- What the player can do.
+enum Action
+  Move
+  Jump
+  Attack
+  OpenInventory
+end
+
+--- When the actions apply.
+enum Context
+  Gameplay
+end
+
+local function action(each: Action) -> ActionSpec<Context>
+  return match each with
+    -- A composite gives a Vector2 from four keys. The stick gives one
+    -- by itself.
+    case Move then axis2(Context.Gameplay, { wasd(), arrows(), Enum.KeyCode.Thumbstick1 })
+    case Jump then button(Context.Gameplay, { Enum.KeyCode.Space, Enum.KeyCode.ButtonA })
+    -- A mouse button is a KeyCode too. Two keys of one device fill two
+    -- slots of that device.
+    case Attack then
+      button(Context.Gameplay, {
+        Enum.KeyCode.MouseLeftButton,
+        Enum.KeyCode.F,
+        Enum.KeyCode.ButtonR2,
+      })
+    -- The third argument is the name that a controls screen shows.
+    case OpenInventory then
+      button(Context.Gameplay, { Enum.KeyCode.Tab, Enum.KeyCode.ButtonY }, 'Bag')
+  end
+end
+
+local function context(_each: Context) -> ContextSpec
+  return { priority = 0 }
+end
+
+const controls = new Lever(Action, Context, action, context)
+
+-- The bindings of one device, in slot order: the left click, then F.
+for slot, binding in controls:bindings(Action.Attack, Device.Keyboard) do
+  print(slot, binding.key)
+end
+
+-- The text of a binding, for a prompt or a controls screen.
+print(controls:label(Action.Move, Device.Keyboard)) -- W/A/S/D
+print(controls:label(Action.Move, Device.Keyboard, 2)) -- Up/Left/Down/Right
+print(controls:label(Action.Attack, Device.Gamepad)) -- RT
+
+-- The name of an action: its variant with spaces, or the name its spec
+-- gives.
+print(controls:name(Action.Move)) -- Move
+print(controls:name(Action.OpenInventory)) -- Bag
+
+--[[
+  - A binding is a table of keys by part: `{ key = ... }` for one key,
+    or `{ up, down, left, right }` for a composite. `wasd()` and
+    `arrows()` give the two usual composites.
+  - The mouse counts as the keyboard: Device.Keyboard is the keyboard
+    and the mouse.
+  - Lever makes one InputBinding for each binding, under the action's
+    InputAction. The engine reads the binding of the device that the
+    player holds.
+  - A touch button joins at run time, in 011_touch.
+]]

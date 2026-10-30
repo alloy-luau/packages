@@ -1,0 +1,170 @@
+--[[
+  The settings screen, from plain instances. Each row is one binding:
+  the action's name, then a button for the keyboard key and one for the
+  gamepad button. A click on a button waits for the next key of that
+  device, and the key binds. Move has one row for each direction of its
+  keys; its gamepad cells show the stick and do not rebind.
+
+  A key that another action holds swaps with it, and `rebound` writes
+  every row again, so the screen shows the swap.
+]]
+
+import Players from '@game/Players'
+import { Device, capture, key_label, type Part } from '@packages/lever'
+import { Action, Context, controls } from './Controls'
+
+--- One row: an action, the part of its binding that the row binds, and
+--- whether the gamepad cell rebinds.
+type Row = { action: Action, part: Part, title: string, pad: boolean }
+
+--- The rows, top to bottom.
+const ROWS: { Row } = {
+  { action = Action.Move, part = 'up', title = 'Move Up', pad = false },
+  { action = Action.Move, part = 'down', title = 'Move Down', pad = false },
+  { action = Action.Move, part = 'left', title = 'Move Left', pad = false },
+  { action = Action.Move, part = 'right', title = 'Move Right', pad = false },
+  { action = Action.Jump, part = 'key', title = 'Jump', pad = true },
+  { action = Action.Sprint, part = 'key', title = 'Sprint', pad = true },
+  { action = Action.Interact, part = 'key', title = 'Interact', pad = true },
+}
+
+--- What a button shows while it waits for a key.
+const WAITING = 'Press a key'
+
+local gui = new Instance('ScreenGui') { Name = 'Settings', ResetOnSpawn = false, Enabled = false }
+
+const panel = new Instance('ScrollingFrame') {
+  Name = 'Rows',
+  AnchorPoint = new Vector2(0.5, 0.5),
+  Position = new UDim2(0.5, 0, 0.5, 0),
+  Size = new UDim2(0, 420, 0, 360),
+  AutomaticCanvasSize = Enum.AutomaticSize.Y,
+  CanvasSize = new UDim2(0, 0, 0, 0),
+  Parent = gui,
+}
+
+new Instance('UIListLayout') {
+  Padding = new UDim(0, 4),
+  SortOrder = Enum.SortOrder.LayoutOrder,
+  Parent = panel,
+}
+
+--- The two buttons of each row, by device, in the order of ROWS.
+const cells: { { [Device]: TextButton } } = {}
+
+--- The wait for a key, while one runs. It stops the wait.
+local waiting: (() -> ())? = nil
+
+--- The text of one row's key for a device. The stick of Move has no
+--- part for a direction, so its cell shows the stick.
+local function key_text(row: Row, device: Device) -> string
+  const binding = controls:bindings(row.action, device)[1]
+  const key = binding?[row.part] ?? binding?.key
+
+  return key == nil ? '-' : key_label(key)
+end
+
+--- Writes every row from the bindings.
+local function refresh() -> ()
+  for index, row in ROWS do
+    for device, each in cells[index] do
+      each.Text = key_text(row, device)
+    end
+  end
+end
+
+--- Waits for a key of `device`, then binds it to the row's part.
+local function listen(index: number, device: Device) -> ()
+  const row = ROWS[index]
+
+  if const stop = waiting then
+    stop()
+    refresh()
+  end
+
+  cells[index][device].Text = WAITING
+  waiting = capture(device, function(key)
+    waiting = nil
+
+    if key then
+      controls:rebind(row.action, device, { [row.part] = key })
+    end
+
+    refresh()
+  end)
+end
+
+--- One cell of a row: a button that shows, and may bind, a key of
+--- `device`.
+local function cell(index: number, device: Device, parent: Instance) -> TextButton
+  const each = new Instance('TextButton') {
+    Name = device,
+    Size = new UDim2(0.3, -4, 1, 0),
+    Position = new UDim2(device == Device.Keyboard ? 0.4 : 0.7, 0, 0, 0),
+    Parent = parent,
+  }
+
+  if device == Device.Keyboard or ROWS[index].pad then
+    each.Activated:Connect(function() listen(index, device) end)
+  end
+
+  return each
+end
+
+for index, row in ROWS do
+  const line = new Instance('Frame') {
+    Name = row.title,
+    LayoutOrder = index,
+    Size = new UDim2(1, -8, 0, 36),
+    BackgroundTransparency = 1,
+    Parent = panel,
+  }
+
+  new Instance('TextLabel') {
+    Name = 'Title',
+    Text = row.title,
+    Size = new UDim2(0.4, -4, 1, 0),
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = line,
+  }
+
+  table.insert(cells, {
+    [Device.Keyboard] = cell(index, Device.Keyboard, line),
+    [Device.Gamepad] = cell(index, Device.Gamepad, line),
+  })
+end
+
+const reset = new Instance('TextButton') {
+  Name = 'Reset',
+  Text = 'Reset to defaults',
+  LayoutOrder = #ROWS + 1,
+  Size = new UDim2(1, -8, 0, 36),
+  Parent = panel,
+}
+reset.Activated:Connect(function() controls:reset() end)
+
+controls.rebound:connect(refresh)
+gui.Parent = Players.LocalPlayer->PlayerGui
+
+--- Opens or closes the screen. The game stops while it shows, so a key
+--- that the screen waits for moves nothing.
+export function show(open: boolean) -> ()
+  if const stop = waiting where not open then
+    stop()
+    waiting = nil
+  end
+
+  gui.Enabled = open
+  refresh()
+
+  if open then
+    controls:disable(Context.Gameplay)
+  else
+    controls:enable(Context.Gameplay)
+  end
+end
+
+--- Whether the screen shows.
+export function showing() -> boolean
+  return gui.Enabled
+end

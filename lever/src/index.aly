@@ -1,0 +1,25 @@
+--[[
+  Lever: input actions for Roblox games, on the Input Action System.
+  This module sends out the public API; each part lives in its own
+  module beside it.
+
+  - lever: Lever, button, axis, axis2, capture, key_label, Kind
+  - binding: wasd, arrows, Binding
+  - keys: Device
+]]
+
+export {
+  Lever,
+  Kind,
+  button,
+  axis,
+  axis2,
+  capture,
+  key_label,
+  type ActionSpec,
+  type ContextSpec,
+  type Save,
+  type Value,
+} from './lever'
+export { wasd, arrows, type Binding, type Input, type Part, type SavedBinding } from './binding'
+export { Device } from './keys'

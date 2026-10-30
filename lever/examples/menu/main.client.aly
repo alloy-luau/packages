@@ -1,0 +1,21 @@
+--[[
+  A pause menu that a gamepad drives. P or the gamepad's Y opens it.
+  Then Up and Down step through the entries, Confirm runs one, and Back
+  closes it, on the keyboard, the D-pad, or the stick.
+]]
+
+-- The arms write Action.Pause, not Pause: the unused_import lint does
+-- not count a bare variant in a pattern as a use of Action.
+import { Action, controls } from './Controls'
+import * as menu from './Menu'
+
+controls.began:connect(function(each)
+  match each with
+    case Action.Pause then menu.show(true)
+    case Action.Up then menu.step(-1)
+    case Action.Down then menu.step(1)
+    case Action.Confirm then menu.confirm()
+    case Action.Back then menu.show(false)
+    case Action.Move then return
+  end
+end)

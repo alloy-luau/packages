@@ -1,0 +1,102 @@
+--[[
+  A context is a group of actions that turns on and off as one. Each
+  context has a priority, and a context with a higher priority hears
+  input first. A context with `sink` keeps the keys that it binds from
+  the contexts below it.
+
+  This step has three contexts: the game, a menu over it, and a chat
+  box of the game's own over both.
+]]
+
+import Players from '@game/Players'
+import { Lever, axis, button, type ActionSpec, type ContextSpec } from '@packages/lever'
+
+--- What the player can do.
+enum Action
+  Jump
+  OpenMenu
+  Confirm
+  Back
+  History
+end
+
+--- When the actions apply.
+enum Context
+  Gameplay
+  Menu
+  Chat
+end
+
+local function action(each: Action) -> ActionSpec<Context>
+  return match each with
+    case Jump then button(Context.Gameplay, { Enum.KeyCode.Space, Enum.KeyCode.ButtonA })
+    case OpenMenu then button(Context.Gameplay, { Enum.KeyCode.M, Enum.KeyCode.ButtonY })
+    -- Confirm shares Space and ButtonA with Jump. The menu sinks them,
+    -- so a press while the menu shows confirms and does not jump.
+    case Confirm then
+      button(Context.Menu, { Enum.KeyCode.Space, Enum.KeyCode.Return, Enum.KeyCode.ButtonA })
+    case Back then button(Context.Menu, { Enum.KeyCode.Backspace, Enum.KeyCode.ButtonB })
+    -- Up and Down step through the lines that the player sent before.
+    case History then axis(Context.Chat, { { up = Enum.KeyCode.Up, down = Enum.KeyCode.Down } })
+  end
+end
+
+local function context(each: Context) -> ContextSpec
+  return match each with
+    case Gameplay then { priority = 0 }
+    case Menu then { priority = 100, sink = true, enabled = false }
+    -- The chat takes input while its box has the focus.
+    case Chat then { priority = 200, sink = true, enabled = false, typing = true }
+  end
+end
+
+const controls = new Lever(Action, Context, action, context)
+
+--- Shows or hides the menu. While it shows, the game stops: each action
+--- of Gameplay that is held ends, so a run does not go on behind it.
+local function show_menu(open: boolean) -> ()
+  if open then
+    controls:enable(Context.Menu)
+    controls:disable(Context.Gameplay)
+  else
+    controls:disable(Context.Menu)
+    controls:enable(Context.Gameplay)
+  end
+end
+
+controls.began:connect(function(each)
+  match each with
+    case Jump then print('jump')
+    case OpenMenu then show_menu(true)
+    case Confirm then print('confirm')
+    case Back then show_menu(false)
+    case History then print(`history {controls:axis(Action.History)}`)
+  end
+end)
+
+-- The game's own chat box. Its context is on while the box has the
+-- focus.
+local gui = new Instance('ScreenGui') { Name = 'Chat', ResetOnSpawn = false }
+const box = new Instance('TextBox') {
+  Name = 'Box',
+  PlaceholderText = 'Say something',
+  Position = new UDim2(0, 16, 1, -56),
+  Size = new UDim2(0, 320, 0, 40),
+  Parent = gui,
+}
+box.Focused:Connect(function() controls:enable(Context.Chat) end)
+box.FocusLost:Connect(function() controls:disable(Context.Chat) end)
+gui.Parent = Players.LocalPlayer->PlayerGui
+
+--[[
+  - `enable` and `disable` turn a context on and off. `enabled` reads it.
+  - `disable` ends each held action of the context, and fires `ended`
+    for each. The engine would never send their release.
+  - `sink` keeps only the keys that the context binds. Movement on WASD
+    still reaches Gameplay under the menu, so this menu turns Gameplay
+    off too.
+  - While a TextBox has the focus, no action begins in a context without
+    `typing`. So a player who types "jump" in the chat does not jump.
+  - Two contexts that are never on together can share a key, as Jump and
+    Confirm share Space here.
+]]

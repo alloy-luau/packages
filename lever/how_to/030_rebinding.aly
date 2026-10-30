@@ -1,0 +1,92 @@
+--[[
+  A player can bind other keys at run time. `rebind` puts a key on an
+  action for one device, and the engine reads the new key at once.
+
+  When another action of the same context holds the key, the two swap:
+  that action takes the old key. So no key drives two actions at once.
+]]
+
+import {
+  Device,
+  Lever,
+  axis2,
+  button,
+  capture,
+  wasd,
+  type ActionSpec,
+  type ContextSpec,
+} from '@packages/lever'
+
+--- What the player can do.
+enum Action
+  Move
+  Jump
+  Interact
+end
+
+--- When the actions apply.
+enum Context
+  Gameplay
+end
+
+local function action(each: Action) -> ActionSpec<Context>
+  return match each with
+    case Move then axis2(Context.Gameplay, { wasd(), Enum.KeyCode.Thumbstick1 })
+    case Jump then button(Context.Gameplay, { Enum.KeyCode.Space, Enum.KeyCode.ButtonA })
+    case Interact then button(Context.Gameplay, { Enum.KeyCode.E, Enum.KeyCode.ButtonX })
+  end
+end
+
+local function context(_each: Context) -> ContextSpec
+  return { priority = 0 }
+end
+
+const controls = new Lever(Action, Context, action, context)
+
+-- E is Interact's key, so Interact takes Space. The call gives the
+-- action that changed with it.
+if const other = controls:rebind(Action.Jump, Device.Keyboard, Enum.KeyCode.E) then
+  print(`{controls:name(other)} is now on {controls:label(other, Device.Keyboard)}`)
+end
+
+-- One direction of a composite: the other three keys stay.
+controls:rebind(Action.Move, Device.Keyboard, { up = Enum.KeyCode.Z })
+print(controls:label(Action.Move, Device.Keyboard)) -- Z/A/S/D
+
+-- A second slot: one past the last slot adds a binding.
+controls:rebind(Action.Jump, Device.Keyboard, Enum.KeyCode.Up, 2)
+controls:unbind(Action.Jump, Device.Keyboard, 2)
+
+-- The defaults of one action, or of every action.
+controls:reset(Action.Move)
+controls:reset()
+
+-- `rebound` fires for each action whose bindings change, so a screen
+-- can show the new keys.
+controls.rebound:connect(function(each)
+  print(`{controls:name(each)}: {controls:label(each, Device.Keyboard)}`)
+end)
+
+-- `capture` waits for the next key of a device. Escape gives nil and
+-- ends the wait. Turn the game off while it waits: the key also reaches
+-- the game.
+controls:disable(Context.Gameplay)
+capture(Device.Keyboard, function(key)
+  if key then
+    controls:rebind(Action.Interact, Device.Keyboard, key)
+  end
+
+  controls:enable(Context.Gameplay)
+end)
+
+--[[
+  - `rebind(action, device, change, slot)` takes a bare key or a table of
+    parts as `change`. `slot` is 1 when nil.
+  - A rebind refuses a key of another device, and a key that Roblox
+    keeps: Escape, Slash, F9 to F12, and the gamepad's Menu and View
+    buttons.
+  - `capture` gives a function that stops the wait, for a screen that
+    closes first.
+  - Keys swap only inside a context. Keys of contexts that are never on
+    together do not clash.
+]]

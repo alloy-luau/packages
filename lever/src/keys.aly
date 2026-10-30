@@ -1,0 +1,292 @@
+--[[
+  Keys and devices. A KeyCode names a key of the keyboard, a mouse
+  button, a gamepad button or stick, or a touch gesture. This module
+  sorts each key into a Device, gives it a name for a prompt, and keeps
+  the list of keys that Roblox uses for itself.
+
+  The sort reads the name of a key, not its value. The test shim gives
+  every EnumItem the value 0, and the names are the same everywhere.
+]]
+
+--- The devices a player plays with. Keyboard includes the mouse.
+export enum Device
+  Keyboard
+  Gamepad
+  Touch
+end
+
+--- Each device, in a fixed order for loops and saves.
+export const DEVICES: { Device } = { Device.Keyboard, Device.Gamepad, Device.Touch }
+
+--- What a press does while a rebind waits for a key.
+export enum Pick
+  --- The key binds.
+  Take
+  --- The wait stops, and no key binds.
+  Cancel
+  --- The wait goes on.
+  Skip
+end
+
+--- Adds the letters, the digits, and the function keys to a table of
+--- labels, and gives the table.
+local function with_generated(labels: { [string]: string }) -> { [string]: string }
+  for code = string.byte('A'), string.byte('Z') do
+    labels[string.char(code)] = string.char(code)
+  end
+
+  for index, name in {
+    'Zero',
+    'One',
+    'Two',
+    'Three',
+    'Four',
+    'Five',
+    'Six',
+    'Seven',
+    'Eight',
+    'Nine',
+  } do
+    labels[name] = tostring(index - 1)
+    labels[`Keypad{name}`] = `Num {index - 1}`
+  end
+
+  for number = 1, 15 do
+    labels[`F{number}`] = `F{number}`
+  end
+
+  return labels
+end
+
+--[[
+  The text that a prompt shows for each key, by its name in
+  Enum.KeyCode. The letters, the digits, and the function keys come
+  from `with_generated`. A key that is not in this table has no text,
+  and a save cannot hold it.
+
+  The gamepad names are the Xbox names, as Roblox shows them by
+  default. On the engine, `lever:label` asks Roblox for the names of the
+  gamepad that the player holds.
+]]
+const LABELS: { [string]: string } = with_generated({
+  Backspace = 'Backspace',
+  Tab = 'Tab',
+  Return = 'Enter',
+  Escape = 'Esc',
+  Space = 'Space',
+  Delete = 'Delete',
+  Insert = 'Insert',
+  Home = 'Home',
+  End = 'End',
+  PageUp = 'Page Up',
+  PageDown = 'Page Down',
+  Up = 'Up',
+  Down = 'Down',
+  Left = 'Left',
+  Right = 'Right',
+  LeftShift = 'Left Shift',
+  RightShift = 'Right Shift',
+  LeftControl = 'Left Ctrl',
+  RightControl = 'Right Ctrl',
+  LeftAlt = 'Left Alt',
+  RightAlt = 'Right Alt',
+  CapsLock = 'Caps Lock',
+  Minus = '-',
+  Equals = '=',
+  LeftBracket = '[',
+  RightBracket = ']',
+  BackSlash = '\\',
+  Semicolon = ';',
+  Quote = '\'',
+  Comma = ',',
+  Period = '.',
+  Slash = '/',
+  Backquote = '`',
+  KeypadPeriod = 'Num .',
+  KeypadDivide = 'Num /',
+  KeypadMultiply = 'Num *',
+  KeypadMinus = 'Num -',
+  KeypadPlus = 'Num +',
+  KeypadEnter = 'Num Enter',
+  MouseLeftButton = 'Left Click',
+  MouseRightButton = 'Right Click',
+  MouseMiddleButton = 'Middle Click',
+  MouseBackButton = 'Mouse Back',
+  MouseWheel = 'Mouse Wheel',
+  MouseDelta = 'Mouse',
+  MousePosition = 'Mouse',
+  ButtonA = 'A',
+  ButtonB = 'B',
+  ButtonX = 'X',
+  ButtonY = 'Y',
+  ButtonL1 = 'LB',
+  ButtonR1 = 'RB',
+  ButtonL2 = 'LT',
+  ButtonR2 = 'RT',
+  ButtonL3 = 'LS',
+  ButtonR3 = 'RS',
+  ButtonStart = 'Menu',
+  ButtonSelect = 'View',
+  DPadUp = 'D-Pad Up',
+  DPadDown = 'D-Pad Down',
+  DPadLeft = 'D-Pad Left',
+  DPadRight = 'D-Pad Right',
+  Thumbstick1 = 'Left Stick',
+  Thumbstick2 = 'Right Stick',
+  Thumbstick1Up = 'Left Stick Up',
+  Thumbstick1Down = 'Left Stick Down',
+  Thumbstick1Left = 'Left Stick Left',
+  Thumbstick1Right = 'Left Stick Right',
+  Thumbstick2Up = 'Right Stick Up',
+  Thumbstick2Down = 'Right Stick Down',
+  Thumbstick2Left = 'Right Stick Left',
+  Thumbstick2Right = 'Right Stick Right',
+  TouchPosition = 'Tap',
+  TouchDelta = 'Drag',
+  TouchPinch = 'Pinch',
+})
+
+--[[
+  The keys that a player cannot bind. Roblox opens its menu on Escape
+  and on the gamepad's Menu button, opens the chat on Slash, and moves
+  the UI selection on the gamepad's View button. It keeps F9 to F12
+  for its own tools. The Windows and Command keys belong to the system.
+]]
+const RESERVED: { [string]: boolean } = {
+  Escape = true,
+  Slash = true,
+  F9 = true,
+  F10 = true,
+  F11 = true,
+  F12 = true,
+  Print = true,
+  LeftSuper = true,
+  RightSuper = true,
+  LeftMeta = true,
+  RightMeta = true,
+  ButtonStart = true,
+  ButtonSelect = true,
+}
+
+--- Each KeyCode by its name. Read it only with a name from LABELS:
+--- the engine raises on a name that Enum.KeyCode does not have.
+const BY_NAME = (Enum.KeyCode :: unknown) :: { [string]: Enum.KeyCode }
+
+--- Whether a name starts with a prefix.
+local function starts(name: string, prefix: string) -> boolean
+  return string.sub(name, 1, #prefix) == prefix
+end
+
+--- The device of a key. The mouse counts as the keyboard.
+export function device_of(key: Enum.KeyCode) -> Device
+  const name = key.Name
+
+  if starts(name, 'Button') or starts(name, 'DPad') or starts(name, 'Thumbstick') then
+    return Device.Gamepad
+  elseif starts(name, 'Touch') then
+    return Device.Touch
+  end
+
+  return Device.Keyboard
+end
+
+--- The device of a UserInputService.PreferredInput. A gamepad with no
+--- stick, such as a TV remote, counts as a gamepad.
+export function device_of_preferred(preferred: Enum.PreferredInput) -> Device
+  const name = preferred.Name
+
+  if name == 'Gamepad' or name == 'MicroGamepad' then
+    return Device.Gamepad
+  elseif name == 'Touch' then
+    return Device.Touch
+  end
+
+  return Device.Keyboard
+end
+
+--- The text of a key for a prompt: "E", "Space", "Left Click", "A".
+--- A key with no entry shows its name in Enum.KeyCode.
+export function label(key: Enum.KeyCode) -> string
+  return LABELS[key.Name] ?? key.Name
+end
+
+--- Whether Roblox or the system uses a key, so that a player cannot
+--- bind it.
+export function reserved(key: Enum.KeyCode) -> boolean
+  return RESERVED[key.Name] ~= nil
+end
+
+--- The KeyCode of a name, or nil when Lever does not know the name. A
+--- save holds names, and this reads them back.
+export function key_named(name: string) -> Enum.KeyCode?
+  if LABELS[name] == nil then
+    return nil
+  end
+
+  return BY_NAME[name]
+end
+
+--- What a press of `key` does while a rebind waits for a key of
+--- `device`. A reserved key cancels the wait, so Escape backs out. A key
+--- of another device, or one that Lever does not know, changes nothing.
+export function pick(device: Device, key: Enum.KeyCode) -> Pick
+  if reserved(key) then
+    return Pick.Cancel
+  elseif LABELS[key.Name] == nil or device_of(key) ~= device then
+    return Pick.Skip
+  end
+
+  return Pick.Take
+end
+
+@test
+namespace KeysTests
+  --- Each key goes to the device that has it.
+  public function each_key_has_a_device() -> ()
+    $assert_eq(device_of(Enum.KeyCode.E), Device.Keyboard)
+    $assert_eq(device_of(Enum.KeyCode.MouseLeftButton), Device.Keyboard)
+    $assert_eq(device_of(Enum.KeyCode.ButtonA), Device.Gamepad)
+    $assert_eq(device_of(Enum.KeyCode.DPadUp), Device.Gamepad)
+    $assert_eq(device_of(Enum.KeyCode.Thumbstick1), Device.Gamepad)
+    $assert_eq(device_of(Enum.KeyCode.TouchDelta), Device.Touch)
+  end
+
+  --- Each preferred input of Roblox goes to a device.
+  public function each_preferred_input_has_a_device() -> ()
+    $assert_eq(device_of_preferred(Enum.PreferredInput.KeyboardAndMouse), Device.Keyboard)
+    $assert_eq(device_of_preferred(Enum.PreferredInput.Gamepad), Device.Gamepad)
+    $assert_eq(device_of_preferred(Enum.PreferredInput.MicroGamepad), Device.Gamepad)
+    $assert_eq(device_of_preferred(Enum.PreferredInput.Touch), Device.Touch)
+  end
+
+  --- A key shows a short name, and an unknown key shows its own name.
+  public function a_key_has_a_label() -> ()
+    $assert_eq(label(Enum.KeyCode.E), 'E')
+    $assert_eq(label(Enum.KeyCode.Return), 'Enter')
+    $assert_eq(label(Enum.KeyCode.Seven), '7')
+    $assert_eq(label(Enum.KeyCode.KeypadSeven), 'Num 7')
+    $assert_eq(label(Enum.KeyCode.F3), 'F3')
+    $assert_eq(label(Enum.KeyCode.ButtonR2), 'RT')
+    $assert_eq(label(Enum.KeyCode.World5), 'World5')
+  end
+
+  --- A name reads back as its key, and an unknown name reads as nil.
+  public function a_name_reads_back() -> ()
+    $assert_eq(key_named('LeftShift'), Enum.KeyCode.LeftShift)
+    $assert_eq(key_named('ButtonA'), Enum.KeyCode.ButtonA)
+    $assert_eq(key_named('World5'), nil)
+    $assert_eq(key_named('NotAKey'), nil)
+  end
+
+  --- A rebind takes a key of its device, and a reserved key cancels it.
+  public function a_rebind_picks_only_keys_of_its_device() -> ()
+    $assert_eq(pick(Device.Keyboard, Enum.KeyCode.Q), Pick.Take)
+    $assert_eq(pick(Device.Keyboard, Enum.KeyCode.MouseRightButton), Pick.Take)
+    $assert_eq(pick(Device.Keyboard, Enum.KeyCode.ButtonA), Pick.Skip)
+    $assert_eq(pick(Device.Gamepad, Enum.KeyCode.ButtonA), Pick.Take)
+    $assert_eq(pick(Device.Keyboard, Enum.KeyCode.Escape), Pick.Cancel)
+    $assert_eq(pick(Device.Gamepad, Enum.KeyCode.ButtonStart), Pick.Cancel)
+    $assert(reserved(Enum.KeyCode.Slash))
+    $assert(not reserved(Enum.KeyCode.E))
+  end
+end

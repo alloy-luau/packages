@@ -1,0 +1,85 @@
+--[[
+  An Axis reads a number, and an Axis2 reads a Vector2. A stick, a
+  trigger, and the mouse wheel give a value by themselves. Keys give one
+  as a composite: `up` and `down` for an Axis, and all four directions
+  for an Axis2.
+]]
+
+import RunService from '@game/RunService'
+import Workspace from '@game/Workspace'
+import {
+  Lever,
+  axis,
+  axis2,
+  wasd,
+  type ActionSpec,
+  type ContextSpec,
+} from '@packages/lever'
+
+--- What the player can do.
+enum Action
+  Move
+  Look
+  Zoom
+end
+
+--- When the actions apply.
+enum Context
+  Gameplay
+end
+
+local function action(each: Action) -> ActionSpec<Context>
+  return match each with
+    case Move then axis2(Context.Gameplay, { wasd(), Enum.KeyCode.Thumbstick1 })
+    case Look then axis2(Context.Gameplay, { Enum.KeyCode.Thumbstick2 })
+    -- E zooms in and Q zooms out. The wheel gives its own speed.
+    case Zoom then
+      axis(Context.Gameplay, {
+        Enum.KeyCode.MouseWheel,
+        { up = Enum.KeyCode.E, down = Enum.KeyCode.Q },
+      })
+  end
+end
+
+local function context(_each: Context) -> ContextSpec
+  return { priority = 0 }
+end
+
+const controls = new Lever(Action, Context, action, context)
+
+--- The part that the move drives.
+local ball = new Instance('Part') {
+  Name = 'Ball',
+  Shape = Enum.PartType.Ball,
+  Anchored = true,
+  Position = new Vector3(0, 4, 0),
+  Parent = Workspace,
+}
+
+RunService.Heartbeat:Connect(function(dt: number)
+  -- W gives (0, 1). A diagonal of two keys has a length of 1, as the
+  -- stick does at its edge, so it is no faster.
+  const move = controls:axis2(Action.Move)
+  ball.Position += new Vector3(move.X, 0, -move.Y) * 16 * dt
+
+  if local camera = Workspace.CurrentCamera then
+    const look = controls:axis2(Action.Look)
+    camera.CFrame *= CFrame.Angles(look.Y * dt, -look.X * dt, 0)
+    camera.FieldOfView = math.clamp(
+      camera.FieldOfView - controls:axis(Action.Zoom) * 40 * dt,
+      30,
+      90
+    )
+  end
+end)
+
+--[[
+  - `axis` reads an Axis, and `axis2` reads an Axis2. `axis` on a Button
+    reads 1 while it is held and 0 when not.
+  - An axis begins when it leaves zero and ends when it comes back, so
+    `began`, `ended`, `held`, and `pressed` work on axes too.
+  - The engine fires an axis when its value changes, and a stick held
+    still fires once. Read the value each frame, as here.
+  - The mouse wheel gives a speed in notches each second, not a value
+    from -1 to 1.
+]]

@@ -1,0 +1,29 @@
+--[[
+  A rebind screen. P or the gamepad's Y opens the settings, where each
+  row binds a key of the keyboard or a button of the gamepad. The game
+  sends the player's bindings to the server when the screen closes, and
+  loads them when the server sends them back.
+]]
+
+import { Action, controls } from './Controls'
+import { LoadBindings, SaveBindings } from './Remotes'
+import * as settings from './Settings'
+
+LoadBindings.on(function(save)
+  controls:load(save)
+end)
+
+controls.began:connect(function(each)
+  if each ~= Action.Settings then
+    return
+  end
+
+  const open = not settings.showing()
+  settings.show(open)
+
+  -- A save holds only the bindings that the player changed, so it stays
+  -- small. Send it as the screen closes, not on each key.
+  if not open then
+    SaveBindings.fire(controls:save())
+  end
+end)

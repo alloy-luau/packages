@@ -1,0 +1,92 @@
+--[[
+  An action begins when its key goes down, and it ends when the key
+  comes up. Lever gives three ways to read that:
+
+  - `began` and `ended`, signals for code that reacts once.
+  - `held`, for code that asks whether the key is down now.
+  - `pressed` and `released`, for a frame loop that asks whether the
+    action began or ended in this frame.
+]]
+
+import Players from '@game/Players'
+import RunService from '@game/RunService'
+import { Lever, button, type ActionSpec, type ContextSpec } from '@packages/lever'
+
+--- What the player can do.
+enum Action
+  Jump
+  Sprint
+  Charge
+end
+
+--- When the actions apply.
+enum Context
+  Gameplay
+end
+
+local function action(each: Action) -> ActionSpec<Context>
+  return match each with
+    case Jump then button(Context.Gameplay, { Enum.KeyCode.Space, Enum.KeyCode.ButtonA })
+    case Sprint then button(Context.Gameplay, { Enum.KeyCode.LeftShift, Enum.KeyCode.ButtonL3 })
+    case Charge then button(
+      Context.Gameplay,
+      { Enum.KeyCode.MouseRightButton, Enum.KeyCode.ButtonL2 }
+    )
+  end
+end
+
+local function context(_each: Context) -> ContextSpec
+  return { priority = 0 }
+end
+
+const controls = new Lever(Action, Context, action, context)
+
+-- The signals give the action. A match with no default arm handles each
+-- action.
+controls.began:connect(function(each)
+  match each with
+    case Jump then print('jump')
+    case Sprint then print('run')
+    case Charge then print('the charge starts')
+  end
+end)
+
+controls.ended:connect(function(each)
+  if each == Action.Charge then
+    print('the charge lets go')
+  end
+end)
+
+local charge = 0
+
+RunService.Heartbeat:Connect(function(dt: number)
+  -- One step each frame, before the reads. It latches `pressed` and
+  -- `released` for this frame.
+  controls:step()
+
+  if controls:pressed(Action.Jump) then
+    print('a jump in this frame')
+  end
+
+  if controls:held(Action.Charge) then
+    charge += dt
+  elseif controls:released(Action.Charge) then
+    print(`a charge of {charge} seconds`)
+    charge = 0
+  end
+
+  if local humanoid = Players.LocalPlayer.Character?:FindFirstChildOfClass('Humanoid') then
+    humanoid.WalkSpeed = controls:held(Action.Sprint) ? 24 : 16
+  end
+end)
+
+--[[
+  - A Button action begins on its key's press and ends on its release.
+    `held` is true between the two.
+  - `pressed` is true for the frame after a `step` when the action began
+    before that step. A tap that begins and ends inside one frame counts:
+    `pressed` and `released` are both true, and `held` is false.
+  - Call `step` once a frame, at the top of the frame's code. Roblox
+    fires input before any RunService event of a frame.
+  - The signals fire at once, in the input phase, without a step.
+]]

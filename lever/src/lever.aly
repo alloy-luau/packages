@@ -1,0 +1,1342 @@
+--[[
+  The Lever class: the actions of a game on Roblox's Input Action
+  System.
+
+  Lever builds one InputContext for each context of the game, one
+  InputAction for each action, and one InputBinding for each binding.
+  The engine reads the hardware, applies the priority and the sink of
+  each context, and fires the actions. Lever keeps the state of each
+  action, fires `began` and `ended`, and keeps the bindings as data for
+  a rebind screen and a save.
+
+  A test drives Lever without real input. It fires the StateChanged
+  signal of an action's InputAction, as the engine does.
+]]
+
+import ReplicatedStorage from '@game/ReplicatedStorage'
+import UserInputService from '@game/UserInputService'
+import { Signal } from '@alloy/std/signal'
+import {
+  type Binding,
+  type Input,
+  type Part,
+  type SavedBinding,
+  PARTS,
+  binding_device,
+  decode,
+  encode,
+  normal,
+  same,
+  text,
+  wasd,
+} from './binding'
+import {
+  DEVICES,
+  Device,
+  Pick,
+  device_of,
+  device_of_preferred,
+  label,
+  pick,
+  reserved,
+} from './keys'
+
+--- What an action reads, as InputActionType names it.
+export enum Kind
+  --- Down or up: a key, a button, a click, or a touch button.
+  Button
+  --- A number from -1 to 1: a trigger, two keys, or the mouse wheel.
+  Axis
+  --- A Vector2: a stick, WASD, or a touch stick.
+  Axis2
+end
+
+--- One action: what it reads, its context, and its default bindings.
+--- `name` is the text that a controls screen shows for it.
+export type ActionSpec<C> = { kind: Kind, context: C, bindings: { Input }, name: string? }
+
+--[[
+  One context: a group of actions that turns on and off as one. A
+  context with a higher priority hears input first. With `sink`, the
+  keys that it binds do not reach a context of lower priority.
+  `enabled` is true when nil.
+
+  While a TextBox has the focus, no action of the game begins, so a
+  player who types in a chat box does not jump. `typing` lets one
+  context take input then, such as the chat's own keys.
+]]
+export type ContextSpec = {
+  priority: number,
+  sink: boolean?,
+  enabled: boolean?,
+  typing: boolean?,
+}
+
+--[[
+  The bindings that a player changed, as a save layer keeps them: the
+  saved bindings of each action, by its name, then by the name of the
+  device. A device that the player did not change is not in it, so a
+  new default reaches every player.
+]]
+export type Save = { version: number, actions: { [string]: { [string]: { SavedBinding } } } }
+
+--- An action's value: a boolean, a number, or a Vector2, by its kind.
+export type Value = boolean | number | Vector2
+
+--- The InputActionType of each kind.
+const TYPES: { [Kind]: Enum.InputActionType } = {
+  Button = Enum.InputActionType.Bool,
+  Axis = Enum.InputActionType.Direction1D,
+  Axis2 = Enum.InputActionType.Direction2D,
+}
+
+--- The version that `save` writes.
+const SAVE_VERSION = 1
+
+--- One action at run time.
+struct Entry<C>
+  --- The action's name in its enum.
+  id: string
+  kind: Kind
+  context: C
+  name: string
+  instance: InputAction
+  defaults: { [Device]: { Binding } }
+  bindings: { [Device]: { Binding } }
+  --- The InputBindings that Lever made from `bindings` and `touch`.
+  children: { InputBinding } = {}
+  touch: GuiButton? = nil
+  --- The Scriptable binding that `fire` drives, made on the first fire.
+  script: InputBinding? = nil
+  value: Value = false
+  held: boolean = false
+  --- Whether the action began, or ended, since the last step.
+  began: boolean = false
+  ended: boolean = false
+  --- Whether it began, or ended, between the last two steps.
+  pressed: boolean = false
+  released: boolean = false
+end
+
+--- The rest value of a kind.
+local function zero(kind: Kind) -> Value
+  return match kind with
+    case Button then false
+    case Axis then 0
+    case Axis2 then Vector2.zero
+  end
+end
+
+--- Whether a value holds an action: down, or off zero.
+local function active(value: Value) -> boolean
+  if value is boolean then
+    return value
+  elseif value is number then
+    return value ~= 0
+  end
+
+  return value.Magnitude > 0
+end
+
+--- The unit variants of an enum, sorted by name. A unit variant is a
+--- field whose value is a string equal to its key.
+local function variants(source: unknown, option: string) -> { string }
+  const found: { string } = {}
+
+  if source is table then
+    for key, value in source do
+      if value is string and key == value then
+        table.insert(found, value)
+      end
+    end
+  end
+
+  if #found == 0 then
+    error(`BadArgument: {option} holds no unit enum; pass the enum itself`, 0)
+  end
+
+  table.sort(found)
+
+  return found
+end
+
+--- The bindings of each device, from the inputs of a spec.
+local function by_device(inputs: { Input }) -> { [Device]: { Binding } }
+  local lists: { [Device]: { Binding } } = {}
+
+  for _, each in DEVICES do
+    lists[each] = {}
+  end
+
+  for _, input in inputs do
+    const binding = normal(input)
+    table.insert(lists[binding_device(binding)], binding)
+  end
+
+  return lists
+end
+
+--- A copy of the bindings of each device that shares no table.
+local function copy(lists: { [Device]: { Binding } }) -> { [Device]: { Binding } }
+  local result: { [Device]: { Binding } } = {}
+
+  for each, list in lists do
+    result[each] = {}
+
+    for _, binding in list do
+      table.insert(result[each], table.clone(binding))
+    end
+  end
+
+  return result
+end
+
+--- The text of an action's name from its variant: "OpenInventory"
+--- shows as "Open Inventory".
+local function spaced(id: string) -> string
+  return (string.gsub(id, '(%l)(%u)', '%1 %2'))
+end
+
+--[[
+  The text of a key as Roblox shows it to this player. A key that types
+  one character takes the character of the player's keyboard layout:
+  KeyCode.W types Z on AZERTY. A gamepad button takes the name for the
+  brand of the gamepad: ButtonA is Cross on a PlayStation gamepad.
+  Any other key keeps the text of `label`.
+]]
+local function layout(key: Enum.KeyCode, fallback: string) -> string
+  const typed = UserInputService:GetStringForKeyCode(key)
+
+  if device_of(key) == Device.Gamepad then
+    -- "ButtonCross" and "ButtonLB" show as "Cross" and "LB".
+    return string.sub(typed, 1, 6) == 'Button' ? string.sub(typed, 7) : fallback
+  elseif #fallback == 1 and utf8.len(typed) == 1 then
+    return typed
+  end
+
+  return fallback
+end
+
+--- The text of a key for this player, as `lever:label` writes it: "E",
+--- "Space", "Left Click", or "A". A test has no engine to ask, so it
+--- reads Lever's own names alone.
+export function key_label(key: Enum.KeyCode) -> string
+  local result = label(key)
+
+  @cfg(not test)
+  result = layout(key, result)
+
+  return result
+end
+
+--- The KeyCode of an InputObject. A mouse button comes as a
+--- UserInputType, so this maps it to its KeyCode.
+local function key_of(input: InputObject) -> Enum.KeyCode
+  const kind = input.UserInputType
+
+  if kind == Enum.UserInputType.MouseButton1 then
+    return Enum.KeyCode.MouseLeftButton
+  elseif kind == Enum.UserInputType.MouseButton2 then
+    return Enum.KeyCode.MouseRightButton
+  elseif kind == Enum.UserInputType.MouseButton3 then
+    return Enum.KeyCode.MouseMiddleButton
+  end
+
+  return input.KeyCode
+end
+
+--- Errors unless each key of a change fits `device` and a player may
+--- bind it.
+local function check(keys: Binding, device: Device) -> ()
+  for _, part in PARTS do
+    const key = keys[part]
+
+    if key == nil then
+      continue
+    elseif device_of(key) ~= device then
+      error(`BadArgument: {key.Name} is no key of the {device}`, 0)
+    elseif reserved(key) then
+      error(`BadArgument: {key.Name} is reserved; a player cannot bind it`, 0)
+    end
+  end
+end
+
+--- Puts the saved bindings of one action into `lists`, for each device
+--- that the save holds. A binding that does not decode drops out.
+local function read_saved(lists: { [Device]: { Binding } }, saved: unknown) -> ()
+  if saved is not table then
+    return
+  end
+
+  for _, each in DEVICES do
+    const list = saved[each]
+
+    if list is not table then
+      continue
+    end
+
+    const bindings: { Binding } = {}
+
+    for _, raw in list do
+      if const binding = decode(raw, each) then
+        table.insert(bindings, binding)
+      end
+    end
+
+    -- An empty list is a device the player unbound. A list whose every
+    -- binding dropped out is damage, so the defaults stay.
+    if #bindings > 0 or next(list) == nil then
+      lists[each] = bindings
+    end
+  end
+end
+
+--- The spec of a Button: a key, a click, a gamepad button, or a touch
+--- button.
+export function button<C>(context: C, bindings: { Input }, name: string?) -> ActionSpec<C>
+  return { kind = Kind.Button, context = context, bindings = bindings, name = name }
+end
+
+--- The spec of an Axis: a number from -1 to 1, such as a trigger, the
+--- mouse wheel, or two keys as `{ up = ..., down = ... }`.
+export function axis<C>(context: C, bindings: { Input }, name: string?) -> ActionSpec<C>
+  return { kind = Kind.Axis, context = context, bindings = bindings, name = name }
+end
+
+--- The spec of an Axis2: a Vector2, such as a stick or `wasd()`.
+export function axis2<C>(context: C, bindings: { Input }, name: string?) -> ActionSpec<C>
+  return { kind = Kind.Axis2, context = context, bindings = bindings, name = name }
+end
+
+--[[
+  Waits for the next press of a key of `device`, for a rebind screen.
+  `done` gets the key, or nil when the player presses a reserved key,
+  such as Escape. A key of another device does not end the wait. Gives a
+  function that stops the wait.
+
+  The press also reaches the game, so turn the gameplay context off
+  while a rebind screen shows.
+]]
+export function capture(device: Device, done: (key: Enum.KeyCode?) -> ()) -> () -> ()
+  local connection: RBXScriptConnection? = nil
+
+  const stop = function() -> ()
+    if const open = connection then
+      open:Disconnect()
+    end
+  end
+
+  connection = UserInputService.InputBegan:Connect(function(input: InputObject) -> ()
+    const key = key_of(input)
+
+    match pick(device, key) with
+      case Pick.Take then
+        stop()
+        done(key)
+      case Pick.Cancel then
+        stop()
+        done(nil)
+      case Pick.Skip then return
+    end
+  end)
+
+  return stop
+end
+
+--- The Lever class: the actions of one game, its contexts, and the
+--- player's bindings.
+export struct Lever<A, C>
+  --- Fires when an action begins: a key goes down, or an axis leaves
+  --- zero.
+  read began: Signal<A>
+  --- Fires when an action ends: a key comes up, an axis comes back to
+  --- zero, or its context turns off.
+  read ended: Signal<A>
+  --- Fires when the bindings of an action change.
+  read rebound: Signal<A>
+  --- Fires when the player moves to another device.
+  read device_changed: Signal<Device>
+  private folder: Folder
+  private contexts: { [C]: InputContext }
+  --- The contexts that take input while a TextBox has the focus.
+  private typists: { [C]: boolean } = {}
+  private entries: { [A]: Entry<C> } = {}
+  private order: { A } = {}
+  private current: Device = Device.Keyboard
+  private typing: boolean = false
+  private connections: { RBXScriptConnection } = {}
+end
+
+--- A key in a binding: where a rebind found it.
+type Holder<A> = { action: A, binding: Binding, part: Part }
+
+--- The Scriptable binding of an action, made on the first call.
+local function script_of<C>(entry: Entry<C>) -> InputBinding
+  if const made = entry.script then
+    return made
+  end
+
+  const made = new Instance('InputBinding') {
+    Name = 'Script',
+    Type = Enum.InputBindingType.Scriptable,
+    Parent = entry.instance,
+  }
+  entry.script = made
+
+  return made
+end
+
+-- The helpers from here to the impl are the private methods of Lever,
+-- written as local functions that take the Lever as `self`. A private
+-- method of a generic struct fails the type check (an Alloy bug), so
+-- `self:sync(action)` reads `sync(self, action)` here.
+
+--- The entry of an action. Errors on a value that is no action of
+--- this Lever.
+local function entry_of<A, C>(self: Lever<A, C>, action: A) -> Entry<C>
+  const found = self.entries[action]
+
+  if found == nil then
+    error(`BadArgument: {action} is no action of this Lever`, 0)
+  end
+
+  return found
+end
+
+--- Ends an action that is held, as its key coming up would.
+local function release<A, C>(self: Lever<A, C>, action: A) -> ()
+  local entry = entry_of(self, action)
+
+  if not entry.held then
+    return
+  end
+
+  entry.value = zero(entry.kind)
+  entry.held = false
+  entry.ended = true
+  self.ended:Fire(action)
+end
+
+--[[
+  Writes the bindings of an action onto InputBindings again. A held
+  action ends first: its key may leave it, and the engine would then
+  never say that the key came up.
+]]
+local function sync<A, C>(self: Lever<A, C>, action: A) -> ()
+  const entry = entry_of(self, action)
+  release(self, action)
+
+  for _, child in entry.children do
+    child:Destroy()
+  end
+
+  table.clear(entry.children)
+
+  for _, each in DEVICES do
+    for index, binding in entry.bindings[each] do
+      const child = new Instance('InputBinding') { Name = `{each}{index}` }
+
+      if const key = binding.key then
+        child.KeyCode = key
+      end
+
+      if const up = binding.up then
+        child.Up = up
+      end
+
+      if const down = binding.down then
+        child.Down = down
+      end
+
+      if const left = binding.left then
+        child.Left = left
+      end
+
+      if const right = binding.right then
+        child.Right = right
+      end
+
+      child.Parent = entry.instance
+      table.insert(entry.children, child)
+    end
+  end
+
+  if const button = entry.touch then
+    table.insert(
+      entry.children,
+      new Instance('InputBinding') {
+        Name = 'TouchButton',
+        UIButton = button,
+        Parent = entry.instance,
+      }
+    )
+  end
+end
+
+--[[
+  Takes a new state of an action from the engine. A context that is
+  off takes no new input, and nor does one without `typing` while a
+  TextBox has the focus. An action can end then, but it cannot begin or
+  change.
+]]
+local function feed<A, C>(self: Lever<A, C>, action: A, value: Value) -> ()
+  local entry = entry_of(self, action)
+  const now = active(value)
+  const context = entry.context
+  const deaf = not self.contexts[context].Enabled or (self.typing and not self.typists[context])
+
+  if now and deaf then
+    return
+  end
+
+  const was = entry.held
+  entry.value = value
+  entry.held = now
+
+  if now and not was then
+    entry.began = true
+    self.began:Fire(action)
+  elseif was and not now then
+    entry.ended = true
+    self.ended:Fire(action)
+  end
+end
+
+--- Where a key is bound among the bindings of a device in a context,
+--- other than in the part `skip` of the binding `own`.
+local function holder<A, C>(
+  self: Lever<A, C>,
+  context: C,
+  device: Device,
+  key: Enum.KeyCode,
+  own: Binding,
+  skip: Part
+) -> Holder<A>?
+  for _, action in self.order do
+    const entry = self.entries[action]
+
+    if entry.context ~= context then
+      continue
+    end
+
+    for _, binding in entry.bindings[device] do
+      for _, part in PARTS do
+        if binding[part] == key and not (binding == own and part == skip) then
+          return { action = action, binding = binding, part = part }
+        end
+      end
+    end
+  end
+
+  return nil
+end
+
+--[[
+  Moves `key` off the binding that holds it in a context, before the
+  part `part` of `binding` takes it. That binding takes the key that
+  `binding` gives up, or loses the part when there is none. A binding
+  with no key left goes. Gives the action that held the key.
+]]
+local function take<A, C>(
+  self: Lever<A, C>,
+  context: C,
+  device: Device,
+  binding: Binding,
+  part: Part,
+  key: Enum.KeyCode
+) -> A?
+  const found = holder(self, context, device, key, binding, part)
+
+  if found == nil then
+    return nil
+  end
+
+  local holding = found.binding
+  holding[found.part] = binding[part]
+
+  if holding ~= binding and next(holding) == nil then
+    const list = self.entries[found.action].bindings[device]
+    table.remove(list, table.find(list, holding) :: number)
+  end
+
+  return found.action
+end
+
+--- Builds the InputAction of one action.
+local function add<A, C>(self: Lever<A, C>, action: A, id: string, spec: ActionSpec<C>) -> ()
+  const context = self.contexts[spec.context]
+
+  if context == nil then
+    error(`BadArgument: the spec of {id} names no context of this Lever`, 0)
+  end
+
+  const name = spec.name ?? spaced(id)
+  const defaults = by_device(spec.bindings)
+  const instance = new Instance('InputAction') {
+    Name = id,
+    Type = TYPES[spec.kind],
+    DisplayName = name,
+    Parent = context,
+  }
+
+  self.entries[action] = new Entry {
+    id = id,
+    kind = spec.kind,
+    context = spec.context,
+    name = name,
+    instance = instance,
+    defaults = defaults,
+    bindings = copy(defaults),
+    value = zero(spec.kind),
+  }
+  table.insert(self.order, action)
+  sync(self, action)
+
+  table.insert(self.connections, instance.StateChanged:Connect(function(value: Value) -> ()
+    feed(self, action, value)
+  end))
+end
+
+--- Reads the player's device now and after each change.
+local function follow<A, C>(self: Lever<A, C>) -> ()
+  self.current = device_of_preferred(UserInputService.PreferredInput)
+
+  const changed = UserInputService:GetPropertyChangedSignal('PreferredInput')
+
+  table.insert(self.connections, changed:Connect(function() -> ()
+    const now = device_of_preferred(UserInputService.PreferredInput)
+
+    if now ~= self.current then
+      self.current = now
+      self.device_changed:Fire(now)
+    end
+  end))
+end
+
+--[[
+  Follows the focus of TextBoxes and, on the engine, the player's
+  device. A test shim has the focus signals but no PreferredInput.
+]]
+local function watch<A, C>(self: Lever<A, C>) -> ()
+  table.insert(self.connections, UserInputService.TextBoxFocused:Connect(function() -> ()
+    self.typing = true
+  end))
+  table.insert(self.connections, UserInputService.TextBoxFocusReleased:Connect(function() -> ()
+    self.typing = false
+  end))
+
+  @cfg(not test)
+  follow(self)
+end
+
+impl Lever<A, C>
+  --[[
+    A new Lever, with its InputContexts and InputActions in a Folder
+    named Lever under `parent`, ReplicatedStorage when nil.
+
+    - `actions` and `contexts` are the game's two unit enums themselves.
+    - `action` gives the spec of each action. Write it as a match with
+      no default arm, so a new action with no spec fails the build.
+    - `context` gives the spec of each context.
+
+    The arguments come one by one, not in a table, so that Luau reads
+    the two enum types from `action` and `context`.
+  ]]
+  function new(
+    actions: unknown,
+    contexts: unknown,
+    action: (action: A) -> ActionSpec<C>,
+    context: (context: C) -> ContextSpec,
+    parent: Instance?
+  ) -> Lever<A, C>
+    local folder = new Instance('Folder') { Name = 'Lever' }
+    local layers: { [C]: InputContext } = {}
+    local typists: { [C]: boolean } = {}
+
+    for _, id in variants(contexts, 'contexts') do
+      const each = (id :: unknown) :: C
+      const spec = context(each)
+      typists[each] = spec.typing == true
+      layers[each] = new Instance('InputContext') {
+        Name = id,
+        Priority = spec.priority,
+        Sink = spec.sink ?? false,
+        Enabled = spec.enabled ?? true,
+        Parent = folder,
+      }
+    end
+
+    const self = new Lever {
+      began = new Signal(),
+      ended = new Signal(),
+      rebound = new Signal(),
+      device_changed = new Signal(),
+      folder = folder,
+      contexts = layers,
+      typists = typists,
+    }
+
+    for _, id in variants(actions, 'actions') do
+      const each = (id :: unknown) :: A
+      add(self, each, id, action(each))
+    end
+
+    watch(self)
+    folder.Parent = parent ?? ReplicatedStorage
+
+    return self
+  end
+
+  --[[
+    Latches `pressed` and `released` for one frame. Call it once a
+    frame, before the code that reads them. Input comes before every
+    RunService event of a frame, so a step at the top of a frame's
+    systems sees the input of that frame.
+  ]]
+  function step(self) -> ()
+    for _, entry in self.entries do
+      entry.pressed = entry.began
+      entry.released = entry.ended
+      entry.began = false
+      entry.ended = false
+    end
+  end
+
+  --- Whether an action is down now, or off zero.
+  function held(self, action: A) -> boolean
+    return entry_of(self, action).held
+  end
+
+  --- Whether an action began in the frame of the last `step`. A tap
+  --- that begins and ends in one frame counts.
+  function pressed(self, action: A) -> boolean
+    return entry_of(self, action).pressed
+  end
+
+  --- Whether an action ended in the frame of the last `step`.
+  function released(self, action: A) -> boolean
+    return entry_of(self, action).released
+  end
+
+  --- The value of an Axis from -1 to 1. A Button reads 1 while held and
+  --- 0 when not.
+  function axis(self, action: A) -> number
+    const value = entry_of(self, action).value
+
+    if value is number then
+      return value
+    elseif value is boolean then
+      return value ? 1 : 0
+    end
+
+    error(`BadCall: {action} is an Axis2; read it with axis2`, 0)
+  end
+
+  --- The value of an Axis2.
+  function axis2(self, action: A) -> Vector2
+    const value = entry_of(self, action).value
+
+    if value is Vector2 then
+      return value
+    end
+
+    error(`BadCall: {action} is no Axis2; read it with axis or held`, 0)
+  end
+
+  --- Turns a context on.
+  function enable(self, context: C) -> ()
+    self.contexts[context].Enabled = true
+  end
+
+  --- Turns a context off. Each of its actions that is held ends, so a
+  --- run that a menu cuts off does not go on after the menu.
+  function disable(self, context: C) -> ()
+    self.contexts[context].Enabled = false
+
+    for _, action in self.order do
+      if self.entries[action].context == context then
+        release(self, action)
+      end
+    end
+  end
+
+  --- Whether a context is on.
+  function enabled(self, context: C) -> boolean
+    return self.contexts[context].Enabled
+  end
+
+  --- Every action, sorted by name.
+  function actions(self) -> { A }
+    return table.clone(self.order)
+  end
+
+  --- The text that a controls screen shows for an action.
+  function name(self, action: A) -> string
+    return entry_of(self, action).name
+  end
+
+  --- The InputAction of an action, for an InputActionLabel or a test.
+  function instance(self, action: A) -> InputAction
+    return entry_of(self, action).instance
+  end
+
+  --- The device that the player uses now, from
+  --- UserInputService.PreferredInput.
+  function device(self) -> Device
+    return self.current
+  end
+
+  --- A copy of the bindings of an action for a device, in slot order.
+  function bindings(self, action: A, device: Device) -> { Binding }
+    const result: { Binding } = {}
+
+    for _, binding in entry_of(self, action).bindings[device] do
+      table.insert(result, table.clone(binding))
+    end
+
+    return result
+  end
+
+  --[[
+    The text of an action's binding for a prompt: "E", "Space", "A", or
+    "W/A/S/D". It reads the binding in `slot` (1 when nil) of `device`
+    (the player's device when nil), and gives '' when there is none.
+    Keyboard keys follow the player's layout, and gamepad buttons follow
+    the brand of the gamepad.
+  ]]
+  function label(self, action: A, device: Device?, slot: number?) -> string
+    const binding = entry_of(self, action).bindings[device ?? self.current][slot ?? 1]
+
+    return binding == nil ? '' : text(binding, key_label)
+  end
+
+  --- The image that Roblox has for the key of an action's binding, such
+  --- as the glyph of a gamepad button, or '' when it has none.
+  function image(self, action: A, device: Device?, slot: number?) -> string
+    const binding = entry_of(self, action).bindings[device ?? self.current][slot ?? 1]
+    local result = ''
+
+    if const key = binding?.key then
+      @cfg(not test)
+      result = UserInputService:GetImageForKeyCode(key)
+    end
+
+    return result
+  end
+
+  --[[
+    Binds new keys to an action, for a device. `change` holds the parts
+    that change: a bare key or `{ key = ... }` for a plain binding, or
+    `{ up = ... }` for one direction of a composite. The other parts
+    stay. `slot` picks the binding of that device, 1 when nil; one past
+    the last slot adds a binding.
+
+    A key that another binding of the same context holds moves: that
+    binding takes the old key of this one, so no key drives two actions
+    of one context. Gives the other action that changed, if any.
+    Contexts that are never on together can share keys.
+  ]]
+  function rebind(self, action: A, device: Device, change: Input, slot: number?) -> A?
+    const entry = entry_of(self, action)
+    const keys = normal(change)
+    check(keys, device)
+
+    const list = entry.bindings[device]
+    const at = slot ?? 1
+
+    if at < 1 or at > #list + 1 then
+      error(`BadArgument: {action} has no {device} slot {at}`, 0)
+    end
+
+    -- A take below can drop an empty binding from this list, so the
+    -- check for a new slot comes first.
+    const adding = list[at] == nil
+    local binding: Binding = list[at] ?? {}
+    const changed: { A } = { action }
+    local other: A? = nil
+
+    for _, part in PARTS do
+      const key = keys[part]
+
+      if key == nil or binding[part] == key then
+        continue
+      end
+
+      const from = take(self, entry.context, device, binding, part, key)
+      binding[part] = key
+
+      if from ~= nil and table.find(changed, from) == nil then
+        other = other ?? from
+        table.insert(changed, from)
+      end
+    end
+
+    if adding then
+      table.insert(list, binding)
+    end
+
+    for _, each in changed do
+      sync(self, each)
+      self.rebound:Fire(each)
+    end
+
+    return other
+  end
+
+  --- Removes the binding in `slot` (1 when nil) of an action for a
+  --- device. A slot with no binding changes nothing.
+  function unbind(self, action: A, device: Device, slot: number?) -> ()
+    const list = entry_of(self, action).bindings[device]
+
+    if list[slot ?? 1] == nil then
+      return
+    end
+
+    table.remove(list, slot ?? 1)
+    sync(self, action)
+    self.rebound:Fire(action)
+  end
+
+  --- Gives one action, or every action when nil, its default bindings
+  --- again.
+  function reset(self, action: A?) -> ()
+    local actions = self.order
+
+    if const one = action then
+      actions = { one }
+    end
+
+    for _, each in actions do
+      local entry = entry_of(self, each)
+      entry.bindings = copy(entry.defaults)
+      sync(self, each)
+      self.rebound:Fire(each)
+    end
+  end
+
+  --- The bindings that the player changed, for a save layer. Store the
+  --- table as it is: it holds strings, numbers, and tables alone.
+  function save(self) -> Save
+    local actions: { [string]: { [string]: { SavedBinding } } } = {}
+
+    for _, action in self.order do
+      const entry = self.entries[action]
+
+      for _, each in DEVICES do
+        const list = entry.bindings[each]
+
+        if same(list, entry.defaults[each]) then
+          continue
+        end
+
+        local saved = actions[entry.id] ?? {}
+        saved[each] = {}
+
+        for _, binding in list do
+          table.insert(saved[each], encode(binding))
+        end
+
+        actions[entry.id] = saved
+      end
+    end
+
+    return { version = SAVE_VERSION, actions = actions }
+  end
+
+  --[[
+    Reads a save back. Every action takes its defaults first, then the
+    devices that the save holds. An action, a device, or a binding that
+    Lever does not know drops out, so a save from an older version of
+    the game loads.
+  ]]
+  function load(self, data: unknown) -> ()
+    local actions: unknown = nil
+
+    if data is table then
+      actions = data.actions
+    end
+
+    for _, action in self.order do
+      local entry = self.entries[action]
+      entry.bindings = copy(entry.defaults)
+
+      if actions is table then
+        read_saved(entry.bindings, actions[entry.id])
+      end
+
+      sync(self, action)
+      self.rebound:Fire(action)
+    end
+  end
+
+  --[[
+    Links a GuiButton to a Button action, for touch. The engine drives
+    the action while the button is down. nil takes the link away.
+  ]]
+  function touch(self, action: A, button: GuiButton?) -> ()
+    local entry = entry_of(self, action)
+
+    if entry.kind ~= Kind.Button then
+      error(`BadArgument: {action} is no Button; drive an axis with fire`, 0)
+    end
+
+    entry.touch = button
+    sync(self, action)
+  end
+
+  --[[
+    Drives an action from code, through a Scriptable InputBinding: a
+    touch stick of the game's own, or a script of a tutorial. The value
+    must fit the kind: a boolean, a number, or a Vector2. The engine
+    fires the action as it does for a key.
+  ]]
+  function fire(self, action: A, value: Value) -> ()
+    script_of(entry_of(self, action)):Fire(value)
+  end
+
+  --- Takes Lever down: its instances, its connections, and its signals.
+  function destroy(self) -> ()
+    for _, connection in self.connections do
+      connection:Disconnect()
+    end
+
+    table.clear(self.connections)
+    self.folder:Destroy()
+    self.began:Destroy()
+    self.ended:Destroy()
+    self.rebound:Destroy()
+    self.device_changed:Destroy()
+  end
+end
+
+@test
+namespace LeverTests
+  --- The actions of the tests.
+  enum Action
+    Move
+    Jump
+    Attack
+    Confirm
+    History
+  end
+
+  --- The contexts of the tests.
+  enum Context
+    Gameplay
+    Menu
+    Chat
+  end
+
+  --- A signal of the test shim, which a test fires as the engine does.
+  type Fired = { Fire: (self: unknown, value: unknown) -> () }
+
+  --- The spec of each action of the tests.
+  private function spec(action: Action) -> ActionSpec<Context>
+    return match action with
+      case Move then axis2(Context.Gameplay, { wasd(), Enum.KeyCode.Thumbstick1 })
+      case Jump then button(Context.Gameplay, { Enum.KeyCode.Space, Enum.KeyCode.ButtonA })
+      case Attack then
+        button(
+          Context.Gameplay,
+          {
+            Enum.KeyCode.MouseLeftButton,
+            Enum.KeyCode.F,
+            Enum.KeyCode.ButtonX,
+          },
+          'Hit'
+        )
+      case Confirm then button(Context.Menu, { Enum.KeyCode.Space, Enum.KeyCode.ButtonA })
+      case History then axis(Context.Chat, { { up = Enum.KeyCode.Up, down = Enum.KeyCode.Down } })
+    end
+  end
+
+  --- The spec of each context of the tests: the menu sits above the
+  --- game and starts off.
+  private function layer(context: Context) -> ContextSpec
+    return match context with
+      case Gameplay then { priority = 0 }
+      case Menu then { priority = 100, sink = true, enabled = false }
+      case Chat then { priority = 200, sink = true, typing = true }
+    end
+  end
+
+  --- A new Lever of the tests.
+  private function make() -> Lever<Action, Context>
+    return new Lever(Action, Context, spec, layer)
+  end
+
+  --- Sends a state to an action, as the engine does.
+  private function send(lever: Lever<Action, Context>, action: Action, value: Value) -> ()
+    const signal = (lever:instance(action).StateChanged :: unknown) :: Fired
+    signal:Fire(value)
+  end
+
+  --- The KeyCode of the first InputBinding of an action, by its name.
+  private function bound(lever: Lever<Action, Context>, action: Action, name: string) -> unknown
+    const child = lever:instance(action):FindFirstChild(name)
+
+    return child is InputBinding ? child.KeyCode : nil
+  end
+
+  --- Lever builds a context, an action, and a binding for each spec.
+  public function the_tree_follows_the_specs() -> ()
+    const lever = make()
+    const jump = lever:instance(Action.Jump)
+    const menu = lever:instance(Action.Confirm).Parent
+
+    $assert_eq(jump.Type, Enum.InputActionType.Bool)
+    $assert_eq(lever:instance(Action.Move).Type, Enum.InputActionType.Direction2D)
+    $assert_eq(jump.Parent?.Name, 'Gameplay')
+    $assert_eq(bound(lever, Action.Jump, 'Keyboard1'), Enum.KeyCode.Space)
+    $assert_eq(bound(lever, Action.Jump, 'Gamepad1'), Enum.KeyCode.ButtonA)
+
+    if menu is InputContext then
+      $assert_eq(menu.Priority, 100)
+      $assert(menu.Sink)
+      $assert(not menu.Enabled)
+    else
+      error('the menu action has no context')
+    end
+
+    $assert_eq(key_label(Enum.KeyCode.LeftShift), 'Left Shift')
+    $assert_eq(lever:name(Action.Attack), 'Hit')
+    $assert_eq(lever:name(Action.Jump), 'Jump')
+    $assert_eq(#lever:actions(), 5)
+    lever:destroy()
+  end
+
+  --- A key that goes down begins an action, and one that comes up ends
+  --- it. A step latches pressed and released for one frame.
+  public function an_action_begins_and_ends() -> ()
+    const lever = make()
+    const log: { string } = {}
+    lever.began:connect(function(action) table.insert(log, `began {action}`) end)
+    lever.ended:connect(function(action) table.insert(log, `ended {action}`) end)
+
+    send(lever, Action.Jump, true)
+    send(lever, Action.Jump, true)
+    $assert(lever:held(Action.Jump))
+    $assert_eq(lever:axis(Action.Jump), 1)
+    lever:step()
+    $assert(lever:pressed(Action.Jump))
+    lever:step()
+    $assert(not lever:pressed(Action.Jump))
+
+    send(lever, Action.Jump, false)
+    lever:step()
+    $assert(lever:released(Action.Jump))
+    $assert(not lever:held(Action.Jump))
+    $assert_eq(table.concat(log, ','), 'began Jump,ended Jump')
+    lever:destroy()
+  end
+
+  --- A tap that begins and ends in one frame still counts as a press.
+  public function a_tap_in_one_frame_counts() -> ()
+    const lever = make()
+
+    send(lever, Action.Jump, true)
+    send(lever, Action.Jump, false)
+    lever:step()
+
+    $assert(lever:pressed(Action.Jump))
+    $assert(lever:released(Action.Jump))
+    $assert(not lever:held(Action.Jump))
+    lever:destroy()
+  end
+
+  --- An Axis2 reads its vector, begins off zero, and ends at zero.
+  public function an_axis2_reads_its_vector() -> ()
+    const lever = make()
+
+    send(lever, Action.Move, new Vector2(0, 1))
+    $assert(lever:held(Action.Move))
+    $assert_eq(lever:axis2(Action.Move), new Vector2(0, 1))
+
+    send(lever, Action.Move, Vector2.zero)
+    $assert(not lever:held(Action.Move))
+    $expect(function() lever:axis(Action.Move) end):toThrow('read it with axis2')
+    lever:destroy()
+  end
+
+  --- A context that is off takes no input. Turning a context off ends
+  --- each action of it that is held.
+  public function a_context_turns_its_actions_on_and_off() -> ()
+    const lever = make()
+    local ended = 0
+    lever.ended:connect(function() ended += 1 end)
+
+    send(lever, Action.Confirm, true)
+    $assert(not lever:held(Action.Confirm))
+
+    lever:enable(Context.Menu)
+    send(lever, Action.Confirm, true)
+    $assert(lever:held(Action.Confirm))
+
+    send(lever, Action.Jump, true)
+    lever:disable(Context.Gameplay)
+    $assert(not lever:held(Action.Jump))
+    $assert_eq(ended, 1)
+    $assert(not lever:enabled(Context.Gameplay))
+
+    -- The engine's last end signal finds the action at rest.
+    send(lever, Action.Jump, false)
+    $assert_eq(ended, 1)
+    lever:destroy()
+  end
+
+  --- While a TextBox has the focus, no action begins, but one can end.
+  --- A context with `typing` still takes input.
+  public function typing_begins_no_action() -> ()
+    const lever = make()
+    const focused = (UserInputService.TextBoxFocused :: unknown) :: Fired
+    const released = (UserInputService.TextBoxFocusReleased :: unknown) :: Fired
+
+    send(lever, Action.Move, new Vector2(1, 0))
+    focused:Fire(nil)
+    send(lever, Action.Jump, true)
+    $assert(not lever:held(Action.Jump))
+
+    send(lever, Action.Move, Vector2.zero)
+    $assert(not lever:held(Action.Move))
+
+    -- The chat's own context takes input while the player types.
+    send(lever, Action.History, 1)
+    $assert_eq(lever:axis(Action.History), 1)
+
+    released:Fire(nil)
+    send(lever, Action.Jump, true)
+    $assert(lever:held(Action.Jump))
+    lever:destroy()
+  end
+
+  --- A rebind puts the new key on the InputBinding, and the key that
+  --- another action of the context held moves to that action.
+  public function a_rebind_swaps_a_key_in_its_context() -> ()
+    const lever = make()
+    const rebound: { string } = {}
+    lever.rebound:connect(function(action) table.insert(rebound, action) end)
+
+    $assert_eq(lever:rebind(Action.Jump, Device.Keyboard, Enum.KeyCode.F), Action.Attack)
+    $assert_eq(bound(lever, Action.Jump, 'Keyboard1'), Enum.KeyCode.F)
+    $assert_eq(lever:bindings(Action.Attack, Device.Keyboard)[2].key, Enum.KeyCode.Space)
+    $assert_eq(table.concat(rebound, ','), 'Jump,Attack')
+
+    -- Confirm shares Space in the menu, which is never on with play.
+    $assert_eq(lever:rebind(Action.Attack, Device.Keyboard, Enum.KeyCode.G, 2), nil)
+    $assert_eq(lever:bindings(Action.Confirm, Device.Keyboard)[1].key, Enum.KeyCode.Space)
+    lever:destroy()
+  end
+
+  --- A rebind of one direction keeps the others, and a key that the
+  --- same composite holds swaps inside it.
+  public function a_rebind_of_a_direction_keeps_the_rest() -> ()
+    const lever = make()
+
+    lever:rebind(Action.Move, Device.Keyboard, { up = Enum.KeyCode.I })
+    $assert_eq(lever:label(Action.Move, Device.Keyboard), 'I/A/S/D')
+
+    lever:rebind(Action.Move, Device.Keyboard, { up = Enum.KeyCode.S })
+    $assert_eq(lever:label(Action.Move, Device.Keyboard), 'S/A/I/D')
+    lever:destroy()
+  end
+
+  --- A new slot adds a binding, and unbind takes one away.
+  public function slots_add_and_go() -> ()
+    const lever = make()
+
+    lever:rebind(Action.Jump, Device.Keyboard, Enum.KeyCode.Up, 2)
+    $assert_eq(lever:label(Action.Jump, Device.Keyboard, 2), 'Up')
+    $assert_eq(bound(lever, Action.Jump, 'Keyboard2'), Enum.KeyCode.Up)
+
+    lever:unbind(Action.Jump, Device.Keyboard)
+    $assert_eq(lever:label(Action.Jump, Device.Keyboard), 'Up')
+    $assert_eq(lever:label(Action.Jump, Device.Keyboard, 2), '')
+    $expect(function() lever:rebind(Action.Jump, Device.Keyboard, Enum.KeyCode.Q, 5) end):toThrow(
+      'no Keyboard slot 5'
+    )
+    lever:destroy()
+  end
+
+  --- A key that moves to a new slot of the same action leaves its old
+  --- slot, and the new slot keeps it.
+  public function a_key_moves_to_a_new_slot() -> ()
+    const lever = make()
+
+    lever:rebind(Action.Jump, Device.Keyboard, Enum.KeyCode.Up, 2)
+    $assert_eq(lever:rebind(Action.Jump, Device.Keyboard, Enum.KeyCode.Up, 3), nil)
+    $assert_eq(#lever:bindings(Action.Jump, Device.Keyboard), 2)
+    $assert_eq(lever:label(Action.Jump, Device.Keyboard, 2), 'Up')
+    lever:destroy()
+  end
+
+  --- A rebind refuses a reserved key and a key of another device.
+  public function a_rebind_refuses_bad_keys() -> ()
+    const lever = make()
+
+    $expect(function() lever:rebind(Action.Jump, Device.Keyboard, Enum.KeyCode.Escape) end):toThrow(
+      'reserved'
+    )
+    $expect(
+      function() lever:rebind(Action.Jump, Device.Keyboard, Enum.KeyCode.ButtonB) end
+    ):toThrow('no key of the Keyboard')
+    lever:destroy()
+  end
+
+  --- A save holds only what the player changed, and it loads back.
+  public function a_save_holds_the_changes_and_loads() -> ()
+    const lever = make()
+    lever:rebind(Action.Jump, Device.Gamepad, Enum.KeyCode.ButtonY)
+
+    const save = lever:save()
+    $assert_eq(save.version, 1)
+    $assert_eq(save.actions.Jump.Gamepad[1].key, 'ButtonY')
+    $assert_eq(save.actions.Jump.Keyboard, nil)
+    $assert_eq(save.actions.Move, nil)
+
+    const other = make()
+    other:load(save)
+    $assert_eq(other:label(Action.Jump, Device.Gamepad), 'Y')
+    $assert_eq(other:label(Action.Jump, Device.Keyboard), 'Space')
+
+    other:reset()
+    $assert_eq(other:label(Action.Jump, Device.Gamepad), 'A')
+    lever:destroy()
+    other:destroy()
+  end
+
+  --- A save with bad parts loads what it can and keeps the defaults for
+  --- the rest.
+  public function a_bad_save_keeps_the_defaults() -> ()
+    const lever = make()
+
+    lever:load({
+      version = 1,
+      actions = {
+        Jump = { Keyboard = { { key = 'NotAKey' }, { key = 'J' } }, Gamepad = 'ButtonY' },
+        Attack = { Keyboard = { { key = 'NotAKey' } }, Gamepad = {} },
+        Gone = { Keyboard = { { key = 'K' } } },
+      },
+    })
+    $assert_eq(lever:label(Action.Jump, Device.Keyboard), 'J')
+    $assert_eq(lever:label(Action.Jump, Device.Gamepad), 'A')
+    $assert_eq(lever:label(Action.Attack, Device.Keyboard), 'Left Click')
+    $assert_eq(lever:label(Action.Attack, Device.Gamepad), '')
+
+    lever:load('not a save')
+    $assert_eq(lever:label(Action.Jump, Device.Keyboard), 'Space')
+    lever:destroy()
+  end
+
+  --- A touch button goes on its own InputBinding, for a Button alone.
+  public function a_touch_button_binds_a_button() -> ()
+    const lever = make()
+    const jump = new Instance('TextButton')
+
+    lever:touch(Action.Jump, jump)
+
+    const child = lever:instance(Action.Jump)->TouchButton
+    $assert(child is InputBinding and child.UIButton == jump)
+    $expect(function() lever:touch(Action.Move, jump) end):toThrow('no Button')
+    lever:destroy()
+  end
+end

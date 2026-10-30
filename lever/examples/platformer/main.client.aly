@@ -1,0 +1,110 @@
+--[[
+  A platformer on Lever. A block runs left and right, jumps, and
+  dashes. The loop reads the actions once a frame, after one `step`.
+
+  Turn off Players.CharacterAutoLoads, so that no character takes the
+  same keys.
+]]
+
+import RunService from '@game/RunService'
+import Workspace from '@game/Workspace'
+import { Action, controls } from './Controls'
+
+--- The speed of a run, in studs each second.
+const RUN_SPEED = 20
+
+--- The speed at the start of a jump.
+const JUMP_SPEED = 50
+
+--- The pull of gravity, in studs each second squared.
+const GRAVITY = 120
+
+--- The speed of a dash.
+const DASH_SPEED = 60
+
+--- How long a dash lasts, in seconds.
+const DASH_TIME = 0.15
+
+--[[
+  How long a press of Jump waits for the ground, in seconds. A press
+  just before the block lands still jumps, so the jump does not feel
+  lost.
+]]
+const JUMP_BUFFER = 0.12
+
+--- The height of the floor.
+const FLOOR = 3
+
+local block = new Instance('Part') {
+  Name = 'Runner',
+  Anchored = true,
+  Size = new Vector3(2, 2, 2),
+  Position = new Vector3(0, FLOOR, 0),
+  Parent = Workspace,
+}
+
+new Instance('Part') {
+  Name = 'Floor',
+  Anchored = true,
+  Size = new Vector3(400, 1, 8),
+  Position = new Vector3(0, FLOOR - 1.5, 0),
+  Parent = Workspace,
+}
+
+local rise = 0
+local dash = 0
+local facing = 1
+local jump_at = -math.huge
+
+--- One frame of the block.
+local function frame(dt: number) -> ()
+  controls:step()
+
+  const now = os.clock()
+  const grounded = block.Position.Y <= FLOOR
+  const run = controls:axis2(Action.Move).X
+
+  if controls:pressed(Action.Jump) then
+    jump_at = now
+  end
+
+  if run ~= 0 then
+    facing = math.sign(run)
+  end
+
+  if controls:pressed(Action.Dash) and dash <= 0 then
+    dash = DASH_TIME
+  end
+
+  local speed = run * RUN_SPEED
+  rise -= GRAVITY * dt
+
+  if dash > 0 then
+    dash -= dt
+    speed = facing * DASH_SPEED
+    rise = 0
+  end
+
+  if grounded and now - jump_at <= JUMP_BUFFER then
+    rise = JUMP_SPEED
+    jump_at = -math.huge
+  elseif grounded and rise < 0 then
+    rise = 0
+  end
+
+  -- A release on the way up cuts the jump short, so a tap hops and a
+  -- hold leaps.
+  if controls:released(Action.Jump) and rise > 0 then
+    rise *= 0.5
+  end
+
+  const at = block.Position + new Vector3(speed, rise, 0) * dt
+  block.Position = new Vector3(at.X, math.max(at.Y, FLOOR), 0)
+
+  if local camera = Workspace.CurrentCamera then
+    camera.CameraType = Enum.CameraType.Scriptable
+    camera.CFrame = CFrame.lookAt(block.Position + new Vector3(0, 6, 40), block.Position)
+  end
+end
+
+RunService.Heartbeat:Connect(frame)

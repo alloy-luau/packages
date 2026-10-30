@@ -1,0 +1,77 @@
+--[[
+  The bindings are data. `save` gives the bindings that the player
+  changed, as a table of names, and `load` reads such a table back. A
+  DataStore keeps the table as it is.
+]]
+
+import HttpService from '@game/HttpService'
+import {
+  Device,
+  Lever,
+  button,
+  type ActionSpec,
+  type ContextSpec,
+  type Save,
+} from '@packages/lever'
+
+--- What the player can do.
+enum Action
+  Jump
+  Interact
+end
+
+--- When the actions apply.
+enum Context
+  Gameplay
+end
+
+local function action(each: Action) -> ActionSpec<Context>
+  return match each with
+    case Jump then button(Context.Gameplay, { Enum.KeyCode.Space, Enum.KeyCode.ButtonA })
+    case Interact then button(Context.Gameplay, { Enum.KeyCode.E, Enum.KeyCode.ButtonX })
+  end
+end
+
+local function context(_each: Context) -> ContextSpec
+  return { priority = 0 }
+end
+
+const controls = new Lever(Action, Context, action, context)
+
+controls:rebind(Action.Jump, Device.Gamepad, Enum.KeyCode.ButtonB)
+
+-- Only what changed: Jump's gamepad bindings.
+--   { version = 1, actions = { Jump = { Gamepad = { { key = 'ButtonB' } } } } }
+const save: Save = controls:save()
+
+-- The table holds names, so it goes through JSON unchanged.
+const text = HttpService:JSONEncode(save)
+print(text)
+
+-- `load` gives every action its defaults, then the bindings of the save.
+controls:load(HttpService:JSONDecode(text))
+print(controls:label(Action.Jump, Device.Gamepad)) -- B
+
+-- A save of an older game loads too. An action that is gone, a key name
+-- that Lever does not know, or a binding of the wrong device drops out.
+controls:load({
+  version = 1,
+  actions = {
+    Glide = { Keyboard = { { key = 'G' } } },
+    Interact = { Keyboard = { { key = 'NotAKey' }, { key = 'F' } } },
+  },
+})
+print(controls:label(Action.Interact, Device.Keyboard)) -- F
+
+--[[
+  - A device that the player did not change is not in the save. A new
+    default in the game's next version reaches each player who kept the
+    old default.
+  - A device whose saved bindings all drop out keeps its defaults. An
+    empty list is a device that the player unbound, and it loads empty.
+  - DataStores work on the server only. Send the save to the server with
+    a remote, and keep it with the player's data. The rebind example
+    does that.
+  - `load` fires `rebound` for each action, so a prompt shows the new
+    keys.
+]]

@@ -1,0 +1,27 @@
+--[[
+  The remotes of the rebind example. The client sends the player's
+  bindings when the settings close, and the server sends them back when
+  the player joins.
+]]
+
+import HttpService from '@game/HttpService'
+import { type Save } from '@packages/lever'
+
+--- The most characters of a save in JSON. A save of every action of a
+--- game is far smaller; a bigger one is not a save of Lever.
+const MOST = 4000
+
+--- Whether a save from a client is small enough to keep.
+local function small(_sender: Player, save: Save) -> boolean
+  const encoded = Result.pcall(function() return HttpService:JSONEncode(save) end)
+
+  return encoded:map(function(text: string) return #text <= MOST end):unwrap_or(false)
+end
+
+--- The client sends the bindings that the player changed.
+@ratelimit(4, 10)
+@validate(small)
+export remote SaveBindings(save: Save) from client
+
+--- The server sends the bindings that it kept for the player.
+export remote LoadBindings(save: Save) from server

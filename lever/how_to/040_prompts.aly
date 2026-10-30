@@ -1,0 +1,97 @@
+--[[
+  A prompt names the key of an action: "Press E to open". The key
+  depends on the device that the player uses now, so Lever follows the
+  device and names each binding of it.
+
+  - `device` is the device of the player now: Keyboard, Gamepad, or
+    Touch. It follows UserInputService.PreferredInput.
+  - `device_changed` fires when the player moves to another device.
+  - `label` names the key of an action for a device, and `image` gives
+    the glyph that Roblox has for it.
+]]
+
+import Players from '@game/Players'
+import {
+  Device,
+  Lever,
+  button,
+  type ActionSpec,
+  type ContextSpec,
+} from '@packages/lever'
+
+--- What the player can do.
+enum Action
+  Interact
+end
+
+--- When the actions apply.
+enum Context
+  Gameplay
+end
+
+local function action(each: Action) -> ActionSpec<Context>
+  return match each with
+    case Interact then button(Context.Gameplay, { Enum.KeyCode.E, Enum.KeyCode.ButtonX })
+  end
+end
+
+local function context(_each: Context) -> ContextSpec
+  return { priority = 0 }
+end
+
+const controls = new Lever(Action, Context, action, context)
+
+local gui = new Instance('ScreenGui') { Name = 'Prompt', ResetOnSpawn = false }
+
+local prompt = new Instance('TextLabel') {
+  Name = 'Text',
+  AnchorPoint = new Vector2(0.5, 1),
+  Position = new UDim2(0.5, 0, 1, -96),
+  Size = new UDim2(0, 240, 0, 40),
+  Parent = gui,
+}
+
+local glyph = new Instance('ImageLabel') {
+  Name = 'Glyph',
+  AnchorPoint = new Vector2(1, 1),
+  Position = new UDim2(0.5, -124, 1, -96),
+  Size = new UDim2(0, 40, 0, 40),
+  BackgroundTransparency = 1,
+  Parent = gui,
+}
+
+--- Writes the prompt for the device of the player now. A touch player
+--- taps a button on the screen, so the prompt names no key.
+local function show() -> ()
+  const device = controls:device()
+
+  prompt.Text = device == Device.Touch
+    ? 'Tap to open'
+    : `Press {controls:label(Action.Interact)} to open`
+  glyph.Image = controls:image(Action.Interact)
+  glyph.Visible = device == Device.Gamepad
+end
+
+show()
+controls.device_changed:connect(show)
+
+-- A rebind changes the key, so the prompt follows it.
+controls.rebound:connect(function(each)
+  if each == Action.Interact then
+    show()
+  end
+end)
+
+gui.Parent = Players.LocalPlayer->PlayerGui
+
+--[[
+  - `label` follows the player's keyboard layout: KeyCode.W shows as Z on
+    an AZERTY keyboard, where that key sits. A gamepad button shows the
+    name of its brand: ButtonA is Cross on a PlayStation gamepad.
+  - `label(action, device, slot)` names one binding. With no device it
+    reads the player's device, and it gives '' when there is no binding.
+  - `instance(action)` gives the InputAction. An InputActionLabel (a beta
+    of Roblox) that points at it shows the key by itself:
+
+      new Instance('InputActionLabel') { InputAction = controls:instance(Action.Interact) }
+]]

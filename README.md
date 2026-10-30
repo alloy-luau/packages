@@ -14,6 +14,7 @@ a version of its own.
 | [Anvil](anvil) | `alloy/anvil` | Console commands typed from their remote functions: arguments, permissions, and help. |
 | [Gloss](gloss) | `alloy/gloss` | Localization from TOML, with keys that the type check holds to the base language. |
 | [Lattice](lattice) | `alloy/lattice` | A typed ECS over jecs: components, queries, systems in phases, and a scheduler. |
+| [Lever](lever) | `alloy/lever` | Input actions from a game enum, on the Input Action System: bindings, axes, contexts, rebinding, and prompts. |
 
 Each package folder holds:
 

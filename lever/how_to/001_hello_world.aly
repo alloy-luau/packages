@@ -1,0 +1,57 @@
+--[[
+  Lever puts the actions of a game in an enum. The game says what each
+  action reads and which keys drive it. Lever builds the actions on the
+  Input Action System of Roblox and tells the game when each one begins
+  and ends.
+
+  This step makes one action, Jump, and prints when it begins.
+]]
+
+import { Lever, button, type ActionSpec, type ContextSpec } from '@packages/lever'
+
+--- What the player can do.
+enum Action
+  Jump
+end
+
+--- When the actions apply. A game with one context still names it.
+enum Context
+  Gameplay
+end
+
+-- The spec of each action: what it reads, its context, and its keys.
+-- The match has no default arm, so a new action fails the build until
+-- it has a spec.
+local function action(each: Action) -> ActionSpec<Context>
+  return match each with
+    case Jump then button(Context.Gameplay, { Enum.KeyCode.Space, Enum.KeyCode.ButtonA })
+  end
+end
+
+-- The spec of each context.
+local function context(_each: Context) -> ContextSpec
+  return { priority = 0 }
+end
+
+const controls = new Lever(Action, Context, action, context)
+
+-- `began` gives the action. A match with no default arm must handle
+-- each action, so a new action fails the build here too.
+controls.began:connect(function(each)
+  match each with
+    case Jump then print('jump')
+  end
+end)
+
+--[[
+  - `new Lever(Action, Context, action, context)` takes the two enums
+    themselves, then their specs. Lever reads the variants of each enum.
+  - Lever runs on the client. Make it in a LocalScript, or in a module
+    that one requires.
+  - A bare KeyCode is a binding of one key. Space is a key of the
+    keyboard and ButtonA a button of the gamepad: Lever sorts each key
+    by its device.
+  - Lever makes a Folder named Lever in ReplicatedStorage, with an
+    InputContext for each context and an InputAction for each action. A
+    fifth argument puts the folder in another parent.
+]]
