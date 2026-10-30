@@ -1,0 +1,38 @@
+--[[
+  A game writes its strings in TOML, one file for each language. Alloy
+  imports a TOML file as a typed table, so `en.shop.title` is a
+  `string` that the editor completes.
+
+  Gloss holds the languages. The first one is the base: its table type is
+  the shape that every other language must fit.
+
+  These files import Gloss from `@packages/gloss`, where `embr install`
+  puts it. The strings for the tour are in `how_to/lang`.
+]]
+
+import { Gloss } from '@packages/gloss'
+import en from './lang/en.toml'
+
+-- `new Gloss(code, strings)` takes the base language. The code is the
+-- language part of a Roblox locale, such as `en` for `en-us`.
+const lang = new Gloss('en', en)
+
+-- `lang.t` holds the strings of the language that shows now. It is a
+-- plain table, so a read costs no more than any table read.
+print(lang.t.shop.title) -- Shop
+print(lang.code) -- en
+
+--[[
+  The TOML file:
+
+    [shop]
+    title = "Shop"
+    buy = "Buy for {price} coins"
+
+  gives the type `{ shop: { title: string, buy: string } }`. `lang.t`
+  has the same keys, each one read only, so code cannot write a string
+  by mistake.
+
+  A game keeps one Gloss in a shared module, such as `shared/strings`,
+  and each script imports it from there.
+]]

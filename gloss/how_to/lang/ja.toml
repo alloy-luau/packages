@@ -1,0 +1,15 @@
+[language]
+name = "日本語"
+
+[shop]
+title = "ショップ"
+buy = "{price}コインで購入"
+sold_out = "売り切れ"
+
+[quest]
+title = "クエスト"
+reward = "報酬：{xp} XP"
+
+# Japanese has one form for each count.
+[quest.slimes]
+other = "スライム{count}体"

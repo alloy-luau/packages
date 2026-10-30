@@ -1,0 +1,14 @@
+--[[
+  Gloss: localization for Alloy, with string keys that the compiler
+  checks. This module sends out the public API; each part lives in its
+  own module beside it.
+
+  - gloss: Gloss, the languages of a game and the one that shows now
+  - strings: the Strings, Draft, and Plural types, merge, and check
+  - format: placeholders and numbers
+  - plural: the CLDR plural rules
+]]
+
+export { Gloss } from './gloss'
+export { type Strings, type Draft, type Plural } from './strings'
+export { type Args } from './format'

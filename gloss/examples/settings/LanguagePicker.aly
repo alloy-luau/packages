@@ -1,0 +1,39 @@
+--[[
+  A row of buttons, one for each language. Each button shows the name of
+  its language in that language, "Français" and not "French", so a player
+  finds their own language when the page shows another one.
+]]
+
+import { lang } from './strings'
+
+--- Builds the picker in `parent`. `picked` runs with the code of the
+--- language that the player clicks.
+export function language_picker(parent: Instance, picked: (code: string) -> ()) -> Frame
+  const row = new Instance('Frame') {
+    Size = new UDim2(1, 0, 0, 40),
+    BackgroundTransparency = 1,
+    Parent = parent,
+  }
+  new Instance('UIListLayout') {
+    FillDirection = Enum.FillDirection.Horizontal,
+    Padding = new UDim(0, 4),
+    Parent = row,
+  }
+
+  for _, code in lang:languages() do
+    local button = new Instance('TextButton') {
+      Size = new UDim2(0, 90, 1, 0),
+      Text = lang:strings(code)?.language.name ?? code,
+      Parent = row,
+    }
+
+    -- The button of the language that shows is darker.
+    lang:watch(function(_t)
+      button.BackgroundColor3 = lang.code == code ? new Color3(0.6, 0.6, 0.6) : new Color3(1, 1, 1)
+    end)
+
+    button.Activated:Connect(function() picked(code) end)
+  end
+
+  return row
+end

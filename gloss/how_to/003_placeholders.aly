@@ -1,0 +1,35 @@
+--[[
+  A placeholder is a name in braces: `"Buy for {price} coins"`. A
+  translator moves it where the grammar of the language puts it, so the
+  code never joins pieces of a sentence.
+
+  `lang:format(text, args)` puts each value in the place of its name.
+]]
+
+import { Gloss } from '@packages/gloss'
+import en from './lang/en.toml'
+import ja from './lang/ja.toml'
+
+const lang = new Gloss('en', en)
+lang:add('ja', ja)
+
+print(lang:format(lang.t.shop.buy, { price = 1500 })) -- Buy for 1,500 coins
+
+lang:set('ja')
+print(lang:format(lang.t.shop.buy, { price = 1500 })) -- 1,500コインで購入
+
+-- A string value goes in as it is. A number takes the separators of the
+-- language, so pass a string for a code or an id.
+print(lang:format('{name} #{id}', { name = 'Sword', id = '10024' })) -- Sword #10024
+
+--[[
+  The rules:
+
+  - A name is letters, digits, and `_`, as in a Roblox LocalizationTable.
+  - A name with no value stays in the text, so a missing value shows as
+    `{price}` in the label. It does not stop the game.
+  - Braces around anything else, such as `{ }`, stay as they are.
+  - `args` is `{ [string]: string | number }`. The text comes from a
+    data file, so Luau cannot see its names: `lang:check()` tells you
+    when a translation names other placeholders than the base.
+]]

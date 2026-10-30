@@ -1,0 +1,57 @@
+--[[
+  `add(code, strings)` adds a language. The strings must fit the shape
+  of the base, so a key that the language lacks is a type error at the
+  call, in the editor and under `alloy flux`.
+
+  A key that the code reads and the base lacks is a type error too. A
+  misspelled key does not reach the game as an empty label.
+]]
+
+import { Gloss } from '@packages/gloss'
+import en from './lang/en.toml'
+import fr from './lang/fr.toml'
+import ja from './lang/ja.toml'
+import ru from './lang/ru.toml'
+
+const lang = new Gloss('en', en)
+
+-- Each of these has every key of `en.toml`.
+lang:add('fr', fr)
+lang:add('ru', ru)
+lang:add('ja', ja)
+
+print(lang.t.quest.title)
+
+--[[
+  Take `sold_out` out of `fr.toml`, and the `add` call does not
+  compile. The message names the table where the key is missing:
+
+    error(luau): TypeError: Expected this to be '{ read language: ...,
+      read shop: { read buy: string, read sold_out: string, read title:
+      string } }' but got '{ language: ..., shop: { buy: string, title:
+      string } }'; accessing `shop` results in `{ buy: string, title:
+      string }` in the latter type and `{ read buy: string, read
+      sold_out: string, read title: string }` in the former type
+
+  Read a key that is not there, and that does not compile either:
+
+    print(lang.t.shop.titel)
+    error(luau): TypeError: Key 'titel' not found in table
+      '{ read buy: string, read sold_out: string, read title: string }'
+
+  What Luau checks, and what it does not:
+
+  - A missing key is an error, at each depth.
+  - An extra key is not: Luau takes a table with more keys where it asks
+    for fewer. `lang:check()` lists extra keys (step 020).
+  - A plural table may hold other forms than the base. Russian adds
+    `few` and `many`, and Japanese has `other` alone (step 004).
+  - The text of a string is not in its type, so a placeholder that
+    differs is not a type error. `lang:check()` compares them.
+  - An array, such as a list of tips, keeps the type of the base, and
+    its items must match it exactly.
+  - A key in a variable, `t.items[id]`, does not type check: Luau does
+    not index a table type with a string. The shop example gives each
+    item a function that reads its key.
+  - `alloy check` runs no Luau type check. Run `alloy flux`.
+]]

@@ -1,0 +1,57 @@
+--[[
+  A plural is a TOML table with one string for each form of a count, as
+  CLDR names them: `zero`, `one`, `two`, `few`, `many`, and `other`.
+
+    [quest.slimes]
+    one = "{count} slime"
+    other = "{count} slimes"
+
+  `lang:plural(forms, count)` picks the form by the rule of the language
+  that shows, and fills `{count}`.
+]]
+
+import { Gloss } from '@packages/gloss'
+import en from './lang/en.toml'
+import fr from './lang/fr.toml'
+import ja from './lang/ja.toml'
+import ru from './lang/ru.toml'
+
+const lang = new Gloss('en', en)
+lang:add('fr', fr)
+lang:add('ru', ru)
+lang:add('ja', ja)
+
+print(lang:plural(lang.t.quest.slimes, 1)) -- 1 slime
+print(lang:plural(lang.t.quest.slimes, 0)) -- 0 slimes
+
+-- French counts 0 as singular.
+lang:set('fr')
+print(lang:plural(lang.t.quest.slimes, 0)) -- 0 slime
+
+-- Russian picks by the last digits.
+lang:set('ru')
+print(lang:plural(lang.t.quest.slimes, 21)) -- 21 слизень
+print(lang:plural(lang.t.quest.slimes, 3)) -- 3 слизня
+print(lang:plural(lang.t.quest.slimes, 5)) -- 5 слизней
+
+-- Japanese has the form `other` alone.
+lang:set('ja')
+print(lang:plural(lang.t.quest.slimes, 1)) -- スライム1体
+
+--[[
+  The shape widens a plural table to `Plural`, which must have `other`.
+  The other five forms are optional. So `ru.toml` may add `few` and
+  `many`, and `ja.toml` may leave out `one`.
+
+  Gloss knows the CLDR rules of English, German, Dutch, Swedish, Finnish,
+  Norwegian, Italian, Spanish, Portuguese, French, Turkish, Greek,
+  Hungarian, Russian, Ukrainian, Polish, Czech, Slovak, Arabic, Japanese,
+  Korean, Chinese, Thai, Vietnamese, Indonesian, and Malay. Another
+  language takes the English rule.
+
+  A form that the table lacks shows `other`. `lang:check()` lists each
+  form that a language uses and its table lacks.
+
+  `plural(forms, count, args)` takes more values in `args`, beside
+  `count`.
+]]

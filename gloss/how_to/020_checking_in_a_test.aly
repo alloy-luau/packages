@@ -1,0 +1,53 @@
+--[[
+  The type check holds each language to the shape of the base. Some
+  problems are not in the types: an extra key, an empty string, a
+  placeholder that differs, and a plural form that a language uses but
+  lacks. `lang:check()` finds them.
+
+  It returns one line for each problem. An empty list means that each
+  language is complete. Run it in a test, so `alloy test --run` fails
+  when a translation falls behind.
+]]
+
+import { Gloss } from '@packages/gloss'
+import de from './lang/de.toml'
+import en from './lang/en.toml'
+import ru from './lang/ru.toml'
+
+const lang = new Gloss('en', en)
+lang:add('ru', ru)
+
+-- The test asserts that the list is empty, so a failure prints each line.
+@test
+function each_language_is_complete() -> ()
+  $assert_eq(table.concat(lang:check(), '\n'), '')
+end
+
+-- A draft has gaps by design. Its lines say what the base fills.
+const wip = new Gloss('en', en)
+wip:draft('de', de)
+
+for _, problem in wip:check() do
+  print(problem)
+end
+
+--[[
+  For `de.toml`, `check` prints:
+
+    de: quest is missing, so the base shows
+    de: shop.sold_out is empty, so the base shows
+
+  The lines that `check` writes:
+
+  - `fr: shop.stale is not in the base`: a key that the base lacks.
+  - `fr: shop.title is missing, so the base shows`: in a draft.
+  - `fr: shop.title is empty, so the base shows`.
+  - `fr: shop.buy has {cost}, and the base has {price}`.
+  - `ru: quest.slimes has no few form, so few counts show the other
+    form`.
+  - `ru: quest.slimes uses {who}, which the base does not have`. A plural
+    form may leave out a placeholder ("one slime"), and `{count}` is
+    always there.
+
+  The examples keep the same test in their `strings` module.
+]]

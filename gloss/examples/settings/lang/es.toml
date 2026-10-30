@@ -1,0 +1,9 @@
+[language]
+name = "Español"
+
+[settings]
+title = "Ajustes"
+language = "Idioma"
+shown = "El juego se muestra en {language}."
+account = "Sigue el idioma de tu cuenta de Roblox."
+picked = "Lo elegiste tú."

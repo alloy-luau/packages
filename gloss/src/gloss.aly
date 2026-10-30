@@ -1,0 +1,326 @@
+--[[
+  The Gloss: the languages of a game, and the one that shows now.
+
+  `new Gloss('en', en)` takes the base language. Its table type is the
+  shape that every other language must fit. `add` takes a language that
+  must have each key, and `draft` one that may lack some. Gloss merges
+  each language with the base once, when the game adds it, so `t` is a
+  plain table and a read costs no more than a table read.
+
+  `set` changes the language. It replaces `t` and fires `changed`, so
+  code that keeps `t` in a local reads the old language. Read `lang.t`
+  again, or use `watch`, which gives the new table to a function.
+]]
+
+import { Signal, type SignalConnection } from '@alloy/std/signal'
+import { language_of } from './plural'
+import { format_number, format_text, type Args } from './format'
+import { check_language, merge, pick_form, type Draft, type Plural, type Strings } from './strings'
+
+--- The languages of a game, and the one that shows now. `T` is the
+--- table type of the base language.
+export struct Gloss<T>
+  --- The strings of the current language. The base fills each gap. Call
+  --- `set` to change it.
+  t: Strings<T>
+  --- The code of the current language, such as `fr`. Call `set` to
+  --- change it.
+  code: string
+  --- The code of the base language.
+  read base: string
+  --- Fires with the new code after `set` changes the language.
+  read changed: Signal<string>
+  -- The merged table of each language, by code.
+  private merged: { [string]: unknown }
+  -- The table of each language as the game gave it, for `check`.
+  private given: { [string]: unknown }
+  -- The codes, in the order the game added them.
+  private codes: { string }
+end
+
+-- A code in one form: lowercase, with a dash. Roblox writes `en-us`;
+-- other sources write `en_US`.
+local function normalize(code: string) -> string
+  return (string.gsub(string.lower(code), '_', '-'))
+end
+
+impl Gloss<T>
+  --- A Gloss whose base language is `strings`, with the code `code`.
+  --- The base shows until `set` picks another language.
+  -- The base table is the shape of `t` by its type, but Luau cannot see
+  -- that a `T` fits `Strings<T>`, so the cast goes through `any`.
+  @allow(explicit_any)
+  function new(code: string, strings: T) -> Gloss<T>
+    const base = normalize(code)
+
+    return new Gloss<<T>> {
+      t = (strings :: any) :: Strings<T>,
+      code = base,
+      base = base,
+      changed = new Signal<<string>>(),
+      merged = { [base] = strings },
+      given = { [base] = strings },
+      codes = { base },
+    }
+  end
+
+  --- Adds a language. It must have each key of the base, so a missing key
+  --- is a type error at this call.
+  function add(self, code: string, strings: Strings<T>) -> ()
+    self:draft(code, strings)
+  end
+
+  --- Adds a language that may lack keys, such as one that a translator has
+  --- not finished. The base fills each gap. A code that is there already
+  --- takes the new table, and the shown table follows.
+  @allow(explicit_any)
+  function draft(self, code: string, strings: Draft<T>) -> ()
+    const key = normalize(code)
+    assert(key ~= self.base, `Gloss: {key} is the base language; pass its strings to new Gloss()`)
+
+    if self.given[key] == nil then
+      table.insert(self.codes, key)
+    end
+
+    self.given[key] = strings
+    self.merged[key] = merge(self.merged[self.base], strings)
+
+    if key == self.code then
+      self.t = (self.merged[key] :: any) :: Strings<T>
+    end
+  end
+
+  --- The code that Gloss shows for a locale: the locale itself, then its
+  --- language, then the base. `fr-ca` reads `fr` when no `fr-ca` is there.
+  function resolve(self, locale: string) -> string
+    const code = normalize(locale)
+
+    if self.merged[code] ~= nil then
+      return code
+    elseif self.merged[language_of(code)] ~= nil then
+      return language_of(code)
+    end
+
+    return self.base
+  end
+
+  --- Shows the language for a locale, and fires `changed` when it is a new
+  --- one. It returns the code that it picked.
+  @allow(explicit_any)
+  function set(self, locale: string) -> string
+    const code = self:resolve(locale)
+
+    if code ~= self.code then
+      self.code = code
+      self.t = (self.merged[code] :: any) :: Strings<T>
+      self.changed:Fire(code)
+    end
+
+    return code
+  end
+
+  --- Runs `fn` with the strings now, and again after each change of the
+  --- language. Disconnect the connection to stop it.
+  function watch(self, fn: (t: Strings<T>) -> ()) -> SignalConnection
+    fn(self.t)
+    return self.changed:Connect(function(_code) fn(self.t) end)
+  end
+
+  --- Shows the language of a player, and follows it when the player
+  --- changes it in the Roblox settings. Disconnect the connection when the
+  --- player picks a language in the game.
+  function follow(self, player: Player) -> RBXScriptConnection
+    self:set(player.LocaleId)
+
+    return player:GetPropertyChangedSignal('LocaleId'):Connect(function()
+      self:set(player.LocaleId)
+    end)
+  end
+
+  --- The codes of the languages, the base first, in the order the game
+  --- added them.
+  function languages(self) -> { string }
+    return table.clone(self.codes)
+  end
+
+  --- The strings of a language, the base in each gap, or nil for a code
+  --- that is not there. A language picker reads each name from here.
+  @allow(explicit_any)
+  function strings(self, code: string) -> Strings<T>?
+    return (self.merged[normalize(code)] :: any) :: Strings<T>?
+  end
+
+  --- Puts each value of `args` in the place of its `{name}`. A number
+  --- takes the separators of the current language.
+  function format(self, text: string, args: Args?) -> string
+    return format_text(text, args, self.code)
+  end
+
+  --- Picks the form of a plural for `count` by the rule of the current
+  --- language, then fills it. `{count}` takes the count.
+  function plural(self, forms: Plural, count: number, args: Args?) -> string
+    const values = args ?? {}
+
+    return format_text(pick_form(forms, self.code, count), { ...values, count = count }, self.code)
+  end
+
+  --- Writes a number with the separators of the current language. With
+  --- `decimals`, the fraction has that many digits.
+  function number(self, value: number, decimals: number?) -> string
+    return format_number(value, self.code, decimals)
+  end
+
+  --- Lists each problem in the languages, one line each: a key that the
+  --- base lacks, a missing or empty string, a placeholder that differs, and
+  --- a plural form that a language uses but lacks. Run it in a test.
+  function check(self) -> { string }
+    const problems: { string } = {}
+    const base = self.given[self.base]
+
+    for _, code in self.codes do
+      for _, problem in check_language(code, base, self.given[code]) do
+        table.insert(problems, problem)
+      end
+    end
+
+    return problems
+  end
+end
+
+@test
+namespace GlossTests
+  -- A base language and a French one, as TOML imports give them.
+  private function english() -> {
+    title: string,
+    buy: string,
+    shop: { sold_out: string },
+    kills: { one: string, other: string },
+  }
+    return {
+      title = 'Shop',
+      buy = 'Buy for {price} coins',
+      shop = { sold_out = 'Sold out' },
+      kills = { one = '{count} kill', other = '{count} kills' },
+    }
+  end
+
+  -- A Gloss with English and French.
+  private function make() -> Gloss < {
+    title: string,
+    buy: string,
+    shop: { sold_out: string },
+    kills: { one: string, other: string },
+  } >
+    const lang = new Gloss('en', english())
+    lang:add('fr', {
+      title = 'Boutique',
+      buy = 'Acheter pour {price} pièces',
+      shop = { sold_out = 'Épuisé' },
+      kills = { one = '{count} victime', other = '{count} victimes' },
+    })
+    return lang
+  end
+
+  --- The base shows first.
+  public function the_base_shows_first() -> ()
+    const lang = make()
+
+    $assert_eq(lang.code, 'en')
+    $assert_eq(lang.t.title, 'Shop')
+  end
+
+  --- `set` reads a Roblox locale, and the base stands in for an unknown one.
+  public function set_resolves_a_locale() -> ()
+    const lang = make()
+
+    $assert_eq(lang:set('fr-FR'), 'fr')
+    $assert_eq(lang.t.shop.sold_out, 'Épuisé')
+    $assert_eq(lang:set('de_DE'), 'en')
+    $assert_eq(lang.t.title, 'Shop')
+  end
+
+  --- `changed` fires once for each new language, and `watch` runs at once.
+  public function watch_follows_each_change() -> ()
+    const lang = make()
+    const seen: { string } = {}
+
+    lang:watch(function(t) table.insert(seen, t.title) end)
+    lang:set('fr')
+    lang:set('fr')
+    lang:set('en')
+
+    $assert_eq(table.concat(seen, ','), 'Shop,Boutique,Shop')
+  end
+
+  --- A draft takes the base string for each key that it lacks.
+  public function a_draft_takes_the_base_for_a_gap() -> ()
+    const lang = make()
+    lang:draft('de', { title = 'Laden' })
+    lang:set('de')
+
+    $assert_eq(lang.t.title, 'Laden')
+    $assert_eq(lang.t.shop.sold_out, 'Sold out')
+    $assert_eq(table.concat(lang:languages(), ','), 'en,fr,de')
+  end
+
+  --- Adding the shown language again shows the new strings.
+  public function adding_the_shown_language_again_shows_it() -> ()
+    const lang = make()
+    lang:draft('de', { title = 'Laden' })
+    lang:set('de')
+    lang:draft('de', { title = 'Geschäft' })
+
+    $assert_eq(lang.t.title, 'Geschäft')
+  end
+
+  --- `format`, `plural`, and `number` read the current language.
+  public function format_reads_the_current_language() -> ()
+    const lang = make()
+
+    $assert_eq(lang:format(lang.t.buy, { price = 1500 }), 'Buy for 1,500 coins')
+    $assert_eq(lang:plural(lang.t.kills, 1), '1 kill')
+    $assert_eq(lang:plural(lang.t.kills, 0), '0 kills')
+
+    lang:set('fr')
+    $assert_eq(lang:plural(lang.t.kills, 0), '0 victime')
+    $assert_eq(lang:number(2.5), '2,5')
+  end
+
+  --- `check` lists the problems of each language, and none for a complete one.
+  public function check_lists_the_problems() -> ()
+    const lang = make()
+    $assert_eq(#lang:check(), 0)
+
+    lang:draft('de', { title = '', extra = 'x' } :: { title: string })
+    $assert_eq(
+      table.concat(lang:check(), '\n'),
+      table.concat(
+        {
+          'de: buy is missing, so the base shows',
+          'de: kills is missing, so the base shows',
+          'de: shop is missing, so the base shows',
+          'de: title is empty, so the base shows',
+          'de: extra is not in the base',
+        },
+        '\n'
+      )
+    )
+  end
+
+  --- `strings` gives a language by its code, or nil.
+  public function strings_reads_a_language_by_code() -> ()
+    const lang = make()
+
+    $assert_eq(lang:strings('FR')?.title, 'Boutique')
+    $assert_eq(lang:strings('de'), nil)
+  end
+
+  --- `draft` stops with an error for the code of the base.
+  public function the_base_cannot_be_added() -> ()
+    const lang = make()
+
+    $expect(function() -> ()
+      lang:draft('en', {})
+    end):toThrow('is the base language')
+  end
+end

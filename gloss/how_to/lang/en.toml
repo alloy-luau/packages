@@ -1,0 +1,19 @@
+# English is the base language. Its table type is the shape that each
+# other language must fit.
+
+[language]
+name = "English"
+
+[shop]
+title = "Shop"
+buy = "Buy for {price} coins"
+sold_out = "Sold out"
+
+[quest]
+title = "Quests"
+reward = "Reward: {xp} XP"
+
+# A plural table: one string for each form that English uses.
+[quest.slimes]
+one = "{count} slime"
+other = "{count} slimes"

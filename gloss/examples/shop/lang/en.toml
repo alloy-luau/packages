@@ -1,0 +1,17 @@
+[language]
+name = "English"
+
+[shop]
+title = "Shop"
+coins = "{coins} coins"
+buy = "Buy for {price}"
+sold_out = "Sold out"
+
+[shop.stock]
+one = "{count} left"
+other = "{count} left"
+
+[items]
+sword = "Sword"
+shield = "Shield"
+potion = "Potion"

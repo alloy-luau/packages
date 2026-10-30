@@ -1,0 +1,18 @@
+[language]
+name = "Русский"
+
+[log]
+title = "Журнал заданий"
+reward = "Награда: {xp} опыта"
+progress = "{goal}: выполнено {done}"
+done = "Готово"
+next = "Другой язык"
+left = { one = "Осталось {count} задание", few = "Осталось {count} задания", many = "Осталось {count} заданий", other = "Осталось {count} задания" }
+
+[quests.wolves]
+name = "Охота на волков"
+goal = { one = "{count} волк", few = "{count} волка", many = "{count} волков", other = "{count} волка" }
+
+[quests.berries]
+name = "Сбор ягод"
+goal = { one = "{count} ягода", few = "{count} ягоды", many = "{count} ягод", other = "{count} ягоды" }

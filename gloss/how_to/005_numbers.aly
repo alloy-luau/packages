@@ -1,0 +1,34 @@
+--[[
+  Each language writes numbers in its own way. English writes
+  1,234,567.5, German 1.234.567,5, and French 1 234 567,5.
+
+  `lang:number(value, decimals?)` writes a number with the separators of
+  the language that shows. `format` and `plural` use it for each number
+  value.
+]]
+
+import { Gloss } from '@packages/gloss'
+import en from './lang/en.toml'
+import fr from './lang/fr.toml'
+
+const lang = new Gloss('en', en)
+lang:add('fr', fr)
+
+print(lang:number(1234567.5)) -- 1,234,567.5
+print(lang:number(2, 2)) -- 2.00
+
+lang:set('fr')
+print(lang:number(1234567.5)) -- 1 234 567,5
+print(lang:format(lang.t.quest.reward, { xp = 12500 })) -- Récompense : 12 500 XP
+
+--[[
+  The rules:
+
+  - Without `decimals`, the fraction has at most two digits, and no
+    zeros at the end: 2.5, not 2.50.
+  - With `decimals`, the fraction has that many digits, rounded.
+  - French, Russian, and the other languages that group with a space
+    use a no-break space, U+00A0, so a number stays on one line.
+  - Spanish and Polish group from five digits: 1500, but 15.000.
+  - A language that Gloss does not know writes numbers as English does.
+]]

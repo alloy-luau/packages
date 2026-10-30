@@ -1,0 +1,26 @@
+--[[
+  The strings of the quest log, in four languages with four plural
+  rules: English, Russian, Polish, and Japanese.
+]]
+
+import { Gloss, type Strings } from '@packages/gloss'
+import en from './lang/en.toml'
+import ja from './lang/ja.toml'
+import pl from './lang/pl.toml'
+import ru from './lang/ru.toml'
+
+--- The languages of the quest log. English is the base.
+export const lang = new Gloss('en', en)
+lang:add('ru', ru)
+lang:add('pl', pl)
+lang:add('ja', ja)
+
+--- The type of `lang.t`, for code that takes the strings as a value.
+export type Text = Strings<typeof(en)>
+
+-- `alloy test --run` fails when a translation falls behind the base, and
+-- prints each problem.
+@test
+function each_language_is_complete() -> ()
+  $assert_eq(table.concat(lang:check(), '\n'), '')
+end

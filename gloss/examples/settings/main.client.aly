@@ -1,0 +1,60 @@
+--[[
+  A settings page with a language picker. The game starts in the
+  language of the player's Roblox account, and follows it. Once the
+  player picks a language on the page, the pick wins.
+]]
+
+import Players from '@game/Players'
+import { language_picker } from './LanguagePicker'
+import { lang, type Text } from './strings'
+
+const player = Players.LocalPlayer
+local following = true
+const account = lang:follow(player)
+
+const screen = new Instance('ScreenGui') {
+  Name = 'Settings',
+  ResetOnSpawn = false,
+  Parent = player->'PlayerGui'!,
+}
+const page = new Instance('Frame') {
+  Size = new UDim2(0, 400, 0, 220),
+  Position = new UDim2(0.5, -200, 0.5, -110),
+  Parent = screen,
+}
+new Instance('UIListLayout') { Padding = new UDim(0, 8), Parent = page }
+
+-- A text label on the page.
+local function label(height: number) -> TextLabel
+  return new Instance('TextLabel') {
+    Size = new UDim2(1, 0, 0, height),
+    BackgroundTransparency = 1,
+    TextWrapped = true,
+    Parent = page,
+  }
+end
+
+local title = label(40)
+local shown = label(24)
+local source = label(24)
+local heading = label(24)
+
+-- The text of the page, in the language that shows.
+local function render(t: Text) -> ()
+  title.Text = t.settings.title
+  shown.Text = lang:format(t.settings.shown, { language = t.language.name })
+  source.Text = following ? t.settings.account : t.settings.picked
+  heading.Text = t.settings.language
+end
+
+lang:watch(render)
+
+-- A pick stops the account from changing the language. `set` fires no
+-- change when the pick is the language that shows, so the page renders
+-- itself here.
+language_picker(page, function(code)
+  following = false
+  account:Disconnect()
+  lang:set(code)
+  render(lang.t)
+end)

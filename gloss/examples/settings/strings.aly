@@ -1,0 +1,26 @@
+--[[
+  The strings of the settings page. Each script imports `lang` from
+  here, so the game holds one Gloss.
+]]
+
+import { Gloss, type Strings } from '@packages/gloss'
+import en from './lang/en.toml'
+import es from './lang/es.toml'
+import fr from './lang/fr.toml'
+import ja from './lang/ja.toml'
+
+--- The languages of the game. English is the base.
+export const lang = new Gloss('en', en)
+lang:add('es', es)
+lang:add('fr', fr)
+lang:add('ja', ja)
+
+--- The type of `lang.t`, for code that takes the strings as a value.
+export type Text = Strings<typeof(en)>
+
+-- `alloy test --run` fails when a translation falls behind the base, and
+-- prints each problem.
+@test
+function each_language_is_complete() -> ()
+  $assert_eq(table.concat(lang:check(), '\n'), '')
+end

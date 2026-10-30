@@ -1,0 +1,18 @@
+[language]
+name = "日本語"
+
+[log]
+title = "クエストログ"
+reward = "報酬：{xp} XP"
+progress = "{goal}：{done}完了"
+done = "完了"
+next = "次の言語"
+left = { other = "残り{count}件" }
+
+[quests.wolves]
+name = "オオカミ狩り"
+goal = { other = "オオカミ{count}匹" }
+
+[quests.berries]
+name = "ベリー摘み"
+goal = { other = "ベリー{count}個" }

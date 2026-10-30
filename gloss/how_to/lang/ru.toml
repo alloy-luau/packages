@@ -1,0 +1,18 @@
+[language]
+name = "Русский"
+
+[shop]
+title = "Магазин"
+buy = "Купить за {price} монет"
+sold_out = "Распродано"
+
+[quest]
+title = "Задания"
+reward = "Награда: {xp} опыта"
+
+# Russian uses four forms. The base has two; the shape takes all six.
+[quest.slimes]
+one = "{count} слизень"
+few = "{count} слизня"
+many = "{count} слизней"
+other = "{count} слизня"

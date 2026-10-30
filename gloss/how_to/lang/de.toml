@@ -1,0 +1,9 @@
+# A draft: the translator has not done the quests yet.
+
+[language]
+name = "Deutsch"
+
+[shop]
+title = "Laden"
+buy = "Für {price} Münzen kaufen"
+sold_out = ""

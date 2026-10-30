@@ -1,0 +1,458 @@
+--[[
+  The shape of a language, and the walk that fills and checks it.
+
+  The base language is a TOML file that the game imports. Its table type
+  is the shape: `Strings<typeof(en)>` is that type with each key read
+  only, and with each plural table widened to `Plural`. Another language
+  must fit the shape, so a key that it lacks is a type error.
+
+  Luau holds a language to the shape this far:
+
+  - A missing key is an error, at each depth.
+  - An extra key is not. A read-only table type takes a table with more
+    keys, as each table type in Luau does. `check` lists them.
+  - A plural table may have other forms than the base: Russian adds
+    `few` and `many`, and Japanese has `other` alone. Only `other` is
+    required.
+  - An array, such as a list of tips, keeps its own type, and its items must
+    match the base exactly. Luau has no read-only indexer yet.
+  - The text of a string is not part of its type, so Luau cannot see a
+    placeholder. `check` compares them.
+]]
+
+import { form_of, forms_of } from './plural'
+import { placeholders } from './format'
+
+--- A table of plural forms, as CLDR names them: `one = "{count} kill"`,
+--- `other = "{count} kills"`. It must have `other`; the other forms are
+--- optional.
+export type Plural = {
+  read zero: string?,
+  read one: string?,
+  read two: string?,
+  read few: string?,
+  read many: string?,
+  read other: string,
+}
+
+-- Maps the table type of a base language to the shape that the other
+-- languages fit. `draft` is the singleton type `true` for a draft, whose
+-- keys are all optional. The body runs in the type checker, so it is
+-- plain Luau with the API of Luau's type functions.
+type function Shape(t, draft)
+  const forms = { zero = true, one = true, two = true, few = true, many = true, other = true }
+  const optional = draft:is('singleton') and draft:value()
+
+  local function shape(node: type): type
+    if not node:is('table') or node:indexer() ~= nil then
+      return node
+    end
+
+    const props = node:properties()
+    local has_other = false
+    local only_forms = true
+
+    for key in props do
+      const name = key:is('singleton') and key:value() or nil
+      has_other = has_other or name == 'other'
+      only_forms = only_forms and name ~= nil and forms[name :: string] ~= nil
+    end
+
+    const out = types.newtable()
+
+    if has_other and only_forms then
+      const text = types.optional(types.string)
+
+      for _, form in { 'zero', 'one', 'two', 'few', 'many' } do
+        out:setreadproperty(types.singleton(form), text)
+      end
+
+      out:setreadproperty(types.singleton('other'), types.string)
+      return out
+    end
+
+    for key, prop in props do
+      if prop.read ~= nil then
+        const value = shape(prop.read)
+        out:setreadproperty(key, if optional then types.optional(value) else value)
+      end
+    end
+
+    return out
+  end
+
+  return shape(t)
+end
+
+--- The shape of a language whose base table has the type `T`. It must have
+--- each key of the base.
+export type Strings<T> = Shape<T, false>
+
+--- The shape of a draft language: each key of the base is optional, and
+--- the base fills each gap.
+export type Draft<T> = Shape<T, true>
+
+-- A table of a language, as the walks read it.
+type Node = { [unknown]: unknown }
+
+--- Whether a table is a set of plural forms: it holds `other`, and each of
+--- its keys is a form.
+export function is_plural(value: Node) -> boolean
+  if value.other == nil then
+    return false
+  end
+
+  for key in value do
+    if
+      key ~= 'zero'
+      and key ~= 'one'
+      and key ~= 'two'
+      and key ~= 'few'
+      and key ~= 'many'
+      and key ~= 'other'
+    then
+      return false
+    end
+  end
+
+  return true
+end
+
+-- Whether a table is an array: a TOML array of tables, or of strings.
+local function is_array(value: Node) -> boolean
+  return #value > 0
+end
+
+-- Whether a value holds text: a string that is not empty.
+local function has_text(value: unknown) -> boolean
+  return value is string and value ~= ''
+end
+
+--- The table of a language, with the base in each gap. A missing or empty
+--- string takes the string of the base. A plural table or an array comes
+--- whole from the language when it has one, so a French count never shows
+--- an English form.
+export function merge(base: unknown, over: unknown) -> unknown
+  if not (base is table) then
+    return (type(over) == type(base) and over ~= '') ? over : base
+  end
+
+  if not (over is table) then
+    return base
+  end
+
+  if is_plural(base) then
+    return has_text(over.other) ? over : base
+  end
+
+  if is_array(base) then
+    return is_array(over) ? over : base
+  end
+
+  local out: Node = {}
+
+  for key, value in base do
+    out[key] = merge(value, over[key])
+  end
+
+  return out
+end
+
+-- The keys of a table as strings, in order, so a report reads the same
+-- on each run.
+local function sorted_keys<K, V>(value: { [K]: V }) -> { string }
+  const keys: { string } = {}
+
+  for key in value do
+    table.insert(keys, tostring(key))
+  end
+
+  table.sort(keys)
+  return keys
+end
+
+-- The placeholders of a string, or of each form of a plural, as a set.
+local function names_in(value: unknown) -> { [string]: boolean }
+  local names: { [string]: boolean } = {}
+
+  if value is string then
+    for _, name in placeholders(value) do
+      names[name] = true
+    end
+  elseif value is table then
+    for _, form in value do
+      if form is string then
+        for _, name in placeholders(form) do
+          names[name] = true
+        end
+      end
+    end
+  end
+
+  return names
+end
+
+-- The names of a set, sorted and in braces: "{count}, {price}".
+local function list_names(names: { [string]: boolean }) -> string
+  local keys = sorted_keys(names)
+
+  for index, key in keys do
+    keys[index] = `\{{key}}`
+  end
+
+  return #keys == 0 ? 'none' : table.concat(keys, ', ')
+end
+
+-- Whether two sets of names hold the same names.
+local function same_names(a: { [string]: boolean }, b: { [string]: boolean }) -> boolean
+  for name in a do
+    if not b[name] then
+      return false
+    end
+  end
+
+  for name in b do
+    if not a[name] then
+      return false
+    end
+  end
+
+  return true
+end
+
+-- Checks a plural table of the language against the forms its rule uses.
+local function check_plural(
+  problems: { string },
+  code: string,
+  path: string,
+  base: Node,
+  lang: Node
+) -> ()
+  for _, form in forms_of(code) do
+    if not has_text(lang[form]) and form ~= 'other' then
+      table.insert(
+        problems,
+        `{code}: {path} has no {form} form, so {form} counts show the other form`
+      )
+    end
+  end
+
+  if not has_text(lang.other) then
+    table.insert(problems, `{code}: {path} has no other form`)
+  end
+
+  -- A form may leave out a placeholder ("one kill"), but it may not add
+  -- one that the base does not fill. `{count}` is always filled.
+  local known = names_in(base)
+  known.count = true
+
+  for name in names_in(lang) do
+    if not known[name] then
+      table.insert(problems, `{code}: {path} uses \{{name}}, which the base does not have`)
+    end
+  end
+end
+
+-- `walk` and `walk_table` call each other.
+local walk_table: (problems: { string }, code: string, path: string, base: Node, lang: Node) -> ()
+
+-- Walks the base and the language side by side, and adds a line for
+-- each difference.
+local function walk(
+  problems: { string },
+  code: string,
+  path: string,
+  base: unknown,
+  lang: unknown
+) -> ()
+  if lang == nil then
+    table.insert(problems, `{code}: {path} is missing, so the base shows`)
+  elseif base is table then
+    if lang is table then
+      walk_table(problems, code, path, base :: Node, lang :: Node)
+    else
+      table.insert(problems, `{code}: {path} is a {type(lang)}, and the base has a table`)
+    end
+  elseif type(lang) ~= type(base) then
+    table.insert(problems, `{code}: {path} is a {type(lang)}, and the base has a {type(base)}`)
+  elseif lang == '' then
+    table.insert(problems, `{code}: {path} is empty, so the base shows`)
+  elseif not same_names(names_in(base), names_in(lang)) then
+    const has = list_names(names_in(lang))
+    const wants = list_names(names_in(base))
+    table.insert(problems, `{code}: {path} has {has}, and the base has {wants}`)
+  end
+end
+
+-- Walks a table of the base. An array is the language's own, so the walk
+-- checks no item of it.
+walk_table = function(
+  problems: { string },
+  code: string,
+  path: string,
+  base: Node,
+  lang: Node
+) -> ()
+  if is_plural(base) then
+    check_plural(problems, code, path, base, lang)
+    return
+  elseif is_array(base) then
+    return
+  end
+
+  for _, key in sorted_keys(base) do
+    walk(problems, code, path == '' ? key : `{path}.{key}`, base[key], lang[key])
+  end
+
+  for _, key in sorted_keys(lang) do
+    if base[key] == nil then
+      table.insert(problems, `{code}: {path == '' ? key : `{path}.{key}`} is not in the base`)
+    end
+  end
+end
+
+--- Lists each difference between a language and the base, one line each.
+--- An empty list means that the language is complete.
+export function check_language(code: string, base: unknown, lang: unknown) -> { string }
+  const problems: { string } = {}
+  walk(problems, code, '', base, lang)
+  return problems
+end
+
+--- Picks the form of a plural for a count, in a language. A form that the
+--- table lacks reads `other`.
+export function pick_form(forms: Plural, code: string, count: number) -> string
+  const form = form_of(code, count)
+  const by_form: { [string]: string? } = {
+    zero = forms.zero,
+    one = forms.one,
+    two = forms.two,
+    few = forms.few,
+    many = forms.many,
+  }
+  const picked = by_form[form]
+
+  return picked ~= nil and picked ~= '' ? picked : forms.other
+end
+
+@test
+namespace StringsTests
+  -- A small base language, as a TOML import gives it.
+  private function base() -> Node
+    return {
+      title = 'Shop',
+      buy = 'Buy for {price} coins',
+      shop = { sold_out = 'Sold out' },
+      kills = { one = '{count} kill', other = '{count} kills' },
+      tips = { 'Jump twice' },
+    }
+  end
+
+  --- A missing or empty string takes the base string.
+  public function merge_fills_each_gap() -> ()
+    const merged = merge(base(), { title = 'Boutique', shop = { sold_out = '' } }) :: {
+      title: string,
+      buy: string,
+      shop: { sold_out: string },
+    }
+
+    $assert_eq(merged.title, 'Boutique')
+    $assert_eq(merged.buy, 'Buy for {price} coins')
+    $assert_eq(merged.shop.sold_out, 'Sold out')
+  end
+
+  --- A plural and an array come whole from the language.
+  public function merge_takes_plurals_whole() -> ()
+    const merged = merge(base(), {
+      kills = { few = '{count} убийства', other = '{count} убийств' },
+      tips = { 'Прыгай', 'Беги' },
+    }) :: { kills: Plural, tips: { string } }
+
+    $assert_eq(merged.kills.one, nil)
+    $assert_eq(merged.kills.few, '{count} убийства')
+    $assert_eq(#merged.tips, 2)
+  end
+
+  --- A plural with no other form, and a value of the wrong type, read the base.
+  public function merge_keeps_the_base_for_a_bad_value() -> ()
+    const merged = merge(base(), { kills = { one = 'x' }, title = 5 }) :: {
+      kills: Plural,
+      title: string,
+    }
+
+    $assert_eq(merged.kills.other, '{count} kills')
+    $assert_eq(merged.title, 'Shop')
+  end
+
+  --- A complete language has no problems.
+  public function check_passes_a_complete_language() -> ()
+    $assert_eq(#check_language('en', base(), base()), 0)
+  end
+
+  --- Check lists missing, extra, and empty keys, and placeholders that differ.
+  public function check_lists_each_difference() -> ()
+    const problems = check_language('fr', base(), {
+      title = '',
+      buy = 'Acheter pour {cost} pièces',
+      shop = { sold_out = 'Épuisé', stale = 'x' },
+      kills = { one = '{count} victime', other = '{count} victimes' },
+    })
+
+    $assert_eq(
+      table.concat(problems, '\n'),
+      table.concat(
+        {
+          'fr: buy has {cost}, and the base has {price}',
+          'fr: shop.stale is not in the base',
+          'fr: tips is missing, so the base shows',
+          'fr: title is empty, so the base shows',
+        },
+        '\n'
+      )
+    )
+  end
+
+  --- Check asks for each plural form that the language uses.
+  public function check_asks_for_the_forms_of_the_language() -> ()
+    const problems = check_language(
+      'ru',
+      { kills = { one = '{count} kill', other = '{count} kills' } },
+      {
+        kills = { one = '{count} убийство', other = '{count} {who}' },
+      }
+    )
+
+    $assert_eq(
+      table.concat(problems, '\n'),
+      table.concat(
+        {
+          'ru: kills has no few form, so few counts show the other form',
+          'ru: kills has no many form, so many counts show the other form',
+          'ru: kills uses {who}, which the base does not have',
+        },
+        '\n'
+      )
+    )
+  end
+
+  --- Japanese needs the other form alone.
+  public function check_takes_other_alone_for_japanese() -> ()
+    $assert_eq(#check_language('ja', base(), merge(base(), { kills = { other = '{count}体' } })), 0)
+  end
+
+  --- A count picks its form, and a missing form reads other.
+  public function pick_form_reads_other_for_a_missing_form() -> ()
+    const forms: Plural = { one = 'one', other = 'other' }
+
+    $assert_eq(pick_form(forms, 'en', 1), 'one')
+    $assert_eq(pick_form(forms, 'en', 2), 'other')
+    $assert_eq(pick_form(forms, 'ru', 5), 'other')
+  end
+
+  --- A plural table needs other, and each key must be a form.
+  public function is_plural_needs_other() -> ()
+    $assert(is_plural({ one = 'a', other = 'b' }))
+    $assert(not is_plural({ one = 'a' }))
+    $assert(not is_plural({ other = 'a', title = 'b' }))
+  end
+end

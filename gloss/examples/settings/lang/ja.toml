@@ -1,0 +1,9 @@
+[language]
+name = "日本語"
+
+[settings]
+title = "設定"
+language = "言語"
+shown = "ゲームは{language}で表示されます。"
+account = "Robloxアカウントの言語に従います。"
+picked = "あなたが選びました。"

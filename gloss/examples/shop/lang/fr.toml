@@ -1,0 +1,17 @@
+[language]
+name = "Français"
+
+[shop]
+title = "Boutique"
+coins = "{coins} pièces"
+buy = "Acheter pour {price}"
+sold_out = "Épuisé"
+
+[shop.stock]
+one = "{count} restant"
+other = "{count} restants"
+
+[items]
+sword = "Épée"
+shield = "Bouclier"
+potion = "Potion"

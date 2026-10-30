@@ -1,0 +1,17 @@
+[language]
+name = "Deutsch"
+
+[shop]
+title = "Laden"
+coins = "{coins} Münzen"
+buy = "Für {price} kaufen"
+sold_out = "Ausverkauft"
+
+[shop.stock]
+one = "Noch {count}"
+other = "Noch {count}"
+
+[items]
+sword = "Schwert"
+shield = "Schild"
+potion = "Trank"

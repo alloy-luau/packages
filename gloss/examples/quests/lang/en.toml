@@ -1,0 +1,18 @@
+[language]
+name = "English"
+
+[log]
+title = "Quest log"
+reward = "Reward: {xp} XP"
+progress = "{goal}: {done} done"
+done = "Done"
+next = "Next language"
+left = { one = "{count} quest left", other = "{count} quests left" }
+
+[quests.wolves]
+name = "Wolf hunt"
+goal = { one = "{count} wolf", other = "{count} wolves" }
+
+[quests.berries]
+name = "Berry picking"
+goal = { one = "{count} berry", other = "{count} berries" }

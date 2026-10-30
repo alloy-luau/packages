@@ -1,0 +1,50 @@
+--[[
+  A language that a translator has not finished is a draft.
+  `draft(code, strings)` takes a table that may lack keys, and the base
+  fills each gap. The type check still knows each key that the draft
+  has.
+
+  The base fills a gap in each language, a draft or not:
+
+  - A key that the language lacks shows the base string.
+  - An empty string, `""`, shows the base string too. A translation
+    tool often leaves one where no one has translated yet.
+  - A plural table comes whole from the language, so a French count
+    never shows an English form.
+]]
+
+import { Gloss } from '@packages/gloss'
+import de from './lang/de.toml'
+import en from './lang/en.toml'
+import fr from './lang/fr.toml'
+
+const lang = new Gloss('en', en)
+lang:add('fr', fr)
+lang:draft('de', de)
+
+lang:set('de')
+print(lang.t.shop.title) -- Laden
+print(lang.t.shop.sold_out) -- Sold out: the German string is empty
+print(lang.t.quest.title) -- Quests: the German file has no quests yet
+
+-- `set` takes a Roblox locale. It tries the locale, then its language,
+-- then the base, and returns the code that it picked.
+print(lang:set('fr-ca')) -- fr
+print(lang:set('pt-br')) -- en: there is no Portuguese
+
+-- The codes, the base first, for a language picker.
+for _, code in lang:languages() do
+  print(code, lang:strings(code)?.language.name)
+end
+
+--[[
+  The merge runs once, when `add` or `draft` takes a language. `lang.t`
+  is the merged table, so a read never looks in two tables.
+
+  A code is lowercase with a dash: `en_US` and `en-US` both read `en-us`.
+  Add a regional language, such as `pt-br`, under its full code, and
+  `set('pt-br')` picks it before `pt`.
+
+  Adding a code again replaces its strings. `add` and `draft` stop with
+  an error for the code of the base: pass its strings to `new Gloss()`.
+]]

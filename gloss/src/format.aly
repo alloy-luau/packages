@@ -1,0 +1,210 @@
+--[[
+  Placeholders and numbers.
+
+  A placeholder is a name in braces, `{price}`, as in a Roblox
+  LocalizationTable. `format` puts the value of each name in its place. A
+  number value takes the separators of the language, so `{ price = 1500 }`
+  writes "1,500" in English and "1.500" in German. A string value goes in
+  as it is.
+
+  A brace pair that does not hold a name, such as `{ }` or `{1-2}`, stays
+  in the text. A name with no value stays too, so a missing value shows
+  in the label as `{price}`, and does not stop the game.
+]]
+
+import { language_of } from './plural'
+
+--- The values of the placeholders in a string, by name.
+export type Args = { [string]: string | number }
+
+--- How a language writes a number: the mark between groups of three
+--- digits, the decimal mark, and the shortest whole part that takes
+--- group marks.
+type Separators = { group: string, decimal: string, min_digits: number }
+
+-- A no-break space keeps "1 500" on one line. CLDR gives French the
+-- narrow no-break space, U+202F, which not every Roblox font draws.
+const NBSP = '\u{00A0}'
+
+const COMMA_DOT: Separators = { group = ',', decimal = '.', min_digits = 4 }
+const DOT_COMMA: Separators = { group = '.', decimal = ',', min_digits = 4 }
+const SPACE_COMMA: Separators = { group = NBSP, decimal = ',', min_digits = 4 }
+
+-- Spanish and Polish group a whole part of five digits or more, so 1500
+-- stays "1500" and 15000 is "15.000".
+const DOT_COMMA_FIVE: Separators = { group = '.', decimal = ',', min_digits = 5 }
+const SPACE_COMMA_FIVE: Separators = { group = NBSP, decimal = ',', min_digits = 5 }
+
+-- The separators of each language, from CLDR. A language that is not
+-- here writes numbers as English does.
+const SEPARATORS: { [string]: Separators } = {
+  en = COMMA_DOT,
+  ja = COMMA_DOT,
+  ko = COMMA_DOT,
+  zh = COMMA_DOT,
+  th = COMMA_DOT,
+  de = DOT_COMMA,
+  it = DOT_COMMA,
+  nl = DOT_COMMA,
+  pt = DOT_COMMA,
+  id = DOT_COMMA,
+  tr = DOT_COMMA,
+  vi = DOT_COMMA,
+  es = DOT_COMMA_FIVE,
+  fr = SPACE_COMMA,
+  ru = SPACE_COMMA,
+  uk = SPACE_COMMA,
+  cs = SPACE_COMMA,
+  sv = SPACE_COMMA,
+  fi = SPACE_COMMA,
+  nb = SPACE_COMMA,
+  pl = SPACE_COMMA_FIVE,
+}
+
+-- Puts the group mark between each group of three digits.
+local function group_digits(digits: string, mark: string) -> string
+  const first = #digits % 3 == 0 ? 3 : #digits % 3
+  const groups = { string.sub(digits, 1, first) }
+
+  for start = first + 1, #digits, 3 do
+    table.insert(groups, string.sub(digits, start, start + 2))
+  end
+
+  return table.concat(groups, mark)
+end
+
+--- Writes a number with the separators of a language. With `decimals`,
+--- the fraction has that many digits; without it, the fraction has at
+--- most two, and no zeros at the end.
+export function format_number(value: number, code: string, decimals: number?) -> string
+  if value ~= value or value == math.huge or value == -math.huge then
+    return tostring(value)
+  end
+
+  const separators = SEPARATORS[code] ?? SEPARATORS[language_of(code)] ?? COMMA_DOT
+  const places = decimals ?? 2
+  local text = string.format(`%.{places}f`, value)
+
+  if decimals == nil and string.find(text, '.', 1, true) ~= nil then
+    text = string.gsub(string.gsub(text, '0+$', ''), '%.$', '')
+  end
+
+  const sign, whole, fraction = string.match(text, '^(-?)(%d+)%.?(%d*)$')
+
+  if whole == nil then
+    return text
+  end
+
+  -- "-0" reads as a sign with no value, so a value that rounds to zero
+  -- loses its sign.
+  const negative = sign == '-' and string.find(text, '[1-9]') ~= nil
+  const grouped = #whole >= separators.min_digits ? group_digits(whole, separators.group) : whole
+  const tail = fraction ~= '' ? `{separators.decimal}{fraction}` : ''
+
+  return `{negative ? '-' : ''}{grouped}{tail}`
+end
+
+--- Puts the value of each `{name}` in its place. A number takes the
+--- separators of the language.
+export function format_text(text: string, args: Args?, code: string) -> string
+  if args == nil then
+    return text
+  end
+
+  -- A closure does not see the narrowing of `args`, so it reads a local.
+  const values: Args = args
+
+  return (string.gsub(text, '{([%w_]+)}', function(name: string) -> string
+    const value = values[name]
+
+    if value is number then
+      return format_number(value, code)
+    elseif value == nil then
+      return string.format('{%s}', name)
+    end
+
+    -- Luau does not check the values of a table literal in a call, so a
+    -- boolean can reach here, and gsub stops on a value that is not a
+    -- string.
+    return tostring(value)
+  end))
+end
+
+--- The names of the placeholders in a string, in order, each once.
+export function placeholders(text: string) -> { string }
+  const names: { string } = {}
+
+  for name in string.gmatch(text, '{([%w_]+)}') do
+    if not table.find(names, name) then
+      table.insert(names, name)
+    end
+  end
+
+  return names
+end
+
+@test
+namespace FormatTests
+  --- A placeholder takes its value, and a number its separators.
+  public function a_placeholder_takes_its_value() -> ()
+    $assert_eq(
+      format_text('Buy {item} for {price} coins', { item = 'Sword', price = 1500 }, 'en'),
+      'Buy Sword for 1,500 coins'
+    )
+    $assert_eq(format_text('{price} pièces', { price = 1500 }, 'fr'), `1{NBSP}500 pièces`)
+  end
+
+  --- A name with no value, and a brace pair with no name, stay as they are.
+  public function a_missing_value_stays_in_the_text() -> ()
+    $assert_eq(format_text('{a} and {b}', { a = 1 }, 'en'), '1 and {b}')
+    $assert_eq(format_text('{ } {1-2}', {}, 'en'), '{ } {1-2}')
+    $assert_eq(format_text('{a}', nil, 'en'), '{a}')
+  end
+
+  --- A string value goes in as it is, digits and all.
+  public function a_string_value_keeps_its_digits() -> ()
+    $assert_eq(format_text('Code {code}', { code = '12345' }, 'en'), 'Code 12345')
+  end
+
+  --- A value of another type goes in as text, and does not stop the call.
+  @allow(explicit_any)
+  public function another_value_goes_in_as_text() -> ()
+    $assert_eq(format_text('{on}', { on = true :: any }, 'en'), 'true')
+  end
+
+  --- English groups by three with a comma.
+  public function english_groups_with_a_comma() -> ()
+    $assert_eq(format_number(1234567.891, 'en'), '1,234,567.89')
+    $assert_eq(format_number(999, 'en'), '999')
+    $assert_eq(format_number(1000, 'en'), '1,000')
+    $assert_eq(format_number(-1500.5, 'en'), '-1,500.5')
+  end
+
+  --- German swaps the marks; French and Russian group with a space.
+  public function each_language_has_its_marks() -> ()
+    $assert_eq(format_number(1234567.5, 'de'), '1.234.567,5')
+    $assert_eq(format_number(1234567.5, 'fr-ca'), `1{NBSP}234{NBSP}567,5`)
+    $assert_eq(format_number(1234, 'ru'), `1{NBSP}234`)
+    $assert_eq(format_number(1234, 'xx'), '1,234')
+  end
+
+  --- Spanish and Polish leave a four-digit number whole.
+  public function spanish_groups_from_five_digits() -> ()
+    $assert_eq(format_number(1500, 'es'), '1500')
+    $assert_eq(format_number(15000, 'es'), '15.000')
+  end
+
+  --- `decimals` fixes the fraction; without it, zeros at the end go.
+  public function decimals_fix_the_fraction() -> ()
+    $assert_eq(format_number(2, 'en', 2), '2.00')
+    $assert_eq(format_number(2.6, 'de', 0), '3')
+    $assert_eq(format_number(2.50, 'en'), '2.5')
+    $assert_eq(format_number(-0.001, 'en'), '0')
+    $assert_eq(format_number(0.1 + 0.2, 'en'), '0.3')
+  end
+
+  --- The names of the placeholders come once each, in order.
+  public function placeholders_lists_each_name_once() -> ()
+    $assert_eq(table.concat(placeholders('{a} {b} {a} { c }'), ','), 'a,b')
+  end
+end

@@ -1,0 +1,253 @@
+--[[
+  The plural rules of CLDR, the Unicode table of plural forms.
+
+  A count takes one of six forms: zero, one, two, few, many, or other.
+  Each language uses some of them. English uses one and other, Russian
+  uses one, few, many, and other, and Japanese uses other alone.
+
+  A rule reads three numbers from the count, as CLDR does: `n` is the
+  count without its sign, `i` is its whole part, and `v` is 1 when the
+  count has a fraction and 0 when it has none. CLDR counts the digits of
+  the fraction for `v`; a Luau number does not keep "1.0" apart from "1",
+  so 1.0 takes the form of 1.
+
+  French, Spanish, Italian, and Portuguese have a CLDR `many` form for
+  whole millions ("1 million de"). Gloss leaves it out, so those counts
+  take `other`, and a translator writes one form less for each plural.
+]]
+
+--- The forms of a count, as CLDR names them.
+export type Form = 'zero' | 'one' | 'two' | 'few' | 'many' | 'other'
+
+--- The forms that a language uses, and the function that picks one for
+--- a count.
+type Rule = { forms: { Form }, pick: (n: number, i: number, v: number) -> Form }
+
+-- Japanese, Korean, Chinese, Thai, Vietnamese, Indonesian, and Malay
+-- give each count the same form.
+const OTHER: Rule = { forms = { 'other' }, pick = function(_n, _i, _v) return 'other' end }
+
+-- English, German, Dutch, Swedish, Italian: "1 kill", but "1.5 kills".
+const ONE: Rule = {
+  forms = { 'one', 'other' },
+  pick = function(_n, i, v) return (i == 1 and v == 0) ? 'one' : 'other' end,
+}
+
+-- Spanish, Turkish, Greek, Hungarian: the count 1 alone.
+const EXACT_ONE: Rule = {
+  forms = { 'one', 'other' },
+  pick = function(n, _i, _v) return n == 1 ? 'one' : 'other' end,
+}
+
+-- French and Brazilian Portuguese: 0 and 1 are singular, and so is 1.5.
+const ZERO_AND_ONE: Rule = {
+  forms = { 'one', 'other' },
+  pick = function(_n, i, _v) return (i == 0 or i == 1) ? 'one' : 'other' end,
+}
+
+-- Whether the last two digits of a whole number fall in 12 to 14.
+local function teen(i: number) -> boolean
+  const last_two = i % 100
+  return last_two >= 12 and last_two <= 14
+end
+
+-- Whether the last digit falls in 2 to 4, outside the teens.
+local function few_digit(i: number) -> boolean
+  const last = i % 10
+  return last >= 2 and last <= 4 and not teen(i)
+end
+
+-- Russian and Ukrainian: 1, 21, 31 take one; 2 to 4, 22 to 24 take
+-- few; the other whole numbers take many; a fraction takes other.
+const EAST_SLAVIC: Rule = {
+  forms = { 'one', 'few', 'many', 'other' },
+  pick = function(_n, i, v)
+    if v ~= 0 then
+      return 'other'
+    elseif i % 10 == 1 and i % 100 ~= 11 then
+      return 'one'
+    elseif few_digit(i) then
+      return 'few'
+    end
+
+    return 'many'
+  end,
+}
+
+-- Polish: 1 alone takes one; 2 to 4, 22 to 24 take few; the other whole
+-- numbers, 21 included, take many.
+const POLISH: Rule = {
+  forms = { 'one', 'few', 'many', 'other' },
+  pick = function(_n, i, v)
+    if v ~= 0 then
+      return 'other'
+    elseif i == 1 then
+      return 'one'
+    elseif few_digit(i) then
+      return 'few'
+    end
+
+    return 'many'
+  end,
+}
+
+-- Czech and Slovak: 1 takes one, 2 to 4 take few, a fraction takes
+-- many, and the other whole numbers take other.
+const CZECH: Rule = {
+  forms = { 'one', 'few', 'many', 'other' },
+  pick = function(_n, i, v)
+    if v ~= 0 then
+      return 'many'
+    elseif i == 1 then
+      return 'one'
+    elseif i >= 2 and i <= 4 then
+      return 'few'
+    end
+
+    return 'other'
+  end,
+}
+
+-- Arabic uses all six forms.
+const ARABIC: Rule = {
+  forms = { 'zero', 'one', 'two', 'few', 'many', 'other' },
+  pick = function(n, _i, v)
+    const last_two = n % 100
+
+    if n == 0 then
+      return 'zero'
+    elseif n == 1 then
+      return 'one'
+    elseif n == 2 then
+      return 'two'
+    elseif v == 0 and last_two >= 3 and last_two <= 10 then
+      return 'few'
+    elseif v == 0 and last_two >= 11 then
+      return 'many'
+    end
+
+    return 'other'
+  end,
+}
+
+-- The rule of each language, by its code. A code that is not here, such
+-- as `en-gb`, reads the language before the dash, and a language that is
+-- not here takes the English rule.
+const RULES: { [string]: Rule } = {
+  en = ONE,
+  de = ONE,
+  nl = ONE,
+  sv = ONE,
+  it = ONE,
+  fi = ONE,
+  nb = ONE,
+  ['pt-pt'] = ONE,
+  es = EXACT_ONE,
+  tr = EXACT_ONE,
+  el = EXACT_ONE,
+  hu = EXACT_ONE,
+  fr = ZERO_AND_ONE,
+  pt = ZERO_AND_ONE,
+  ru = EAST_SLAVIC,
+  uk = EAST_SLAVIC,
+  pl = POLISH,
+  cs = CZECH,
+  sk = CZECH,
+  ar = ARABIC,
+  ja = OTHER,
+  ko = OTHER,
+  zh = OTHER,
+  th = OTHER,
+  vi = OTHER,
+  id = OTHER,
+  ms = OTHER,
+}
+
+--- The language part of a code: `fr` for `fr-ca`.
+export function language_of(code: string) -> string
+  return string.match(code, '^[^-]+') ?? code
+end
+
+-- The rule for a code: the code itself, then its language, then English.
+local function rule_of(code: string) -> Rule
+  return RULES[code] ?? RULES[language_of(code)] ?? ONE
+end
+
+--- The form that a count takes in a language.
+export function form_of(code: string, count: number) -> Form
+  const n = math.abs(count)
+  const i = math.floor(n)
+
+  return rule_of(code).pick(n, i, n == i ? 0 : 1)
+end
+
+--- The forms that a language uses, in CLDR order.
+export function forms_of(code: string) -> { Form }
+  return rule_of(code).forms
+end
+
+@test
+namespace PluralTests
+  -- The forms of a run of counts, joined, for a short assert.
+  private function forms_for(code: string, counts: { number }) -> string
+    const out: { string } = {}
+
+    for _, count in counts do
+      table.insert(out, form_of(code, count))
+    end
+
+    return table.concat(out, ' ')
+  end
+
+  --- English: 1 alone is singular.
+  public function english_has_one_and_other() -> ()
+    $assert_eq(forms_for('en', { 0, 1, 2, 1.5, 21 }), 'other one other other other')
+    $assert_eq(forms_for('en-gb', { 1, 5 }), 'one other')
+  end
+
+  --- French: 0 and 1 are singular, and 1.5 too.
+  public function french_counts_zero_as_one() -> ()
+    $assert_eq(forms_for('fr', { 0, 1, 1.5, 2, 100 }), 'one one one other other')
+  end
+
+  --- Russian: one, few, and many follow the last digits.
+  public function russian_follows_the_last_digits() -> ()
+    $assert_eq(
+      forms_for('ru', { 1, 2, 5, 11, 12, 21, 22, 25, 111, 1.5 }),
+      'one few many many many one few many many other'
+    )
+  end
+
+  --- Polish: 21 takes many, not one.
+  public function polish_counts_21_as_many() -> ()
+    $assert_eq(forms_for('pl', { 1, 2, 5, 12, 21, 22 }), 'one few many many many few')
+  end
+
+  --- Czech: a fraction takes many.
+  public function czech_counts_a_fraction_as_many() -> ()
+    $assert_eq(forms_for('cs', { 1, 3, 5, 0.5 }), 'one few other many')
+  end
+
+  --- Arabic uses all six forms.
+  public function arabic_uses_six_forms() -> ()
+    $assert_eq(forms_for('ar', { 0, 1, 2, 3, 11, 100, 102 }), 'zero one two few many other other')
+  end
+
+  --- Japanese gives every count the form other.
+  public function japanese_has_other_alone() -> ()
+    $assert_eq(forms_for('ja', { 0, 1, 2 }), 'other other other')
+    $assert_eq(#forms_of('ja'), 1)
+  end
+
+  --- A language that Gloss does not know takes the English rule.
+  public function an_unknown_language_reads_as_english() -> ()
+    $assert_eq(forms_for('xx', { 1, 2 }), 'one other')
+    $assert_eq(language_of('pt-br'), 'pt')
+    $assert_eq(forms_for('pt-pt', { 0, 1 }), 'other one')
+  end
+
+  --- A negative count takes the form of its size.
+  public function a_negative_count_reads_its_size() -> ()
+    $assert_eq(form_of('en', -1), 'one')
+  end
+end

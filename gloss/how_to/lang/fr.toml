@@ -1,0 +1,16 @@
+[language]
+name = "Français"
+
+[shop]
+title = "Boutique"
+buy = "Acheter pour {price} pièces"
+sold_out = "Épuisé"
+
+[quest]
+title = "Quêtes"
+reward = "Récompense : {xp} XP"
+
+# French counts 0 and 1 as singular.
+[quest.slimes]
+one = "{count} slime"
+other = "{count} slimes"

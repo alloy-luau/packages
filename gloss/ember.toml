@@ -1,0 +1,13 @@
+[package]
+name = "alloy/gloss"
+version = "0.1.0"
+description = "Localization for Alloy, with string keys that the compiler checks"
+authors = ["savruun"]
+repository = "alloy-luau/packages"
+license = "MIT"
+
+[target]
+environment = "roblox"
+language = "alloy"
+main = "build/index.luau"
+includes = ["src", "build", ".config.aly", "README.md", "CHANGELOG.md", "LICENSE"]

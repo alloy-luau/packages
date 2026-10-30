@@ -1,0 +1,119 @@
+--[[
+  A quest log. Each quest counts what the player has done against a goal,
+  and each count goes through `plural`, so "1 wolf", "5 wolves", "5
+  волков", and "5 wilków" each take the form that their language needs.
+  Click a quest to make progress; the button at the bottom shows the
+  next language.
+]]
+
+import Players from '@game/Players'
+import { type Plural } from '@packages/gloss'
+import { lang, type Text } from './strings'
+
+-- One quest. `strings` picks the name and the goal of the quest from the
+-- strings of a language, so the type check sees the keys.
+struct Quest
+  strings: (t: Text) -> { read name: string, read goal: Plural }
+  goal: number
+  xp: number
+  done: number = 0
+end
+
+const QUESTS = [
+  new Quest { strings = function(t: Text) return t.quests.wolves end, goal = 5, xp = 1200 },
+  new Quest { strings = function(t: Text) return t.quests.berries end, goal = 22, xp = 12500 },
+]
+
+const screen = new Instance('ScreenGui') {
+  Name = 'Quests',
+  ResetOnSpawn = false,
+  Parent = Players.LocalPlayer->'PlayerGui'!,
+}
+const log = new Instance('Frame') {
+  Size = new UDim2(0, 360, 0, 300),
+  Position = new UDim2(0, 20, 0.5, -150),
+  Parent = screen,
+}
+new Instance('UIListLayout') { Padding = new UDim(0, 6), Parent = log }
+
+-- A line of text in the log.
+local function line(height: number) -> TextLabel
+  return new Instance('TextLabel') {
+    Size = new UDim2(1, 0, 0, height),
+    BackgroundTransparency = 1,
+    TextXAlignment = Enum.TextXAlignment.Left,
+    Parent = log,
+  }
+end
+
+local title = line(32)
+local left = line(24)
+
+-- The number of quests that the player has not finished.
+local function quests_left() -> number
+  local count = 0
+
+  for _, quest in QUESTS do
+    if quest.done < quest.goal then
+      count += 1
+    end
+  end
+
+  return count
+end
+
+-- The heading of the log, in the language that shows.
+local function render_heading(t: Text) -> ()
+  title.Text = t.log.title
+  left.Text = lang:plural(t.log.left, quests_left())
+end
+
+lang:watch(render_heading)
+
+-- A button for each quest: its name, its progress, and its reward.
+local function add_quest(quest: Quest) -> ()
+  local button = new Instance('TextButton') {
+    Size = new UDim2(1, 0, 0, 72),
+    TextWrapped = true,
+    Parent = log,
+  }
+
+  -- The text of the quest, in the language that shows.
+  local function render(t: Text) -> ()
+    const strings = quest.strings(t)
+    const goal = lang:plural(strings.goal, quest.goal)
+    const progress = quest.done >= quest.goal
+      ? t.log.done
+      : lang:format(t.log.progress, { goal = goal, done = quest.done })
+    const reward = lang:format(t.log.reward, { xp = quest.xp })
+
+    -- One line for each string; a new line joins no words.
+    button.Text = table.concat({ strings.name, progress, reward }, '\n')
+  end
+
+  lang:watch(render)
+
+  button.Activated:Connect(function()
+    if quest.done < quest.goal then
+      quest.done += 1
+      render(lang.t)
+      render_heading(lang.t)
+    end
+  end)
+end
+
+for _, quest in QUESTS do
+  add_quest(quest)
+end
+
+local switch = new Instance('TextButton') { Size = new UDim2(1, 0, 0, 32), Parent = log }
+
+lang:watch(function(t)
+  switch.Text = t.log.next
+end)
+
+switch.Activated:Connect(function()
+  const codes = lang:languages()
+  const index = (table.find(codes, lang.code) ?? 0) % #codes + 1
+  lang:set(codes[index])
+end)

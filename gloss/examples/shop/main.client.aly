@@ -1,0 +1,99 @@
+--[[
+  A shop with three items. Each label reads its string from `lang.t`,
+  and `watch` sets it again when the language changes. The button at the
+  bottom shows the next language.
+]]
+
+import Players from '@game/Players'
+import { lang, type Text } from './strings'
+
+-- One item of the shop. `name` picks its string from the strings of a
+-- language, so the type check sees the key.
+struct Item
+  name: (t: Text) -> string
+  price: number
+  stock: number
+end
+
+const ITEMS = [
+  new Item { name = function(t: Text) -> string return t.items.sword end, price = 1500, stock = 3 },
+  new Item { name = function(t: Text) -> string return t.items.shield end, price = 900, stock = 0 },
+  new Item { name = function(t: Text) -> string return t.items.potion end, price = 25, stock = 12 },
+]
+
+local coins = 2400
+
+const screen = new Instance('ScreenGui') {
+  Name = 'Shop',
+  ResetOnSpawn = false,
+  Parent = Players.LocalPlayer->'PlayerGui'!,
+}
+const panel = new Instance('Frame') {
+  Size = new UDim2(0, 360, 0, 300),
+  Position = new UDim2(0.5, -180, 0.5, -150),
+  Parent = screen,
+}
+new Instance('UIListLayout') { Padding = new UDim(0, 6), Parent = panel }
+
+-- A text label in the panel, as wide as the panel.
+local function label(parent: Instance, width: number) -> TextLabel
+  return new Instance('TextLabel') {
+    Size = new UDim2(width, 0, 0, 32),
+    BackgroundTransparency = 1,
+    TextScaled = true,
+    Parent = parent,
+  }
+end
+
+local title = label(panel, 1)
+local wallet = label(panel, 1)
+
+lang:watch(function(t)
+  title.Text = t.shop.title
+  wallet.Text = lang:format(t.shop.coins, { coins = coins })
+end)
+
+-- A row for each item: its name, its stock, and a buy button.
+local function add_row(item: Item) -> ()
+  const row = new Instance('Frame') { Size = new UDim2(1, 0, 0, 40), Parent = panel }
+  new Instance('UIListLayout') { FillDirection = Enum.FillDirection.Horizontal, Parent = row }
+
+  local name = label(row, 0.35)
+  local stock = label(row, 0.25)
+  local buy = new Instance('TextButton') { Size = new UDim2(0.4, 0, 1, 0), Parent = row }
+
+  -- The text of the row, in the language that shows.
+  local function render(t: Text) -> ()
+    name.Text = item.name(t)
+    stock.Text = lang:plural(t.shop.stock, item.stock)
+    buy.Text = item.stock > 0 ? lang:format(t.shop.buy, { price = item.price }) : t.shop.sold_out
+    wallet.Text = lang:format(t.shop.coins, { coins = coins })
+  end
+
+  lang:watch(render)
+
+  buy.Activated:Connect(function()
+    if item.stock > 0 and coins >= item.price then
+      coins -= item.price
+      item.stock -= 1
+      render(lang.t)
+    end
+  end)
+end
+
+for _, item in ITEMS do
+  add_row(item)
+end
+
+-- The language button shows each language in turn.
+local switch = new Instance('TextButton') { Size = new UDim2(1, 0, 0, 32), Parent = panel }
+
+lang:watch(function(t)
+  switch.Text = t.language.name
+end)
+
+switch.Activated:Connect(function()
+  const codes = lang:languages()
+  const index = (table.find(codes, lang.code) ?? 0) % #codes + 1
+  lang:set(codes[index])
+end)

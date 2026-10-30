@@ -1,0 +1,47 @@
+--[[
+  `set` replaces `lang.t` and fires `lang.changed` with the new code.
+  A label that shows a string must be told, and `watch` tells it:
+  `lang:watch(fn)` runs `fn` with the strings now, and again after each
+  change.
+]]
+
+import Players from '@game/Players'
+import { Gloss } from '@packages/gloss'
+import en from './lang/en.toml'
+import fr from './lang/fr.toml'
+
+const lang = new Gloss('en', en)
+lang:add('fr', fr)
+
+const screen = new Instance('ScreenGui') {
+  Name = 'Shop',
+  ResetOnSpawn = false,
+  Parent = Players.LocalPlayer->'PlayerGui'!,
+}
+local title = new Instance('TextLabel') { Size = new UDim2(0, 200, 0, 40), Parent = screen }
+
+-- The label shows "Shop" now, and "Boutique" after the switch.
+const watching = lang:watch(function(t)
+  title.Text = t.shop.title
+end)
+
+-- `changed` is a std Signal, with the shape of a Roblox signal.
+lang.changed:Connect(function(code) print(`now in {code}`) end)
+
+lang:set('fr')
+
+-- Disconnect the watch when the label goes.
+title.Destroying:Connect(function() watching:Disconnect() end)
+
+--[[
+  The rules:
+
+  - `set` fires `changed` only when the code changes. `set('fr')` twice
+    fires once.
+  - A local that holds `lang.t` keeps the old language. Read `lang.t`
+    in the handler, or take the `t` that `watch` passes.
+  - `watch` and `changed:Connect` give a std `SignalConnection`. It has
+    `Disconnect` and `disconnect`, as a Roblox connection does.
+  - A Bevel signal can follow the language too: write
+    `lang.changed:Connect(function() strings:set(lang.t) end)`.
+]]

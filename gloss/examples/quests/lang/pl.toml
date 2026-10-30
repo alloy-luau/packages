@@ -1,0 +1,18 @@
+[language]
+name = "Polski"
+
+[log]
+title = "Dziennik zadań"
+reward = "Nagroda: {xp} PD"
+progress = "{goal}: wykonano {done}"
+done = "Gotowe"
+next = "Inny język"
+left = { one = "Zostało {count} zadanie", few = "Zostały {count} zadania", many = "Zostało {count} zadań", other = "Zostało {count} zadania" }
+
+[quests.wolves]
+name = "Polowanie na wilki"
+goal = { one = "{count} wilk", few = "{count} wilki", many = "{count} wilków", other = "{count} wilka" }
+
+[quests.berries]
+name = "Zbieranie jagód"
+goal = { one = "{count} jagoda", few = "{count} jagody", many = "{count} jagód", other = "{count} jagody" }

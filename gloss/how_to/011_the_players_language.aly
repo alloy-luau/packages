@@ -1,0 +1,42 @@
+--[[
+  Roblox knows the language of each player. `Player.LocaleId` holds the
+  locale that the player set for the Roblox account, such as `en-us` or
+  `pt-br`.
+
+  `lang:follow(player)` shows that language now, and again when the
+  player changes it in the Roblox settings. A client script calls it
+  with the local player.
+]]
+
+import Players from '@game/Players'
+import { Gloss } from '@packages/gloss'
+import en from './lang/en.toml'
+import fr from './lang/fr.toml'
+
+const lang = new Gloss('en', en)
+lang:add('fr', fr)
+
+const following = lang:follow(Players.LocalPlayer)
+print(lang.code)
+
+-- When the player picks a language in the game's own settings, that
+-- choice wins: stop following the account, then show the pick.
+local function pick(code: string) -> ()
+  following:Disconnect()
+  lang:set(code)
+end
+
+pick('fr')
+
+--[[
+  `follow` returns the connection to the `LocaleId` change. Disconnect
+  it to stop.
+
+  A game that saves the pick of the player reads it when the player
+  joins: `set(saved)` when there is one, `follow(player)` when there is
+  none. Step 012 makes the labels follow the change.
+
+  The server needs no Gloss for the text of a player. Send keys and
+  values to the client, and let the client format them in its own
+  language.
+]]
