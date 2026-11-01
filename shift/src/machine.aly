@@ -45,7 +45,7 @@ end
 const HISTORY = 10
 
 -- A state that enters itself again on a timer of zero seconds loops
--- forever in one update. Past this many timers in one update, Gear
+-- forever in one update. Past this many timers in one update, Shift
 -- stops with an error, so the server does not hang.
 const MAX_TIMERS = 10000
 

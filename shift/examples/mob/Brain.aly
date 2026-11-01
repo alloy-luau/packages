@@ -1,5 +1,5 @@
 import Players from '@game/Players'
-import { Machine } from '@packages/gear'
+import { Machine } from '@packages/shift'
 
 --- What a mob does. `Chase` and `Attack` keep the target.
 export enum MobState

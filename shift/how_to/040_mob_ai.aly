@@ -13,7 +13,7 @@ import Players from '@game/Players'
 import RunService from '@game/RunService'
 import Workspace from '@game/Workspace'
 import { HashMap } from '@alloy/std/collections'
-import { Machine } from '@packages/gear'
+import { Machine } from '@packages/shift'
 
 --- What a mob does. The target is part of the state.
 export enum MobState

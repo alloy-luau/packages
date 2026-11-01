@@ -2,12 +2,12 @@
   The transition is a function from a state and an event to the next
   state. Write it as a `match` over the pair, one arm for each move.
 
-  Return nil for "no change". Gear then drops the event: no hook runs
+  Return nil for "no change". Shift then drops the event: no hook runs
   and `changed` does not fire. `default nil` covers every pair that does
   nothing, so the match lists only the moves.
 ]]
 
-import { Machine } from '@packages/gear'
+import { Machine } from '@packages/shift'
 import { DoorEvent, DoorState } from './001_states'
 
 --- The moves of a door. `match a, b with` matches both values at once.
@@ -40,7 +40,7 @@ door:send(DoorEvent.Unlock('red'))
 print(door:state()) -- Closed
 
 --[[
-  - Gear takes nil, not the same state, as "no change". A payload
+  - Shift takes nil, not the same state, as "no change". A payload
     variant compares by identity, so the machine could not tell a new
     `Locked('red')` from the old one. Nil says it in one word.
   - Any state that the transition returns is a move, the same state

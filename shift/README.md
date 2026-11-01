@@ -1,34 +1,34 @@
-# Gear
+# Shift
 
 State machines over [Alloy](https://github.com/alloy-luau/alloy) enums.
 
 The game writes its states as an enum and its events as another enum. The
 transition is a function from a state and an event to the next state, written
-as a `match`, so the compiler checks that each state has an arm. Gear runs the
+as a `match`, so the compiler checks that each state has an arm. Shift runs the
 machine around that function: enter and exit hooks, a `changed` signal, timers
 that drop when their state leaves, and a history of the last states.
 
 A machine runs on a clock of its own, which `update(dt)` moves. A game connects
 it to `Heartbeat`, and a test moves it by hand, with no real time.
 
-Gear depends on no other package. It needs Alloy 0.1.5 or later and embr 0.8.1
+Shift depends on no other package. It needs Alloy 0.1.5 or later and embr 0.8.1
 or later.
 
 ## Learn
 
-- [how_to](https://github.com/alloy-luau/packages/tree/main/gear/how_to) is a
-  tour of Gear in numbered steps, from `001_states.aly` to `050_testing.aly`.
+- [how_to](https://github.com/alloy-luau/packages/tree/main/shift/how_to) is a
+  tour of Shift in numbered steps, from `001_states.aly` to `050_testing.aly`.
   Read them in order.
-- [examples](https://github.com/alloy-luau/packages/tree/main/gear/examples)
+- [examples](https://github.com/alloy-luau/packages/tree/main/shift/examples)
   holds small games: a sliding door, a mob AI, and a round loop.
 
 ## Install
 
-Add Gear to the game's `ember.toml`, then run `embr install`:
+Add Shift to the game's `ember.toml`, then run `embr install`:
 
 ```toml
 [dependencies]
-gear = { name = "alloy/gear", version = "^0.1.0" }
+shift = { name = "alloy/shift", version = "^0.1.0" }
 ```
 
 Mount the packages folder in `alloy.toml`:
@@ -41,7 +41,7 @@ packages = ["packages/roblox", "@game/ReplicatedStorage/Packages"]
 ## Quick start
 
 ```aly
-import { Machine } from '@packages/gear'
+import { Machine } from '@packages/shift'
 
 --- The states of a door. A payload holds data that only one state has.
 export enum DoorState
@@ -91,11 +91,11 @@ type check.
 ## Transitions
 
 The transition takes the state and the event, and returns the next state, or
-nil for no change. With nil, Gear drops the event: no hook runs and `changed`
+nil for no change. With nil, Shift drops the event: no hook runs and `changed`
 does not fire. `default nil` covers every pair that does nothing, so the match
 lists only the moves.
 
-Gear takes nil, not the same state, as "no change". A payload variant compares
+Shift takes nil, not the same state, as "no change". A payload variant compares
 by identity, so the machine could not tell a new `Locked('red')` from the old
 one. Nil says it in one word.
 
@@ -128,7 +128,7 @@ state, and the next `send` runs as usual.
 state, the new state, and the event:
 
 ```aly
-import { Machine } from '@packages/gear'
+import { Machine } from '@packages/shift'
 
 --- A light that a switch flips.
 export enum Light
@@ -166,7 +166,7 @@ clock and fires each timer that falls due:
 
 ```aly
 import RunService from '@game/RunService'
-import { Machine } from '@packages/gear'
+import { Machine } from '@packages/shift'
 
 --- A trap that snaps shut, then opens again.
 export enum Trap
@@ -241,7 +241,7 @@ The clock moves only when code calls `update`, so a test sends events, moves
 the clock by hand, and reads the state:
 
 ```aly
-import { Machine } from '@packages/gear'
+import { Machine } from '@packages/shift'
 
 --- A kettle that boils in three seconds.
 export enum Kettle
@@ -333,14 +333,14 @@ alloy fmt            # the layout
 The tests are the `@test` namespaces at the end of each file in `src`. They run
 on lest, with Alloy's test shim for the Roblox API.
 
-Gear lives in [alloy-luau/packages](https://github.com/alloy-luau/packages),
-the repository of the official Alloy packages, in the `gear` folder. Each
+Shift lives in [alloy-luau/packages](https://github.com/alloy-luau/packages),
+the repository of the official Alloy packages, in the `shift` folder. Each
 package there is a member of one Ember workspace and keeps its own version. Run
-the commands above from `gear`. `embr publish` from `gear` publishes Gear alone.
+the commands above from `shift`. `embr publish` from `shift` publishes Shift alone.
 
-The `how_to` and `examples` files import `@packages/gear`. To check them, copy
-them into a game that installs Gear, then run `alloy flux` there.
+The `how_to` and `examples` files import `@packages/shift`. To check them, copy
+them into a game that installs Shift, then run `alloy flux` there.
 
 ## License
 
-MIT. See [LICENSE](https://github.com/alloy-luau/packages/blob/main/gear/LICENSE).
+MIT. See [LICENSE](https://github.com/alloy-luau/packages/blob/main/shift/LICENSE).

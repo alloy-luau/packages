@@ -1,5 +1,5 @@
 [package]
-name = "alloy/gear"
+name = "alloy/shift"
 version = "0.1.0"
 description = "State machines over Alloy enums: transitions as a match, enter and exit hooks, timers, and history"
 authors = ["savruun"]

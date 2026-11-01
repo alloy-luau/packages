@@ -1,5 +1,5 @@
 import TweenService from '@game/TweenService'
-import { Machine } from '@packages/gear'
+import { Machine } from '@packages/shift'
 
 --- The states of a sliding door.
 export enum DoorState

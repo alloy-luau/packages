@@ -1,6 +1,6 @@
 # Written by `alloy test`. `lest` runs the suite; `alloy test` rewrites the specs.
 
-[suites.gear]
+[suites.shift]
 include = ["tests/**/*.spec.luau"]
 
 [settings]

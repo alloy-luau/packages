@@ -1,7 +1,7 @@
 --[[
-  Gear's project configuration.
+  Shift's project configuration.
 
-  Gear is a package. It lands where the game that uses it mounts its
+  Shift is a package. It lands where the game that uses it mounts its
   build output, so it writes no project file and no sourcemap.
 ]]
 
@@ -36,12 +36,12 @@ export default {
   },
   test = {
     out = 'tests',
-    suite = 'gear',
+    suite = 'shift',
     lest = true,
     shim = true,
   },
   project = {
-    name = 'Gear',
+    name = 'Shift',
     sourcemap = false,
     source_of_truth = false,
     mount_aliases = false,

@@ -8,7 +8,7 @@ a version of its own.
 | --- | --- | --- |
 | [Forge](forge) | `alloy/forge` | OOP providers, after Chief: lifecycles, dependencies, traits, and Bin. |
 | [Bevel](bevel) | `alloy/bevel` | Components, services, injectors, and signals, after Angular. |
-| [Gear](gear) | `alloy/gear` | State machines over Alloy enums, with transitions that a `match` checks. |
+| [Shift](shift) | `alloy/shift` | State machines over Alloy enums, with transitions that a `match` checks. |
 | [Ledger](ledger) | `alloy/ledger` | Typed player data on DataStores: session locks, migrations, autosave, and purchase receipts. |
 | [Foundry](foundry) | `alloy/foundry` | Worker pools on Roblox actors, with typed jobs and a serial fallback. |
 | [Anvil](anvil) | `alloy/anvil` | Console commands typed from their remote functions: arguments, permissions, and help. |

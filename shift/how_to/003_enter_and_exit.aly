@@ -8,7 +8,7 @@
   state that the hook forgets does not compile.
 ]]
 
-import { Machine, type Hook } from '@packages/gear'
+import { Machine, type Hook } from '@packages/shift'
 import { DoorEvent, DoorState } from './001_states'
 import { door_step } from './002_events_and_transitions'
 

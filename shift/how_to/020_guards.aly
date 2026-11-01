@@ -1,5 +1,5 @@
 --[[
-  A guard is a condition on a move. Gear needs no guard API: a `where`
+  A guard is a condition on a move. Shift needs no guard API: a `where`
   on an arm of the transition is the guard. The arm moves only when the
   condition holds; otherwise the match tries the next arm.
 
@@ -7,7 +7,7 @@
   value of the game that the transition can see.
 ]]
 
-import { Machine } from '@packages/gear'
+import { Machine } from '@packages/shift'
 
 --- The power of the lift, which a guard reads.
 local powered = true

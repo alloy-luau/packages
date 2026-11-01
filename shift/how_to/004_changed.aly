@@ -7,7 +7,7 @@
   of an `RBXScriptSignal`: `Connect`, `Once`, `Wait`.
 ]]
 
-import { Machine } from '@packages/gear'
+import { Machine } from '@packages/shift'
 import { DoorEvent, DoorState } from './001_states'
 import { door_step } from './002_events_and_transitions'
 

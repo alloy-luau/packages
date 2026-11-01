@@ -1,5 +1,5 @@
 --[[
-  Gear: state machines over Alloy enums. This module sends out the
+  Shift: state machines over Alloy enums. This module sends out the
   public API; each part lives in its own module beside it.
 
   - machine: Machine, its Options, and the Hook type

@@ -1,17 +1,17 @@
 --[[
   A state machine is a value that is in one state at a time, and moves
-  to another state when an event comes. Gear writes both as enums of
+  to another state when an event comes. Shift writes both as enums of
   the game: one enum for the states, one for the events.
 
   Each variant is a state. A payload holds data that only that state
   has: a locked door keeps the key that locks it, and no other state has
   a key.
 
-  These files import Gear from `@packages/gear`, where `embr install`
+  These files import Shift from `@packages/shift`, where `embr install`
   puts it.
 ]]
 
-import { Machine } from '@packages/gear'
+import { Machine } from '@packages/shift'
 
 --- The states of a door.
 export enum DoorState

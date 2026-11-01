@@ -1,4 +1,4 @@
-import { Machine } from '@packages/gear'
+import { Machine } from '@packages/shift'
 
 --- The phases of a round. `Playing` keeps the round number, and
 --- `Results` keeps the name of the winner.
