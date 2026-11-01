@@ -1,0 +1,78 @@
+--[[
+  The developer's spawn commands:
+
+    spawn <shape> [count] [anchored]   spawn ball 10
+    clear                              clear
+
+  Each part lands in front of the developer, in the Spawned folder, so
+  `clear` takes them all away again.
+]]
+
+import Workspace from '@game/Workspace'
+import { command, fail, on } from '@packages/decree'
+
+--- The level of a developer, as `main.server.aly` gives it.
+export const DEVELOPER = 1
+
+--- The shapes that `spawn` makes.
+enum Shape
+  Block
+  Ball
+  Cylinder
+end
+
+--- The part type of each shape.
+const PART_TYPES = {
+  Block = Enum.PartType.Block,
+  Ball = Enum.PartType.Ball,
+  Cylinder = Enum.PartType.Cylinder,
+}
+
+--- The folder of the spawned parts.
+local function folder() -> Instance
+  return Workspace->Spawned ?? new Instance('Folder') { Name = 'Spawned', Parent = Workspace }
+end
+
+--- Spawns parts in front of the developer.
+@command(DEVELOPER, 'Spawns parts in front of you.')
+remote function Spawn(
+  shape: Shape,
+  @u8 count: number = 1,
+  anchored: boolean = false
+) -> string from client
+
+--- Takes the spawned parts away.
+@command(DEVELOPER, 'Takes each spawned part away.')
+remote function Clear() -> string from client
+
+on(Spawn)(function(caller, shape, count, anchored)
+  const root = caller.Character->HumanoidRootPart
+
+  if root is not BasePart then
+    return fail('You have no character.')
+  elseif count == 0 then
+    return fail('Spawn 1 part at least.')
+  end
+
+  const into = folder()
+
+  for n = 1, count do
+    new Instance('Part') {
+      Shape = PART_TYPES[shape],
+      Size = new Vector3(2, 2, 2),
+      Anchored = anchored,
+      CFrame = root.CFrame * new CFrame(0, n * 2, -6),
+      Parent = into,
+    }
+  end
+
+  return `Spawned {count} {shape} parts.`
+end)
+
+on(Clear)(function(_)
+  const into = folder()
+  const count = #into:GetChildren()
+  into:ClearAllChildren()
+
+  return `Took {count} parts away.`
+end)

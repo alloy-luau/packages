@@ -1,0 +1,432 @@
+--[[
+  Commands. A command is a `remote function` marked `@command`, and `on`
+  gives it a handler. Decree reads the declaration and never binds the
+  remote: each line comes over Decree's own remote (`net.aly`), and the
+  server parses it, checks the level, and runs the handler.
+
+  The remote is the one declaration whose value keeps its parameters at
+  run time: the compiler writes their names, defaults, and types into
+  `spec`. An attribute on a plain function keeps its own arguments
+  alone, so it cannot see the parameters.
+]]
+
+import { HashMap } from '@alloy/std/collections'
+import {
+  type Param,
+  type Spec,
+  describe,
+  fail,
+  params_of,
+  refusal,
+  usage,
+  values_of,
+  words,
+} from './args'
+
+--- Marks a `remote function` as a command. `level` is the lowest level
+--- that may run it, and the game's resolver gives each player a level
+--- (`serve`). `help` says in one line what the command does. The command
+--- is the remote's name in lower case: `Kick` runs as `kick`, in a
+--- namespace too.
+export attribute command(level: number, help: string) on remote
+
+--- What a console UI shows for one command.
+export type Entry = { name: string, usage: string, help: string }
+
+--- The server's answer to a line. `ok` is false when the line did not
+--- run.
+export type Reply = { ok: boolean, text: string }
+
+--- A command that the server knows.
+type Command = {
+  name: string,
+  level: number,
+  help: string,
+  params: { Param },
+  run: (...unknown) -> string,
+}
+
+--- The longest line that the server reads.
+const LONGEST = 500
+
+--- The entry of `help`, which every player may run.
+const HELP: Entry = {
+  name = 'help',
+  usage = 'help [command]',
+  help = 'Lists the commands you may run, or shows how to write one.',
+}
+
+--- The commands, by name.
+const commands: HashMap<string, Command> = new HashMap()
+
+--- The game's resolver. Until `levels` sets it, each player is at
+--- level 0.
+local resolver: (Player) -> number = function(_: Player) -> number
+  return 0
+end
+
+--[[
+  Makes each read of the remote past its `spec` raise. A remote makes
+  its Roblox object on the first read of a method, and a client could
+  call that object past the level check.
+]]
+local function seal(remote: unknown, name: string) -> ()
+  setmetatable(remote :: { [string]: unknown }, {
+    __index = function(_: unknown, key: unknown) -> never
+      error(
+        `{name} is an Decree command, so it has no {tostring(key)}. A client runs it with a line.`,
+        2
+      )
+    end,
+  })
+end
+
+--[[
+  Gives a command its handler: `on(Kick)(function(caller, target) ... end)`.
+  The handler gets the player who runs the command, then the value of
+  each parameter, and returns the answer. It calls `fail` to answer with
+  an error.
+
+  The two calls let the type check read the declaration first, so the
+  handler's parameters take their types from it, and the handler must
+  return a string. The declaration must read
+  `remote function Name(...) -> string from client`. The handler raises
+  for a remote with no `@command`, for a second command of one name,
+  and for a remote that is in use as a remote already.
+]]
+export function on<A...>(remote: {
+  read spec: unknown,
+  read on: ((Player, A...) -> (Future<string> | string)) -> ...unknown,
+}) -> ((Player, A...) -> string) -> ()
+  return function(handler: (Player, A...) -> string) -> ()
+    const spec = remote.spec :: Spec
+    const marked = spec.attrs[command.name]
+    -- A remote in a namespace carries the namespace in its name, as
+    -- `Moderation_Kick`. A remote's own name is PascalCase, with no `_`.
+    const name = string.lower(string.match(spec.name, '[^_]+$') ?? spec.name)
+
+    if marked == nil then
+      error(`{spec.name} has no @command, so Decree cannot run it.`, 0)
+    elseif name == HELP.name or commands:has(name) then
+      error(`Decree has a command called {name} already.`, 0)
+    elseif rawget((remote :: unknown) :: { [string]: unknown }, 'on') ~= nil then
+      error(`{spec.name} is in use as a remote, so a client could call it past Decree.`, 0)
+    end
+
+    commands:set(name, {
+      name = name,
+      level = marked[1] :: number,
+      help = marked[2] :: string,
+      params = params_of(spec),
+      run = (handler :: unknown) :: (...unknown) -> string,
+    })
+    seal(remote, spec.name)
+  end
+end
+
+--- Sets the game's resolver, which gives each player a level. `serve`
+--- calls it.
+export function levels(resolve: (Player) -> number) -> ()
+  resolver = resolve
+end
+
+--- A player's level, as the game's resolver gives it. A resolver that
+--- raises gives level 0, so a fault in it lets no one in.
+export function level_of(player: Player) -> number
+  match Result.pcall(resolver, player) with
+    case Ok(level) then
+      return level
+    case Err(problem) then
+      warn(`Decree: the level of {player.Name} failed: {tostring(problem)}`)
+
+      return 0
+  end
+end
+
+--- The command of a name, when the player may run it.
+local function allowed(player: Player, name: string) -> Command?
+  const found = commands:get(string.lower(name))
+
+  return (found ~= nil and level_of(player) >= found.level) ? found : nil
+end
+
+--- The commands a player may run, by name, `help` among them. A console
+--- UI lists them, or completes a line from them.
+export function entries(player: Player) -> { Entry }
+  const level = level_of(player)
+  const list: { Entry } = { HELP }
+
+  for name, found in commands where level >= found.level do
+    table.insert(list, { name = name, usage = usage(name, found.params), help = found.help })
+  end
+
+  table.sort(list, function(a: Entry, b: Entry) -> boolean return a.name < b.name end)
+
+  return list
+end
+
+--- One parameter in the help: what it wants, and what it takes when a
+--- line leaves it out.
+local function param_line(param: Param) -> string
+  const text = `  {param.name}: {describe(param.kind)}`
+
+  if param.default is string then
+    return `{text}; "{param.default}" when left out`
+  elseif param.default ~= nil then
+    return `{text}; {tostring(param.default)} when left out`
+  end
+
+  return param.optional ? `{text}; you may leave it out` : text
+end
+
+--- The answer of `help`: each command the player may run, or how to
+--- write one of them.
+local function help(player: Player, asked: string?) -> string
+  const lines: { string } = {}
+
+  if asked == nil then
+    table.insert(lines, 'Commands you may run:')
+
+    for _, entry in entries(player) do
+      table.insert(lines, `  {entry.usage}: {entry.help}`)
+    end
+
+    return table.concat(lines, '\n')
+  end
+
+  if string.lower(asked) == HELP.name then
+    return `{HELP.usage}\n{HELP.help}`
+  end
+
+  const found = allowed(player, asked) ?? fail(`No command is called "{asked}".`)
+
+  table.insert(lines, usage(found.name, found.params))
+  table.insert(lines, found.help)
+
+  for _, param in found.params do
+    table.insert(lines, param_line(param))
+  end
+
+  return table.concat(lines, '\n')
+end
+
+--- Runs one line, and gives the answer, or raises a `fail`.
+local function evaluate(caller: Player, line: string, players: { Player }) -> string
+  if #line > LONGEST then
+    return fail(`A line holds {LONGEST} characters at most.`)
+  end
+
+  const tokens = words(line)
+  const first = tokens[1] ?? fail('Write a command, or help for a list.')
+  const name = string.lower(first.text)
+
+  if name == HELP.name then
+    return help(caller, tokens[2]?.text)
+  end
+
+  -- A player who may not run a command learns nothing of it.
+  const found = allowed(caller, name)
+    ?? fail(`No command is called "{first.text}". Write help for a list.`)
+  const values = values_of(name, found.params, tokens, line, caller, players)
+
+  return found.run(caller, table.unpack(values, 1, #found.params))
+end
+
+--[[
+  Runs a line as `caller`, with `players` as the players a line can
+  name, and gives the answer. A `fail` answers with its text. Any other
+  error answers that the command failed, and its text goes to the
+  server's output alone.
+]]
+export function answer(caller: Player, line: string, players: { Player }) -> Reply
+  match Result.pcall(evaluate, caller, line, players) with
+    case Ok(text) then
+      return { ok = true, text = text }
+    case Err(problem) then
+      if const text = refusal(problem) then
+        return { ok = false, text = text }
+      end
+
+      warn(`Decree: "{line}" from {caller.Name} failed: {tostring(problem)}`)
+
+      return { ok = false, text = 'The command failed on the server.' }
+  end
+end
+
+@test
+namespace CommandTests
+  --- Greets a player.
+  @command(0, 'Greets a player.')
+  remote function Greet(target: Player, @u8 times: number = 1) -> string from client
+
+  --- A command for moderators.
+  @command(252, 'Warns a player.')
+  remote function Warn(target: Player, reason: string = 'No reason given') -> string from client
+
+  --- A command whose handler has a fault.
+  @command(0, 'Breaks.')
+  remote function Break() -> string from client
+
+  --- A remote with no @command.
+  remote function Plain(target: Player) -> string from client
+
+  --- A stand-in for a Player: the commands read the names alone.
+  private function fake(name: string) -> Player
+    return ({ Name = name, DisplayName = name } :: unknown) :: Player
+  end
+
+  const builderman = fake('Builderman')
+  const shedletsky = fake('Shedletsky')
+  const here = { builderman, shedletsky }
+
+  --- Gives Builderman level 254 and anyone else 0, and adds the
+  --- commands once.
+  private function ready() -> ()
+    levels(function(player: Player) -> number
+      return player == builderman ? 254 : 0
+    end)
+
+    if commands:has('greet') then
+      return
+    end
+
+    on(Greet)(function(_, target, times) return `Hello, {target.Name}, {times} times.` end)
+    on(Warn)(function(caller, target, reason)
+      if target == caller then
+        return fail('You cannot warn yourself.')
+      end
+
+      return `Warned {target.Name}: {reason}`
+    end)
+    on(Break)(function(_)
+      error('a fault')
+    end)
+  end
+
+  --- A line runs its command with typed values and defaults.
+  public function a_line_runs_its_command() -> ()
+    ready()
+
+    $assert_eq(answer(shedletsky, 'greet builderman 3', here).text, 'Hello, Builderman, 3 times.')
+    $assert_eq(answer(shedletsky, 'GREET me', here).text, 'Hello, Shedletsky, 1 times.')
+    $assert_eq(
+      answer(builderman, 'warn shed being rude', here).text,
+      'Warned Shedletsky: being rude'
+    )
+  end
+
+  --- A level below the command's knows nothing of it.
+  public function a_low_level_cannot_run_or_see_a_command() -> ()
+    ready()
+
+    const reply = answer(shedletsky, 'warn builderman', here)
+
+    $assert(not reply.ok)
+    $assert_eq(reply.text, 'No command is called "warn". Write help for a list.')
+    $assert_eq(answer(shedletsky, 'help warn', here).text, 'No command is called "warn".')
+  end
+
+  --- A fail in a handler is the answer.
+  public function a_fail_answers_with_its_text() -> ()
+    ready()
+
+    const reply = answer(builderman, 'warn me', here)
+
+    $assert(not reply.ok)
+    $assert_eq(reply.text, 'You cannot warn yourself.')
+  end
+
+  --- A fault in a handler gives the caller no detail.
+  public function a_fault_answers_that_the_command_failed() -> ()
+    ready()
+
+    $assert_eq(answer(builderman, 'break', here).text, 'The command failed on the server.')
+  end
+
+  --- A wrong argument names itself.
+  public function a_wrong_argument_answers_what_it_wanted() -> ()
+    ready()
+
+    $assert_eq(
+      answer(builderman, 'greet shed 300', here).text,
+      'times wants a whole number from 0 to 255, but got "300".'
+    )
+    $assert_eq(
+      answer(builderman, 'greet shed 2 3', here).text,
+      'greet takes 2 arguments, but got 3. Write it as: greet <target> [times]'
+    )
+  end
+
+  --- An empty line, and a line that is too long.
+  public function empty_and_long_lines_answer_with_a_hint() -> ()
+    ready()
+
+    $assert_eq(answer(builderman, '   ', here).text, 'Write a command, or help for a list.')
+    $assert_eq(
+      answer(builderman, string.rep('a', 501), here).text,
+      'A line holds 500 characters at most.'
+    )
+  end
+
+  --- help lists what the player may run.
+  public function help_lists_the_commands_a_player_may_run() -> ()
+    ready()
+
+    const low = answer(shedletsky, 'help', here).text
+    const high = answer(builderman, 'help', here).text
+
+    $assert(string.find(low, 'greet <target> [times]: Greets a player.', 1, true) ~= nil)
+    $assert(string.find(low, 'warn', 1, true) == nil)
+    $assert(string.find(high, 'warn <target> [reason]: Warns a player.', 1, true) ~= nil)
+    $assert_eq(#entries(shedletsky), 3)
+    $assert_eq(entries(builderman)[1].name, 'break')
+  end
+
+  --- help with a name shows how to write it.
+  public function help_shows_one_command() -> ()
+    ready()
+
+    $assert_eq(
+      answer(builderman, 'help warn', here).text,
+      table.concat(
+        {
+          'warn <target> [reason]',
+          'Warns a player.',
+          '  target: a player: a name, the start of one, a display name, or me',
+          '  reason: the rest of the line; "No reason given" when left out',
+        },
+        '\n'
+      )
+    )
+  end
+
+  --- A resolver that raises gives level 0.
+  public function a_resolver_that_raises_gives_level_0() -> ()
+    levels(function(_: Player) -> number
+      error('no answer')
+    end)
+
+    $assert_eq(level_of(builderman), 0)
+  end
+
+  --- on refuses a remote with no @command, and a second name.
+  public function on_refuses_a_plain_remote_and_a_second_name() -> ()
+    ready()
+
+    $expect(function() -> ()
+      on(Plain)(function(_, target) return target.Name end)
+    end):toThrow('has no @command')
+    $expect(function() -> ()
+      on(Greet)(function(_, target) return target.Name end)
+    end):toThrow('a command called greet already')
+  end
+
+  --- A command's remote raises on each use as a remote.
+  public function a_command_is_no_remote() -> ()
+    ready()
+
+    $expect(function() -> ()
+      Greet.call(builderman)
+    end):toThrow('Greet is an Decree command')
+  end
+end

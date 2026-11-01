@@ -1,0 +1,705 @@
+--[[
+  Arguments. A command is a `remote function`, and the compiler writes
+  the declaration into the remote's `spec`: the parameter names, the
+  defaults, and the wire layout, which names the type of each one. This
+  module reads that layout into a list of `Param`, splits a line into
+  words, and reads each word as the type of its parameter.
+
+  Each mistake in a line is a `fail`, so the player reads which argument
+  was wrong, what it got, and what it wanted. A mistake in a declaration
+  is a plain error, since the game's code must change.
+]]
+
+import { Attributes } from '@alloy/std/roblox'
+
+--- The part of a remote's `spec` that Decree reads.
+export type Spec = {
+  name: string,
+  kind: string,
+  from_client: boolean,
+  params: { string },
+  defaults: { [string]: unknown },
+  attrs: { [string]: { unknown } },
+  wire: { unknown }?,
+}
+
+--- The parse function of an `@argument` struct.
+export type Parser = (text: string, caller: Player) -> unknown
+
+--- What a parameter takes, as its type in the declaration says.
+export enum Kind
+  Number
+  Whole(number, number)
+  Word
+  Rest
+  Flag
+  OnePlayer
+  ManyPlayers
+  Choice({ string })
+  Custom(Parser, string)
+end
+
+--- One parameter of a command.
+export type Param = {
+  name: string,
+  kind: Kind,
+  optional: boolean,
+  default: unknown,
+}
+
+--- One word of a line, and where it starts in the line.
+export type Token = { text: string, from: number }
+
+--- An error that a player reads. `fail` raises one.
+struct Refusal
+  text: string
+end
+
+--- Ends the command, and sends `text` to the player as the answer. A
+--- command or a parse function calls it for a mistake in the line, or
+--- for a thing the player may not do.
+export function fail(text: string) -> never
+  error(new Refusal { text = text }, 0)
+end
+
+--- The text of a `fail`, or nil for any other error.
+export function refusal(problem: unknown) -> string?
+  return problem is Refusal ? problem.text : nil
+end
+
+--- Marks a struct as an argument type of the game's own. `wants` says
+--- what a word must be, for the help and the errors: 'a user: a name or
+--- a user id'. Decree calls the static `parse` with the word and the
+--- caller. It gives the value, or nil when the word is not one; it can
+--- also call `fail` with a reason of its own.
+export attribute argument(wants: string) on struct as
+  requires function parse(text: string, caller: Player)
+end
+
+--- The range of each width attribute, as the wire packs it. A parameter
+--- with one takes a whole number in that range.
+const WHOLE: { [string]: { number } } = {
+  u8 = { 0, 255 },
+  u16 = { 0, 65535 },
+  u32 = { 0, 4294967295 },
+  i8 = { -128, 127 },
+  i16 = { -32768, 32767 },
+  i32 = { -2147483648, 2147483647 },
+}
+
+--- The words a flag reads as true, and as false.
+const YES = { 'true', 'yes', 'on', '1' }
+const NO = { 'false', 'no', 'off', '0' }
+
+--- The kind of a wire entry, and whether nil is fine. A plain table is
+--- a layout of the compiler; `struct` holds the struct of a record.
+local function kind_of(entry: unknown, last: boolean) -> (Kind?, boolean)
+  if entry is table then
+    const layout = entry :: { item: unknown, struct: unknown, optional: boolean? }
+    const optional = layout.optional ?? false
+
+    if layout.item == 'inst:Player' then
+      return Kind.ManyPlayers, optional
+    end
+
+    const wants = layout.struct ~= nil ? Attributes.get(layout.struct, argument) : nil
+
+    if wants == nil then
+      return nil, optional
+    end
+
+    return Kind.Custom((layout.struct :: { parse: Parser }).parse, wants), optional
+  end
+
+  if entry is not string then
+    return nil, false
+  end
+
+  const optional = string.sub(entry, -1) == '?'
+  const base = optional ? string.sub(entry, 1, -2) : entry
+
+  if const range = WHOLE[base] then
+    return Kind.Whole(range[1], range[2]), optional
+  elseif string.sub(base, 1, 4) == 'one:' then
+    return Kind.Choice(string.split(string.sub(base, 5), ',')), optional
+  end
+
+  const kind = match base with
+    case 'f64' or 'f32' then Kind.Number
+    -- The last string takes the rest of the line, as a reason does.
+    case 'str' then last ? Kind.Rest : Kind.Word
+    case 'bool' then Kind.Flag
+    case 'inst:Player' then Kind.OnePlayer
+    default nil
+  end
+
+  return kind, optional
+end
+
+--[[
+  The parameters of a command, from its declaration. It raises for a
+  type that Decree cannot read, and for a parameter that a line must give
+  after one that it may leave out: the words go in order, so a line
+  could not give the second and leave out the first.
+]]
+export function params_of(spec: Spec) -> { Param }
+  const wire = spec.wire ?? {}
+  const params: { Param } = []
+  local optional_name: string? = nil
+
+  for at, name in spec.params do
+    const found, nil_ok = kind_of(wire[at], at == #spec.params)
+    const default = spec.defaults[name]
+    const optional = nil_ok or default ~= nil
+    if found == nil then
+      error(
+        `{spec.name}: Decree cannot read the type of {name}. A parameter takes a number, a string, a boolean, a Player, a \{ Player \}, a unit enum, or a struct marked @argument.`,
+        0
+      )
+    end
+
+    if optional_name ~= nil and not optional then
+      error(`{spec.name}: {name} needs a value, so it must come before {optional_name}.`, 0)
+    end
+
+    if optional then
+      optional_name = optional_name ?? name
+    end
+
+    table.insert(
+      params,
+      { name = name, kind = found :: Kind, optional = optional, default = default }
+    )
+  end
+
+  return params
+end
+
+--- The words of a line. A pair of double quotes holds words together as
+--- one, and the quotes go.
+export function words(line: string) -> { Token }
+  const tokens: { Token } = []
+  local at = 1
+
+  while true do
+    const from = string.find(line, '%S', at)
+
+    if from == nil then
+      break
+    end
+
+    if string.sub(line, from, from) == '"' then
+      const close = string.find(line, '"', from + 1, true) ?? #line + 1
+      table.insert(tokens, { text = string.sub(line, from + 1, close - 1), from = from })
+      at = close + 1
+    else
+      const stop = string.find(line, '%s', from) ?? #line + 1
+      table.insert(tokens, { text = string.sub(line, from, stop - 1), from = from })
+      at = stop
+    end
+  end
+
+  return tokens
+end
+
+--- What a parameter of this kind wants, in the words of the help.
+export function describe(kind: Kind) -> string
+  return match kind with
+    case Kind.Number then 'a number'
+    case Kind.Whole(low, high) then `a whole number from {low} to {high}`
+    case Kind.Word then 'a word, or words in double quotes'
+    case Kind.Rest then 'the rest of the line'
+    case Kind.Flag then 'true or false'
+    case Kind.OnePlayer then 'a player: a name, the start of one, a display name, or me'
+    case Kind.ManyPlayers then 'players: all, others, me, or names with commas between'
+    case Kind.Choice(names) then `one of {table.concat(names, ', ')}`
+    case Kind.Custom(_, wants) then wants
+  end
+end
+
+--- A command's line in the help: its name, then `<name>` for each
+--- parameter that a line must give and `[name]` for each other one.
+export function usage(name: string, params: { Param }) -> string
+  const parts = { name }
+
+  for _, param in params do
+    table.insert(parts, param.optional ? `[{param.name}]` : `<{param.name}>`)
+  end
+
+  return table.concat(parts, ' ')
+end
+
+--- Raises the error of a word that is not what its parameter wants.
+local function wrong(param: Param, text: string) -> never
+  return fail(`{param.name} wants {describe(param.kind)}, but got "{text}".`)
+end
+
+--- The names of some players, for an error.
+local function names_of(players: { Player }) -> string
+  const names: { string } = []
+
+  for _, player in players do
+    table.insert(names, player.Name)
+  end
+
+  return table.concat(names, ', ')
+end
+
+--[[
+  The players a word names: an exact name first, then an exact display
+  name, then each name or display name that starts with it. Case does
+  not count. A player picks a display name freely, so a name wins over
+  it.
+]]
+local function named(word: string, players: { Player }) -> { Player }
+  const lower = string.lower(word)
+  const tests = {
+    function(player: Player) -> boolean return string.lower(player.Name) == lower end,
+    function(player: Player) -> boolean return string.lower(player.DisplayName) == lower end,
+    function(player: Player) -> boolean
+      return string.sub(string.lower(player.Name), 1, #lower) == lower
+        or string.sub(string.lower(player.DisplayName), 1, #lower) == lower
+    end,
+  }
+
+  for _, test in tests do
+    const found: { Player } = []
+
+    for _, player in players do
+      if test(player) then
+        table.insert(found, player)
+      end
+    end
+
+    if #found > 0 then
+      return found
+    end
+  end
+
+  return {}
+end
+
+--- The one player a word names, or a `fail` that says why not.
+local function one_player(param: Param, word: string, caller: Player, players: { Player }) -> Player
+  const lower = string.lower(word)
+
+  if lower == 'me' then
+    return caller
+  elseif lower == 'all' or lower == 'others' then
+    return fail(`{param.name} takes one player, but "{word}" names more than one.`)
+  end
+
+  const found = named(word, players)
+
+  if #found == 0 then
+    return fail(`{param.name}: no player here is called "{word}".`)
+  elseif #found > 1 then
+    return fail(`{param.name}: "{word}" could be {names_of(found)}. Write more of the name.`)
+  end
+
+  return found[1]
+end
+
+--- The players a word names, each one once: `all`, `others`, `me`, and
+--- names, with commas between. A word that names no one fails.
+local function many_players(
+  param: Param,
+  word: string,
+  caller: Player,
+  players: { Player }
+) -> { Player }
+  const picked: { Player } = []
+
+  for _, piece in string.split(word, ',') do
+    const lower = string.lower(piece)
+    local found: { Player } = {}
+
+    if lower == 'all' then
+      found = players
+    elseif lower == 'others' then
+      for _, player in players do
+        if player ~= caller then
+          table.insert(found, player)
+        end
+      end
+    elseif piece ~= '' then
+      found = { one_player(param, piece, caller, players) }
+    end
+
+    for _, player in found do
+      if table.find(picked, player) == nil then
+        table.insert(picked, player)
+      end
+    end
+  end
+
+  if #picked == 0 then
+    return fail(`{param.name}: "{word}" names no player.`)
+  end
+
+  return picked
+end
+
+--- A number that is no NaN and no infinity.
+local function finite(text: string) -> number?
+  const value = tonumber(text)
+
+  return (value ~= nil and value == value and math.abs(value) ~= math.huge) ? value : nil
+end
+
+--- One word as the value of its parameter, or a `fail` that says why
+--- not.
+export function read(param: Param, text: string, caller: Player, players: { Player }) -> unknown
+  const lower = string.lower(text)
+
+  match param.kind with
+    case Kind.Number then
+      return finite(text) ?? wrong(param, text)
+    case Kind.Whole(low, high) then
+      const value = finite(text)
+
+      return (value ~= nil and value % 1 == 0 and value >= low and value <= high)
+        ? value
+        : wrong(param, text)
+    case Kind.Word or Kind.Rest then
+      return text
+    case Kind.Flag then
+      if table.find(YES, lower) ~= nil then
+        return true
+      end
+
+      return table.find(NO, lower) ~= nil ? false : wrong(param, text)
+    case Kind.OnePlayer then
+      return one_player(param, text, caller, players)
+    case Kind.ManyPlayers then
+      return many_players(param, text, caller, players)
+    case Kind.Choice(names) then
+      for _, name in names where string.lower(name) == lower do
+        return name
+      end
+
+      return wrong(param, text)
+    case Kind.Custom(parse, _) then
+      const value = parse(text, caller)
+
+      return value ~= nil ? value : wrong(param, text)
+  end
+end
+
+--- "1 argument", "2 arguments".
+local function count_of(n: number) -> string
+  return n == 1 ? '1 argument' : `{n} arguments`
+end
+
+--[[
+  The values of a line for a command, one for each parameter, in order.
+  `tokens[1]` is the command's own name. A parameter the line leaves out
+  takes its default, or nil. The rest of the line keeps its own spaces
+  and quotes, except one word in quotes, which loses them.
+]]
+export function values_of(
+  name: string,
+  params: { Param },
+  tokens: { Token },
+  line: string,
+  caller: Player,
+  players: { Player }
+) -> { unknown }
+  local values: { unknown } = {}
+  const given = #tokens - 1
+
+  for at, param in params do
+    const token = tokens[at + 1]
+    local value: unknown = nil
+
+    if token == nil then
+      value = nil
+    elseif param.kind == Kind.Rest and given > at then
+      value = (string.gsub(string.sub(line, token.from), '%s+$', ''))
+    else
+      value = read(param, token.text, caller, players)
+    end
+
+    if value == nil and not param.optional then
+      return fail(
+        `{name} needs {param.name}: {describe(param.kind)}. Write it as: {usage(name, params)}`
+      )
+    end
+
+    values[at] = value ?? param.default
+  end
+
+  const last = params[#params]
+
+  if given > #params and (last == nil or last.kind ~= Kind.Rest) then
+    return fail(
+      `{name} takes {count_of(#params)}, but got {given}. Write it as: {usage(name, params)}`
+    )
+  end
+
+  return values
+end
+
+@test
+namespace ArgsTests
+  --- A weather that a command can name.
+  enum Weather
+    Clear
+    Rain
+  end
+
+  --- A remote with one parameter of each kind.
+  remote function Every(
+    amount: number,
+    @u8 count: number,
+    flag: boolean,
+    who: Player,
+    crowd: { Player },
+    weather: Weather,
+    word: string,
+    rest: string = 'none'
+  ) -> string from client
+
+  --- An argument type of the test's own: a code of four letters.
+  @argument('a code of four letters')
+  struct Code
+    text: string
+  end
+
+  impl Code
+    --- The code a word names. `none` fails with a reason of its own.
+    function parse(text: string, _caller: Player) -> Code?
+      if text == 'none' then
+        return fail('A code is never none.')
+      end
+
+      return string.match(text, '^%a%a%a%a$') ~= nil ? new Code { text = text } : nil
+    end
+  end
+
+  --- A remote that takes a Code.
+  remote function Enter(code: Code) -> string from client
+
+  --- A stand-in for a Player: the parse reads the names alone.
+  private function fake(name: string, shown: string) -> Player
+    return ({ Name = name, DisplayName = shown } :: unknown) :: Player
+  end
+
+  --- The parameters of Every, by name.
+  private function param(name: string) -> Param
+    for _, each in params_of(Every.spec :: Spec) where each.name == name do
+      return each
+    end
+
+    error(`no parameter {name}`)
+  end
+
+  --- The text of the fail that `run` raises.
+  private function refused(run: () -> ()) -> string
+    match Result.pcall(run) with
+      case Ok(_) then
+        return ''
+      case Err(problem) then
+        return refusal(problem) ?? tostring(problem)
+    end
+  end
+
+  --- The declaration gives each parameter its kind.
+  public function each_type_reads_as_its_kind() -> ()
+    const params = params_of(Every.spec :: Spec)
+
+    $assert_eq(#params, 8)
+    $assert_eq(params[1].kind, Kind.Number)
+    $assert_eq(describe(params[2].kind), 'a whole number from 0 to 255')
+    $assert_eq(params[3].kind, Kind.Flag)
+    $assert_eq(params[4].kind, Kind.OnePlayer)
+    $assert_eq(params[5].kind, Kind.ManyPlayers)
+    $assert_eq(describe(params[6].kind), 'one of Clear, Rain')
+    $assert_eq(params[7].kind, Kind.Word)
+    $assert_eq(params[8].kind, Kind.Rest)
+    $assert(params[8].optional)
+    $assert_eq(params[8].default, 'none')
+  end
+
+  --- Double quotes hold words together.
+  public function words_split_on_spaces_and_keep_quotes_whole() -> ()
+    const tokens = words('  kick "Big Bob"  now ')
+
+    $assert_eq(#tokens, 3)
+    $assert_eq(tokens[1].text, 'kick')
+    $assert_eq(tokens[2].text, 'Big Bob')
+    $assert_eq(tokens[3].text, 'now')
+    $assert_eq(tokens[3].from, 19)
+  end
+
+  --- Numbers, whole numbers, and flags.
+  public function numbers_and_flags_read_and_refuse() -> ()
+    const me = fake('Builderman', 'Bob')
+
+    $assert_eq(read(param('amount'), '2.5', me, {}), 2.5)
+    $assert_eq(read(param('count'), '255', me, {}), 255)
+    $assert_eq(read(param('flag'), 'Yes', me, {}), true)
+    $assert_eq(read(param('flag'), 'off', me, {}), false)
+    $assert_eq(
+      refused(function() read(param('amount'), 'nan', me, {}) end),
+      'amount wants a number, but got "nan".'
+    )
+    $assert_eq(
+      refused(function() read(param('count'), '256', me, {}) end),
+      'count wants a whole number from 0 to 255, but got "256".'
+    )
+    $assert_eq(
+      refused(function() read(param('count'), '1.5', me, {}) end),
+      'count wants a whole number from 0 to 255, but got "1.5".'
+    )
+    $assert_eq(
+      refused(function() read(param('flag'), 'maybe', me, {}) end),
+      'flag wants true or false, but got "maybe".'
+    )
+  end
+
+  --- A unit enum takes a variant's name, in any case.
+  public function an_enum_takes_its_variants() -> ()
+    const me = fake('Builderman', 'Bob')
+
+    $assert_eq(read(param('weather'), 'rain', me, {}), 'Rain')
+    $assert_eq(
+      refused(function() read(param('weather'), 'snow', me, {}) end),
+      'weather wants one of Clear, Rain, but got "snow".'
+    )
+  end
+
+  --- A player by name, the start of a name, a display name, or me.
+  public function a_player_reads_by_name_display_name_or_me() -> ()
+    const me = fake('Builderman', 'Bob')
+    const shedletsky = fake('Shedletsky', 'Shed')
+    const stickmasterluke = fake('StickMasterLuke', 'Luke')
+    const here = { me, shedletsky, stickmasterluke }
+    const who = param('who')
+
+    $assert_eq(read(who, 'me', me, here), me)
+    $assert_eq(read(who, 'shedletsky', me, here), shedletsky)
+    $assert_eq(read(who, 'luke', me, here), stickmasterluke)
+    $assert_eq(read(who, 'stick', me, here), stickmasterluke)
+    $assert_eq(
+      refused(function() read(who, 's', me, here) end),
+      'who: "s" could be Shedletsky, StickMasterLuke. Write more of the name.'
+    )
+    $assert_eq(
+      refused(function() read(who, 'noob', me, here) end),
+      'who: no player here is called "noob".'
+    )
+    $assert_eq(
+      refused(function() read(who, 'all', me, here) end),
+      'who takes one player, but "all" names more than one.'
+    )
+  end
+
+  --- A name wins over a display name.
+  public function a_name_wins_over_a_display_name() -> ()
+    const bob = fake('Bob', 'Robert')
+    const other = fake('Builderman', 'Bob')
+
+    $assert_eq(read(param('who'), 'bob', other, { other, bob }), bob)
+  end
+
+  --- all, others, me, and names with commas.
+  public function players_read_all_others_and_lists() -> ()
+    const me = fake('Builderman', 'Bob')
+    const shedletsky = fake('Shedletsky', 'Shed')
+    const here = { me, shedletsky }
+    const crowd = param('crowd')
+
+    $assert_eq(#(read(crowd, 'all', me, here) :: { Player }), 2)
+    $assert_eq((read(crowd, 'others', me, here) :: { Player })[1], shedletsky)
+    $assert_eq(#(read(crowd, 'me,shed,me', me, here) :: { Player }), 2)
+    $assert_eq(
+      refused(function() read(crowd, 'others', me, { me }) end),
+      'crowd: "others" names no player.'
+    )
+  end
+
+  --- A line gives each value in order, and defaults fill the rest.
+  public function a_line_gives_values_in_order() -> ()
+    const me = fake('Builderman', 'Bob')
+    const line = 'every 1 2 yes me all clear word the "rest" of it '
+    const params = params_of(Every.spec :: Spec)
+    const values = values_of('every', params, words(line), line, me, { me })
+
+    $assert_eq(values[7], 'word')
+    $assert_eq(values[8], 'the "rest" of it')
+
+    const short = 'every 1 2 yes me all clear "one word"'
+    const filled = values_of('every', params, words(short), short, me, { me })
+
+    $assert_eq(filled[7], 'one word')
+    $assert_eq(filled[8], 'none')
+  end
+
+  --- One word in quotes as the rest of the line loses its quotes.
+  public function a_quoted_rest_loses_its_quotes() -> ()
+    const me = fake('Builderman', 'Bob')
+    const line = 'every 1 2 yes me all clear word "said it"'
+    const params = params_of(Every.spec :: Spec)
+
+    $assert_eq(values_of('every', params, words(line), line, me, { me })[8], 'said it')
+  end
+
+  --- A struct marked @argument reads through its parse.
+  public function an_argument_type_reads_through_its_parse() -> ()
+    const me = fake('Builderman', 'Bob')
+    const code = params_of(Enter.spec :: Spec)[1]
+
+    $assert_eq((read(code, 'abcd', me, {}) :: Code).text, 'abcd')
+    $assert_eq(
+      refused(function() read(code, 'abc', me, {}) end),
+      'code wants a code of four letters, but got "abc".'
+    )
+    $assert_eq(refused(function() read(code, 'none', me, {}) end), 'A code is never none.')
+  end
+
+  --- A missing argument names itself and the usage.
+  public function a_missing_argument_says_what_it_wants() -> ()
+    const me = fake('Builderman', 'Bob')
+    const params = params_of(Every.spec :: Spec)
+
+    $assert_eq(
+      refused(function() values_of('every', params, words('every 1'), 'every 1', me, { me }) end),
+      'every needs count: a whole number from 0 to 255. Write it as: every <amount> <count> <flag> <who> <crowd> <weather> <word> [rest]'
+    )
+  end
+
+  --- A type that Decree cannot read stops the registration.
+  public function an_unknown_type_raises() -> ()
+    const spec: Spec = {
+      name = 'Odd',
+      kind = 'function',
+      from_client = true,
+      params = { 'thing' },
+      defaults = {},
+      attrs = {},
+      wire = { 'val:Vector3' },
+    }
+
+    $expect(function() -> ()
+      params_of(spec)
+    end):toThrow('cannot read the type of thing')
+  end
+
+  --- A required parameter after an optional one stops the registration.
+  public function a_required_after_an_optional_raises() -> ()
+    const spec: Spec = {
+      name = 'Odd',
+      kind = 'function',
+      from_client = true,
+      params = { 'first', 'second' },
+      defaults = {},
+      attrs = {},
+      wire = { 'f64?', 'f64' },
+    }
+
+    $expect(function() -> ()
+      params_of(spec)
+    end):toThrow('second needs a value, so it must come before first')
+  end
+end

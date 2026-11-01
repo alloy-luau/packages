@@ -1,0 +1,67 @@
+--[[
+  Enums and optional arguments. A unit enum takes the name of one of its
+  variants, in any case, and the help lists them. A parameter with a
+  default, or with a type that ends in `?`, is optional: a line can leave
+  it out.
+]]
+
+import Lighting from '@game/Lighting'
+import { command, fail, on } from '@packages/decree'
+
+--- The skies a server can have.
+enum Sky
+  Day
+  Dusk
+  Night
+end
+
+--- The clock time of each sky.
+const HOURS = { Day = 12, Dusk = 18, Night = 0 }
+
+--- Sets the sky, for a time or for good.
+@command(0, 'Sets the sky, for some seconds or for good.')
+remote function Weather(sky: Sky, seconds: number?) -> string from client
+
+--- Sets the brightness.
+@command(0, 'Sets the brightness of the sun.')
+remote function Bright(level: number = 2) -> string from client
+
+on(Weather)(function(_, sky, seconds)
+  const before = Lighting.ClockTime
+  Lighting.ClockTime = HOURS[sky]
+
+  -- `seconds` is nil when the line leaves it out.
+  if seconds == nil then
+    return `The sky is {sky} now.`
+  end
+
+  task.delay(seconds, function() Lighting.ClockTime = before end)
+
+  return `The sky is {sky} for {seconds} seconds.`
+end)
+
+-- `level` takes its default, 2, when the line leaves it out.
+on(Bright)(function(_, level)
+  if level < 0 or level > 10 then
+    return fail('The brightness goes from 0 to 10.')
+  end
+
+  Lighting.Brightness = level
+
+  return `The brightness is {level}.`
+end)
+
+--[[
+    weather night       The sky is Night now.
+    weather dusk 30     The sky is Dusk for 30 seconds.
+    weather rain        sky wants one of Day, Dusk, Night, but got "rain".
+    bright              The brightness is 2.
+
+  The rules:
+
+  - The handler gets the variant itself, `Sky.Night`, typed as `Sky`.
+  - A payload enum is no argument type. Use a unit enum.
+  - Each optional parameter comes after the ones a line must give. The
+    words go in order, so `on` raises for a required one after an
+    optional one.
+]]

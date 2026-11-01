@@ -1,0 +1,92 @@
+--[[
+  The teleport commands:
+
+    tp <targets> <to>    tp all me, tp shed,luke builderman
+    goto <target>        goto builderman
+    warp <spot>          warp lobby, warp 0,50,0
+
+  A spot is a part of Workspace.Spots by name, or a position written
+  x,y,z.
+]]
+
+import Workspace from '@game/Workspace'
+import { argument, command, fail, on } from '@packages/decree'
+
+--- The level that may teleport.
+export const TELEPORTER = 1
+
+--- A place to warp to.
+@argument('a spot: a part of Workspace.Spots by name, or x,y,z')
+struct Spot
+  position: Vector3
+end
+
+impl Spot
+  --- The spot a word names.
+  function parse(text: string, _caller: Player) -> Spot?
+    const x, y, z = string.match(text, '^(-?[%d.]+),(-?[%d.]+),(-?[%d.]+)$')
+
+    if x ~= nil and y ~= nil and z ~= nil then
+      return new Spot {
+        position = new Vector3(tonumber(x) ?? 0, tonumber(y) ?? 0, tonumber(z) ?? 0),
+      }
+    end
+
+    const spot = Workspace->Spots?:FindFirstChild(text)
+
+    return spot is BasePart ? new Spot { position = spot.Position } : nil
+  end
+end
+
+--- Moves a player's character to a position, a little above it.
+local function move(player: Player, position: Vector3) -> boolean
+  const character = player.Character
+
+  if character == nil then
+    return false
+  end
+
+  character:PivotTo(new CFrame(position + new Vector3(0, 4, 0)))
+
+  return true
+end
+
+--- The position of a player's character, or a fail.
+local function where_is(player: Player) -> Vector3
+  const character = player.Character ?? fail(`{player.Name} has no character.`)
+
+  return character:GetPivot().Position
+end
+
+--- Moves players to a player.
+@command(TELEPORTER, 'Moves players to a player.')
+remote function Tp(targets: { Player }, to: Player) -> string from client
+
+--- Moves the caller to a player.
+@command(TELEPORTER, 'Takes you to a player.')
+remote function Goto(target: Player) -> string from client
+
+--- Moves the caller to a spot.
+@command(TELEPORTER, 'Takes you to a spot.')
+remote function Warp(spot: Spot) -> string from client
+
+on(Tp)(function(_, targets, to)
+  const position = where_is(to)
+  local moved = 0
+
+  for _, target in targets where target ~= to and move(target, position) do
+    moved += 1
+  end
+
+  return `Moved {moved} players to {to.Name}.`
+end)
+
+on(Goto)(function(caller, target)
+  return move(caller, where_is(target))
+    ? `You stand by {target.Name}.`
+    : fail('You have no character.')
+end)
+
+on(Warp)(function(caller, spot)
+  return move(caller, spot.position) ? 'You warp.' : fail('You have no character.')
+end)

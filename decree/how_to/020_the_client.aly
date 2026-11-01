@@ -1,0 +1,67 @@
+--[[
+  The client's part. Decree ships no UI: a console of the game's own, or
+  one such as Conch, calls `run` with each line the player writes, and
+  shows the answer. The client parses nothing and checks nothing. The
+  server does both, so a client that sends any line gains nothing.
+
+  This step builds the smallest console: a TextBox for the line and a
+  TextLabel for the answer. It runs on the client, as a LocalScript.
+]]
+
+import Players from '@game/Players'
+import { list, run } from '@packages/decree'
+
+local gui = new Instance('ScreenGui') { Name = 'Console', ResetOnSpawn = false }
+
+local box = new Instance('TextBox') {
+  PlaceholderText = 'Write a command, then press Enter',
+  ClearTextOnFocus = true,
+  Text = '',
+  Size = new UDim2(0.5, 0, 0, 32),
+  Position = new UDim2(0.25, 0, 1, -120),
+  Parent = gui,
+}
+
+local shown = new Instance('TextLabel') {
+  BackgroundTransparency = 1,
+  TextWrapped = true,
+  TextXAlignment = Enum.TextXAlignment.Left,
+  TextYAlignment = Enum.TextYAlignment.Top,
+  Size = new UDim2(0.5, 0, 0, 80),
+  Position = new UDim2(0.25, 0, 1, -84),
+  Text = '',
+  Parent = gui,
+}
+
+gui.Parent = Players.LocalPlayer->'PlayerGui'!
+
+-- `run` sends the line and waits for the answer. A connection runs on a
+-- thread of its own, so `await` can wait there.
+box.FocusLost:Connect(function(entered)
+  if not entered or box.Text == '' then
+    return
+  end
+
+  const reply = await run(box.Text)
+  shown.Text = reply.text
+  shown.TextColor3 = reply.ok ? new Color3(1, 1, 1) : new Color3(1, 0.4, 0.4)
+end)
+
+-- `list` gives the commands that this player may run, as the server
+-- knows them, for a UI that lists them or completes a line.
+async do
+  const commands = await list()
+  box.PlaceholderText = `{#commands} commands to choose from; write help for a list`
+end
+
+--[[
+  The rules:
+
+  - `run(line)` gives a Future of the `Reply`: `ok` is false when the
+    line did not run, and `text` is the answer to show.
+  - `run` waits until the server calls `serve`.
+  - The server drops a flood of lines. Then `run` answers that the
+    player must wait.
+  - For Conch, register one Conch command that takes the rest of the
+    line and passes it to `run`.
+]]

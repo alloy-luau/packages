@@ -11,7 +11,7 @@ a version of its own.
 | [Shift](shift) | `alloy/shift` | State machines over Alloy enums, with transitions that a `match` checks. |
 | [Ledger](ledger) | `alloy/ledger` | Typed player data on DataStores: session locks, migrations, autosave, and purchase receipts. |
 | [Foundry](foundry) | `alloy/foundry` | Worker pools on Roblox actors, with typed jobs and a serial fallback. |
-| [Anvil](anvil) | `alloy/anvil` | Console commands typed from their remote functions: arguments, permissions, and help. |
+| [Decree](decree) | `alloy/decree` | Console commands typed from their remote functions: arguments, permissions, and help. |
 | [Gloss](gloss) | `alloy/gloss` | Localization from TOML, with keys that the type check holds to the base language. |
 | [Lattice](lattice) | `alloy/lattice` | A typed ECS over jecs: components, queries, systems in phases, and a scheduler. |
 | [Lever](lever) | `alloy/lever` | Input actions from a game enum, on the Input Action System: bindings, axes, contexts, rebinding, and prompts. |

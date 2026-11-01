@@ -1,0 +1,142 @@
+--[[
+  The admin commands, for moderators:
+
+    kick <target> [reason]           kick Builderman griefing
+    ban <user> <length> [reason]     ban Builderman 7d griefing
+    unban <user>                     unban Builderman
+
+  A user is a player in the server, the name of any Roblox user, or a
+  user id, so a ban reaches a user who left. A length is a time such as
+  30m, 2h, or 7d, or perm. A moderator acts on no one of their own rank
+  or above.
+]]
+
+import Players from '@game/Players'
+import { argument, command, fail, level_of, on } from '@packages/decree'
+import { MODERATOR, rank_of_user } from './ranks'
+
+--- The seconds of each unit of a length.
+const UNITS: { [string]: number } = { m = 60, h = 3600, d = 86400 }
+
+--- A Roblox user, in the server or not.
+@argument('a user: a player here, a Roblox name, or a user id')
+struct User
+  id: number
+  name: string
+end
+
+impl User
+  --- The user a word names. A name of a user who is not here takes a
+  --- look-up with Roblox, which yields.
+  function parse(text: string, caller: Player) -> User?
+    const id = tonumber(text)
+
+    if string.lower(text) == 'me' then
+      return new User { id = caller.UserId, name = caller.Name }
+    elseif id ~= nil and id % 1 == 0 and id > 0 then
+      return new User { id = id, name = `user {id}` }
+    elseif const player = Players:FindFirstChild(text) where player is Player then
+      return new User { id = player.UserId, name = player.Name }
+    end
+
+    match Result.pcall(Players.GetUserIdFromNameAsync, Players, text) with
+      case Ok(found) then
+        return new User { id = found, name = text }
+      case Err(_) then
+        return fail(`No Roblox user is called "{text}".`)
+    end
+  end
+end
+
+--- The length of a ban, in seconds, or -1 for good.
+@argument('a length: 30m, 2h, 7d, or perm')
+struct Length
+  seconds: number
+end
+
+impl Length
+  --- The length a word names.
+  function parse(text: string, _caller: Player) -> Length?
+    const lower = string.lower(text)
+
+    if lower == 'perm' then
+      return new Length { seconds = -1 }
+    end
+
+    const count, unit = string.match(lower, '^(%d+)(%a)$')
+    const each = UNITS[unit ?? '']
+
+    return (count ~= nil and each ~= nil)
+      ? new Length { seconds = (tonumber(count) ?? 0) * each }
+      : nil
+  end
+end
+
+--- Fails unless the caller may act on a user of rank `rank`.
+local function check_rank(caller: Player, id: number, rank: number) -> ()
+  if id == caller.UserId then
+    fail('You cannot do that to yourself.')
+  elseif rank >= level_of(caller) then
+    fail('You cannot act on a moderator of your own rank or above.')
+  end
+end
+
+--- Kicks a player out of the server.
+@command(MODERATOR, 'Kicks a player out of the server.')
+remote function Kick(target: Player, reason: string = 'You were kicked.') -> string from client
+
+--- Bans a user from the whole game.
+@command(MODERATOR, 'Bans a user from each server of the game.')
+remote function Ban(
+  user: User,
+  length: Length,
+  reason: string = 'You are banned.'
+) -> string from client
+
+--- Lifts a ban.
+@command(MODERATOR, 'Lifts the ban of a user.')
+remote function Unban(user: User) -> string from client
+
+on(Kick)(function(caller, target, reason)
+  check_rank(caller, target.UserId, level_of(target))
+  target:Kick(reason)
+
+  return `Kicked {target.Name}: {reason}`
+end)
+
+-- Players:BanAsync bans the user from each server of the universe, and
+-- takes them out of this one at once.
+on(Ban)(function(caller, user, length, reason)
+  check_rank(caller, user.id, rank_of_user(user.id))
+
+  const banned = Result.pcall(Players.BanAsync, Players, {
+    UserIds = { user.id },
+    Duration = length.seconds,
+    DisplayReason = reason,
+    PrivateReason = `By {caller.Name} ({caller.UserId}): {reason}`,
+    ExcludeAltAccounts = false,
+    ApplyToUniverse = true,
+  })
+
+  match banned with
+    case Ok(_) then
+      return length.seconds < 0
+        ? `Banned {user.name} for good.`
+        : `Banned {user.name} for {length.seconds} seconds.`
+    case Err(problem) then
+      return fail(`The ban failed: {tostring(problem)}`)
+  end
+end)
+
+on(Unban)(function(_, user)
+  match Result.pcall(
+    Players.UnbanAsync,
+    Players,
+    { UserIds = { user.id }, ApplyToUniverse = true }
+  ) with
+    case Ok(_) then
+      return `The ban of {user.name} is lifted.`
+    case Err(problem) then
+      return fail(`The unban failed: {tostring(problem)}`)
+  end
+end)

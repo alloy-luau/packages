@@ -1,0 +1,91 @@
+--[[
+  Permissions. A level is a number that the game gives each player, and
+  each command names the lowest level that may run it. Here the levels
+  are the ranks of a Roblox group, as in Strata: a moderator holds rank
+  252 or above, and a developer rank 254 or above.
+
+  The server checks the level of every line, so the client only asks. A
+  player below a command's level does not see it in the help, and a
+  line that names it answers that no such command exists.
+]]
+
+import GroupService from '@game/GroupService'
+import Players from '@game/Players'
+import { command, fail, level_of, on, serve } from '@packages/decree'
+
+--- The group whose ranks are the levels. Put the id of your group here.
+const GROUP = 1234567
+
+--- The lowest rank of a moderator.
+const MODERATOR = 252
+
+--- The lowest rank of a developer.
+const DEVELOPER = 254
+
+--[[
+  A player's rank in the group: the highest rank of their roles, or 0
+  out of the group. Roblox keeps each answer for a time, so a call for
+  each line costs little.
+]]
+local function rank_of(player: Player) -> number
+  const answer = GroupService:GetRolesInGroupAsync(player.UserId, GROUP) :: {
+    IsMember: boolean,
+    Roles: { { Rank: number } },
+  }
+  local best = 0
+
+  if answer.IsMember then
+    for _, role in answer.Roles do
+      best = math.max(best, role.Rank)
+    end
+  end
+
+  return best
+end
+
+--- Holds a player in place.
+@command(MODERATOR, 'Holds a player in place, or lets them go.')
+remote function Freeze(target: Player, frozen: boolean = true) -> string from client
+
+--- Closes the server.
+@command(DEVELOPER, 'Kicks each player and closes the server.')
+remote function Shutdown(reason: string = 'The server is closing.') -> string from client
+
+on(Freeze)(function(caller, target, frozen)
+  -- A moderator acts on no one of their own level or above. `level_of`
+  -- gives the level that the resolver gives.
+  if target ~= caller and level_of(target) >= level_of(caller) then
+    return fail(`You cannot freeze {target.Name}.`)
+  end
+
+  if local root = target.Character->HumanoidRootPart where root is BasePart then
+    root.Anchored = frozen
+
+    return frozen ? `{target.Name} is held.` : `{target.Name} can move.`
+  end
+
+  return fail(`{target.Name} has no character.`)
+end)
+
+on(Shutdown)(function(_, reason)
+  for _, player in Players:GetPlayers() do
+    player:Kick(reason)
+  end
+
+  return 'The server closes.'
+end)
+
+-- The resolver runs on the server alone. One that raises gives level 0,
+-- so a fault in it lets no one in.
+serve(rank_of)
+
+--[[
+  The rules:
+
+  - The game names the levels. A constant for each one keeps the
+    numbers in one place, and `@command` takes the constant.
+  - Each command needs a level. Level 0 is for every player.
+  - The level check happens before Decree reads any argument, so a player
+    learns nothing of a command they may not run.
+  - A check that reads the target, as `Freeze` does, goes in the handler.
+]]

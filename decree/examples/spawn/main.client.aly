@@ -1,0 +1,40 @@
+--[[
+  The console: a TextBox for the line, and a TextLabel for the answer.
+  The server reads each line and checks each level, so this script only
+  sends.
+]]
+
+import Players from '@game/Players'
+import { run } from '@packages/decree'
+
+local gui = new Instance('ScreenGui') { Name = 'Console', ResetOnSpawn = false }
+
+const box = new Instance('TextBox') {
+  PlaceholderText = 'Write a command, or help',
+  ClearTextOnFocus = true,
+  Text = '',
+  Size = new UDim2(0.5, 0, 0, 32),
+  Position = new UDim2(0.25, 0, 1, -120),
+  Parent = gui,
+}
+
+local shown = new Instance('TextLabel') {
+  BackgroundTransparency = 1,
+  TextWrapped = true,
+  TextXAlignment = Enum.TextXAlignment.Left,
+  TextYAlignment = Enum.TextYAlignment.Top,
+  Size = new UDim2(0.5, 0, 0, 80),
+  Position = new UDim2(0.25, 0, 1, -84),
+  Text = '',
+  Parent = gui,
+}
+
+gui.Parent = Players.LocalPlayer->'PlayerGui'!
+
+box.FocusLost:Connect(function(entered)
+  if entered and box.Text ~= '' then
+    const reply = await run(box.Text)
+    shown.Text = reply.text
+    shown.TextColor3 = reply.ok ? new Color3(1, 1, 1) : new Color3(1, 0.4, 0.4)
+  end
+end)
