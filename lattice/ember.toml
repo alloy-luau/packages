@@ -1,6 +1,6 @@
 [package]
 name = "alloy/lattice"
-version = "0.1.0"
+version = "0.1.1"
 description = "A typed ECS for Alloy over jecs: components, queries, systems in phases, and a scheduler"
 authors = ["savruun"]
 repository = "alloy-luau/packages"

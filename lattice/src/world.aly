@@ -9,8 +9,68 @@
   the first world is not in that world, so `world()` closes the list.
 ]]
 
+--- @class world
+--- The world, its components and tags, and the built-in ids of jecs. A
+--- Lattice world is a jecs world, so each jecs method works on it.
+--- Import these from `@packages/lattice`.
+
 import jecs from '../packages/roblox/jecs'
 
+--- @function pair
+--- @within world
+--- The id of a relationship and its target. `pair(Likes, bob)` is the id
+--- "likes bob", and an entity holds it as it holds a tag. A pair whose
+--- first id is a component holds a value.
+--- @param first Entity<P> -- The relationship, a component or a tag
+--- @param second Entity<O> -- The target, such as an entity
+--- @return jecs.Pair<P, O> -- The id of the pair
+
+--- @prop ChildOf Entity
+--- @within world
+--- @readonly
+--- The relationship of a child to its parent: `pair(ChildOf, house)`.
+--- When the parent goes, its children go too.
+
+--- @prop Wildcard Entity
+--- @within world
+--- @readonly
+--- Any id, in a query and in `has`: `pair(Likes, Wildcard)`. It does not
+--- work in `add` or `set`.
+
+--- @prop Exclusive Entity
+--- @within world
+--- @readonly
+--- A trait: an entity holds one target of the relationship at a time.
+--- `tag('MarriedTo', Exclusive)` keeps one target.
+
+--- @prop OnDelete Entity
+--- @within world
+--- @readonly
+--- A cleanup condition: the id goes. `pair(OnDelete, Delete)` on an id
+--- deletes each entity that holds the id when the id goes.
+
+--- @prop OnDeleteTarget Entity
+--- @within world
+--- @readonly
+--- A cleanup condition: the target of a relationship goes.
+--- `pair(OnDeleteTarget, Delete)` deletes each holder when its target goes.
+
+--- @prop Delete Entity
+--- @within world
+--- @readonly
+--- A cleanup action: jecs deletes each entity that holds the id.
+
+--- @prop Remove Entity
+--- @within world
+--- @readonly
+--- A cleanup action: jecs removes the id from each entity that holds it.
+--- An id with no cleanup trait gets this action.
+
+--- @prop Name Entity<string>
+--- @within world
+--- @readonly
+--- The component that holds the name of an id. [world.component] and
+--- [world.tag] set it, jabby shows it, and replecs reads it.
 export {
   ChildOf,
   Wildcard,
@@ -23,12 +83,16 @@ export {
   pair,
 } from '../packages/roblox/jecs'
 
+--- @within world
 --- A jecs world: entities, their components, and the queries over them.
 export type World = jecs.World
 
+--- @within world
 --- An entity, or the id of a component that holds a `T`.
 export type Entity<T = nil> = jecs.Entity<T>
 
+--- @within world
+--- @private
 --- Any id: a component, a tag, or a pair. jecs's `Entity<T>` is
 --- invariant in `T`, so a list of mixed ids takes this read-only face.
 export type Id = { read __T: unknown }
@@ -63,6 +127,11 @@ end
 --- or a number. `name` is its jecs `Name`, which jabby shows and replecs
 --- reads. Each trait after it goes on the id in each world, as
 --- `component<<number>>('Owes', Exclusive)` does.
+--- @within world
+--- @param name -- The jecs `Name` of the id, such as `Position`
+--- @param ... -- The traits that go on the id, such as `Exclusive`
+--- @return Entity<T> -- The id of the component
+--- @error string -- When a world exists already. Make each id before the first [world.world] call
 export function component<T>(name: string?, ...: Id) -> Entity<T>
   check_open(name)
   return register(jecs.component<<T>>(), name, { ... })
@@ -70,6 +139,11 @@ end
 
 --- A tag: an id that holds no value, such as `Dead`. A tag is also the
 --- first half of a relationship that holds no value: `pair(Likes, bob)`.
+--- @within world
+--- @param name -- The jecs `Name` of the id, such as `Dead`
+--- @param ... -- The traits that go on the id, such as `Exclusive`
+--- @return Entity -- The id of the tag
+--- @error string -- When a world exists already. Make each id before the first [world.world] call
 export function tag(name: string?, ...: Id) -> Entity
   check_open(name)
   return register(jecs.tag(), name, { ... })
@@ -77,6 +151,9 @@ end
 
 --- A new world. It knows each component and tag made before it. Pass
 --- `true` for jecs's debug world, which checks each call and is slower.
+--- @within world
+--- @param debug -- `true` for the debug world of jecs
+--- @return World -- The new world
 export function world(debug: boolean?) -> World
   closed = true
   return jecs.world(debug)
@@ -84,6 +161,11 @@ end
 
 --- Each target of `relation` on `entity`, in the order jecs keeps them:
 --- for `pair(Likes, alice)` and `pair(Likes, bob)`, alice and bob.
+--- @within world
+--- @param world -- The world to read
+--- @param entity -- The entity that holds the pairs
+--- @param relation -- The first id of each pair, such as `Likes`
+--- @return { Entity } -- The targets. The list is empty when the entity has none
 export function targets<T, R>(world: World, entity: Entity<T>, relation: Entity<R>) -> { Entity }
   const found: { Entity } = {}
   local target = world:target(entity, relation, 0)

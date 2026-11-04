@@ -26,11 +26,25 @@
   so Lattice could not read them. `system` keeps the phase here instead.
 ]]
 
+--- @class scheduler
+--- Systems and their phases. [scheduler.system] names the phase of a
+--- system, and a [Scheduler] runs the systems of a world.
+--- Import these from `@packages/lattice`.
+
 import RunService from '@game/RunService'
 import type { World } from './world'
 
---- The phases of a frame. A system that `system` does not name runs in
---- Simulation.
+--- @type Phase 'Startup' | 'PreSimulation' | 'Simulation' | 'PostSimulation' | 'Render'
+--- @within scheduler
+--- The phases of a frame. A system that [scheduler.system] does not name
+--- runs in Simulation. A [Scheduler] runs each phase on its RunService
+--- event:
+---
+--- - `Phase.Startup`: once, before the first frame
+--- - `Phase.PreSimulation`: on `RunService.PreSimulation`, before the physics
+--- - `Phase.Simulation`: on `RunService.PostSimulation`, after the physics
+--- - `Phase.PostSimulation`: on `RunService.PostSimulation`, after Simulation
+--- - `Phase.Render`: on `RunService.PreRender`, on a client only
 export enum Phase
   Startup
   PreSimulation
@@ -39,6 +53,7 @@ export enum Phase
   Render
 end
 
+--- @within scheduler
 --- A system: it reads and writes the world, and `dt` is the seconds
 --- since the last frame. A Startup system gets 0.
 export type System = (world: World, dt: number) -> ()
@@ -53,6 +68,11 @@ const FRAME = [ Phase.PreSimulation, Phase.Simulation, Phase.PostSimulation, Pha
 --- Names the phase of a system, and gives the system back, so a system
 --- module ends with `export default system(movement, Phase.Simulation)`.
 --- A second call with another phase stops with an error.
+--- @within scheduler
+--- @param run -- The system
+--- @param phase -- The phase that the system runs in
+--- @return System -- The same system
+--- @error string -- When an earlier call gave the system another phase
 export function system(run: System, phase: Phase) -> System
   const had = named[run]
   assert(had == nil or had == phase, `lattice: this system runs in {had} already`)
@@ -66,8 +86,12 @@ local function name_of(run: System) -> string
   return (name == nil or name == '') ? tostring(run) : name
 end
 
+--- @class Scheduler
 --- Runs the systems of one world, phase by phase.
 export struct Scheduler
+  --- @prop world World
+  --- @within Scheduler
+  --- @readonly
   --- The world that each system gets.
   read world: World
   -- The systems of each phase, in the order they run.
@@ -81,6 +105,8 @@ end
 
 impl Scheduler
   --- A scheduler for `world`, with no systems.
+  --- @param world -- The world that each system gets
+  --- @return Scheduler -- The new scheduler
   function new(world: World) -> Scheduler
     const scheduler = new Scheduler { world = world }
 
@@ -96,6 +122,10 @@ impl Scheduler
   --- Adds systems. Each one goes to the phase that `system` named for
   --- it. A system that the scheduler holds keeps its first place, so a
   --- caller can add the systems that must run first, then the rest.
+  --- @method add
+  --- @within Scheduler
+  --- @param ... -- The systems to add
+  --- @return Scheduler -- The same scheduler, so the calls can chain
   function add(self, ...: System) -> Scheduler
     for _, run in { ... } do
       if not self.known[run] then
@@ -109,6 +139,10 @@ impl Scheduler
 
   --- Runs the systems of one phase by hand. An error stops the run and
   --- goes to the caller, as a test wants.
+  --- @method run
+  --- @within Scheduler
+  --- @param phase -- The phase to run
+  --- @param dt -- The seconds that each system gets. The default is 0
   function run(self, phase: Phase, dt: number = 0) -> ()
     for _, run in self.phases[phase] do
       run(self.world, dt)
@@ -117,6 +151,9 @@ impl Scheduler
 
   --- Runs one frame by hand: Startup on the first call, then
   --- PreSimulation, Simulation, PostSimulation, and Render.
+  --- @method step
+  --- @within Scheduler
+  --- @param dt -- The seconds that each system gets. The default is 1/60
   function step(self, dt: number = 1 / 60) -> ()
     self:startup()
 
@@ -128,6 +165,9 @@ impl Scheduler
   --- Runs Startup, then each phase on its RunService event. An error in
   --- a system shows as a warning with the system's name, and the next
   --- system runs.
+  --- @method start
+  --- @within Scheduler
+  --- @error string -- When the scheduler runs already
   function start(self) -> ()
     assert(#self.connections == 0, 'lattice: this scheduler runs already')
     self:startup()
@@ -150,6 +190,8 @@ impl Scheduler
 
   --- Stops the RunService events. `start` runs them again, with no
   --- second Startup.
+  --- @method stop
+  --- @within Scheduler
   function stop(self) -> ()
     for _, connection in self.connections do
       connection:Disconnect()

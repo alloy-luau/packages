@@ -14,17 +14,24 @@
   their own.
 ]]
 
+--- @class query
+--- Typed queries that need no world to make. [query.query] makes one, and
+--- its `of` gives the cached jecs query of a world.
+--- Import these from `@packages/lattice`.
+
 import jecs from '../packages/roblox/jecs'
 import type { Id, World } from './world'
 
+--- @interface Query
+--- @within query
 --- A query over the components `T...`. `with` and `without` add filters,
 --- and `of(world)` gives the cached jecs query of one world.
+--- .with (self: Query<T...>, ...Id) -> Query<T...> -- Keeps the entities that also have each id. A filter yields no value.
+--- .without (self: Query<T...>, ...Id) -> Query<T...> -- Drops the entities that have any of the ids.
+--- .of (self: Query<T...>, world: World) -> jecs.Cached_Query<T...> -- The cached query of this world, which a `for` loop walks.
 export type Query<T...> = {
-  --- Keeps the entities that also have each id. A filter yields no value.
   with: (self: Query<T...>, ...Id) -> Query<T...>,
-  --- Drops the entities that have any of the ids.
   without: (self: Query<T...>, ...Id) -> Query<T...>,
-  --- The cached query of this world, which a `for` loop walks.
   of: (self: Query<T...>, world: World) -> jecs.Cached_Query<T...>,
 }
 
@@ -86,6 +93,17 @@ end
 --- A query over up to eight components. Each one yields its value in the
 --- loop, in order, and a tag yields nil. Each component left out yields
 --- nothing, so a loop binds only the ones the query names.
+--- @within query
+--- @param a -- The first id: a component, a tag, or a pair
+--- @param b -- The second id, or nil
+--- @param c -- The third id, or nil
+--- @param d -- The fourth id, or nil
+--- @param e -- The fifth id, or nil
+--- @param f -- The sixth id, or nil
+--- @param g -- The seventh id, or nil
+--- @param h -- The eighth id, or nil
+--- @return Query<A, B, C, D, E, F, G, H> -- The query. Its `of` gives the cached jecs query of a world
+--- @error string -- When the call gives no id
 @allow(explicit_any, too_many_arguments)
 export function query<A, B, C, D, E, F, G, H>(
   a: jecs.Id<A>,
