@@ -1,6 +1,6 @@
 [package]
 name = "alloy/forge"
-version = "0.1.1"
+version = "0.1.2"
 description = "OOP providers for Alloy, after Chief: lifecycles, dependencies, traits, and Bin in one package"
 authors = ["savruun"]
 repository = "alloy-luau/packages"

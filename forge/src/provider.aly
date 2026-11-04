@@ -8,6 +8,12 @@
   instance, for the order and the lifecycles to wire.
 ]]
 
+--- @class provider
+--- What a provider is: the [provider.Provider] attribute, the lifecycles a
+--- provider can list, and the [Entry] that Forge keeps for each provider.
+---
+--- Import these from `@packages/forge`.
+
 import { Set } from '@alloy/std/collections'
 import { Attributes } from '@alloy/std/roblox'
 
@@ -15,6 +21,9 @@ import { Attributes } from '@alloy/std/roblox'
 --- the boot barrier; the others are Roblox events that Forge wires at
 --- PostInit, once any provider lists them. The value is the name of the
 --- method it calls.
+---
+--- @type Lifecycle "Init" | "Start" | "PlayerAdded" | "PlayerRemoving" | "CharacterAdded" | "CharacterRemoving" | "AppearanceLoaded" | "HumanoidDied" | "Closing" | "PreRender" | "PreAnimation" | "PreSimulation" | "PostSimulation" | "Heartbeat" | "LocalCharacterAdded" | "LocalCharacterRemoving" | "LocalAppearanceLoaded" | "LocalHumanoidDied"
+--- @within provider
 export enum Lifecycle
   --- `Init(self)`: runs in order, before any Start. It must not yield.
   Init
@@ -60,15 +69,18 @@ export enum Lifecycle
   LocalHumanoidDied
 end
 
---[[
-  Marks a provider. `lifecycles` names each method Forge calls: a
-  Lifecycle, or the method name of a lifecycle added with AddLifecycles,
-  such as 'Autosave'. The contract makes the compiler ask the impl for a
-  private method of each name. Higher `priority` inits first.
-
-  Put it on the impl, beside the methods it asks for. The struct takes it
-  too, since a struct and its impls are one type.
-]]
+--- Marks a provider. `lifecycles` names each method Forge calls: a
+--- [Lifecycle], or the method name of a lifecycle added with
+--- [Forge:AddLifecycles], such as 'Autosave'. The contract makes the
+--- compiler ask the impl for a private method of each name. Higher
+--- `priority` inits first.
+---
+--- Put it on the impl, beside the methods it asks for. The struct takes it
+--- too, since a struct and its impls are one type.
+---
+--- @prop Provider attribute(lifecycles: (Lifecycle | string)[] = [], priority: number = 0)
+--- @within provider
+--- @readonly
 export attribute Provider(lifecycles: (Lifecycle | string)[] = [], priority: number = 0) on struct, impl as
   requires private function each lifecycles
 end
@@ -78,24 +90,33 @@ end
 export type ProviderObject = { [string]: any }
 
 --- One loaded provider. Extensions read and reorder these.
+---
+--- @interface Entry
+--- .Name string -- The name of its ModuleScript
+--- .ModuleScript ModuleScript -- The ModuleScript it came from
+--- .Provider ProviderObject -- The one instance: the module's default export
+--- .Lifecycles { string } -- The method names `@Provider` lists, in order
+--- .Priority number -- Higher inits first
 export type Entry = {
-  --- The name of its ModuleScript.
   Name: string,
-  --- The ModuleScript it came from.
   ModuleScript: ModuleScript,
-  --- The one instance: the module's default export.
   Provider: ProviderObject,
-  --- The method names `@Provider` lists, in order.
   Lifecycles: { string },
-  --- Higher inits first.
   Priority: number,
 }
 
 --- What `@Provider` says about one struct.
+---
+--- @private
 export type ProviderOptions = { lifecycles: { string }, priority: number }
 
 --- The value of a module: its default export when it has one, as an
 --- Alloy module does, else what it returns, as a Luau module does.
+---
+--- @within provider
+--- @private
+--- @param value -- The value of a module
+--- @return unknown -- The default export, or `value`
 export function exported(value: unknown) -> unknown
   if value is table and value.default ~= nil then
     return value.default
@@ -107,6 +128,11 @@ end
 --- The options `@Provider` gives a struct, or nil when it carries none.
 --- It gives a copy, so an extension that edits an entry leaves the
 --- attribute as it is.
+---
+--- @within provider
+--- @private
+--- @param struct -- The struct behind a provider
+--- @return ProviderOptions? -- A copy of the options, or nil
 export function options_of(struct: unknown) -> ProviderOptions?
   if const read = Attributes.get(struct, Provider) then
     return { lifecycles = table.clone(read.lifecycles), priority = read.priority }
@@ -118,6 +144,12 @@ end
 --- Errors unless a provider writes a method for each lifecycle it lists.
 --- The compiler checks the same contract; this catches a provider built
 --- outside it, such as a plain Luau module.
+---
+--- @within provider
+--- @private
+--- @param name -- The provider name, for the message
+--- @param provider -- The provider to check
+--- @param lifecycles -- The method names it lists
 export function check_contract(name: string, provider: ProviderObject, lifecycles: { string }) -> ()
   for _, method in lifecycles do
     if provider[method] is not function then
@@ -128,6 +160,12 @@ end
 
 --- The Lifecycle methods a provider writes and does not list. Forge does
 --- not call them, and warns so the omission shows.
+---
+--- @within provider
+--- @private
+--- @param provider -- The provider to check
+--- @param lifecycles -- The method names it lists
+--- @return { string } -- The boot methods it writes and does not list
 export function unlisted(provider: ProviderObject, lifecycles: { string }) -> { string }
   const listed = Set.from(lifecycles)
 
@@ -137,6 +175,11 @@ export function unlisted(provider: ProviderObject, lifecycles: { string }) -> { 
 end
 
 --- Whether Forge calls this lifecycle itself, in the boot barrier.
+---
+--- @within provider
+--- @private
+--- @param method -- The method name of a lifecycle
+--- @return boolean -- True for Init and Start
 export function is_boot(method: string) -> boolean
   return method == 'Init' or method == 'Start'
 end

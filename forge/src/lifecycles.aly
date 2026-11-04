@@ -10,12 +10,25 @@
   adds them with AddLifecycles and a provider lists their method.
 ]]
 
+--- @class lifecycles
+--- The types of a custom lifecycle, and the ways its `fire` runs the
+--- handlers. Make one with [Forge.every], or write a [CustomLifecycle], and
+--- add it with [Forge:AddLifecycle].
+---
+--- Import these from `@packages/forge`.
+
 import Players from '@game/Players'
 import RunService from '@game/RunService'
 import { Set } from '@alloy/std/collections'
 import { type Entry, type ProviderObject, is_boot } from './provider'
 
---- How `fire` hands an event to the providers that listen.
+--- How `fire` hands an event to the providers that listen. Spawn runs
+--- each handler on its own thread. Inline runs them one after another on
+--- the event's thread. Await runs them at once and returns when the last
+--- one ends.
+---
+--- @type Dispatch "Spawn" | "Inline" | "Await"
+--- @within lifecycles
 export enum Dispatch
   --- Each handler runs on its own thread, and `fire` returns at once. A
   --- slow or failing handler cannot hold up the others. The default.
@@ -35,15 +48,17 @@ end
 @allow(explicit_any)
 export type Fire = (...any) -> ()
 
---[[
-  A lifecycle: an event bound to a method name.
-
-  - `Method`: the name a provider lists and writes.
-  - `Connect`: a signal to connect to, or a function that takes `fire`
-    and returns a connection, or nil when nothing stays connected. Call
-    `fire(...)` to hand the arguments to each provider that listens.
-  - `Dispatch`: how `fire` runs the handlers. Spawn when nil.
-]]
+--- A lifecycle: an event bound to a method name. Add one with
+--- [Forge:AddLifecycle].
+---
+--- `Connect` is a signal to connect to, or a function that takes `fire`
+--- and returns a connection, or nil when nothing stays connected. Call
+--- `fire(...)` to hand the arguments to each provider that listens.
+---
+--- @interface CustomLifecycle
+--- .Method string -- The name a provider lists and writes
+--- .Connect RBXScriptSignal | (fire: Fire) -> RBXScriptConnection? -- The event source
+--- .Dispatch Dispatch? -- How `fire` runs the handlers. Spawn when nil.
 export type CustomLifecycle = {
   Method: string,
   Connect: RBXScriptSignal | (fire: Fire) -> RBXScriptConnection?,
@@ -225,11 +240,22 @@ const BUILTINS: { [string]: CustomLifecycle } = {
 }
 
 --- Whether a name is a built-in lifecycle that Forge wires to an event.
+---
+--- @within lifecycles
+--- @private
+--- @param method -- The method name of a lifecycle
+--- @return boolean -- True when Forge has a built-in event for `method`
 export function is_builtin(method: string) -> boolean
   return BUILTINS[method] ~= nil
 end
 
 --- Errors unless a value is a lifecycle Forge can wire.
+---
+--- @within lifecycles
+--- @private
+--- @param value -- The value to check
+--- @param index -- The argument number, for the message
+--- @param call -- The name of the call, for the message
 export function check_lifecycle(value: unknown, index: number, call: string) -> ()
   const bad = `BadArgument: Bad argument #{index} for {call}`
 
@@ -258,6 +284,12 @@ end
 --- the real time since the last tick. A lag spike gives one late tick,
 --- not a burst. Each call makes a new lifecycle, so two intervals can
 --- drive two methods.
+---
+--- @within lifecycles
+--- @private
+--- @param seconds -- The time between two calls
+--- @param method -- The method name that a provider lists and writes
+--- @return CustomLifecycle -- The new lifecycle
 export function every(seconds: number, method: string) -> CustomLifecycle
   if seconds is not number or seconds <= 0 then
     error(
@@ -326,6 +358,13 @@ end
 
 --- A `fire` that hands its arguments to `method` of each listener, the
 --- way `mode` says.
+---
+--- @within lifecycles
+--- @private
+--- @param listeners -- The providers that listen
+--- @param method -- The method name to call on each listener
+--- @param mode -- How the handlers run
+--- @return Fire -- The `fire` function
 export function dispatcher(listeners: { ProviderObject }, method: string, mode: Dispatch) -> Fire
   return function(...) -> ()
     match mode with
@@ -413,6 +452,12 @@ end
 --- Wires every lifecycle the providers list: the built-ins they name,
 --- and each custom one. `on_server` says which side this is; Forge asks
 --- only when a provider lists a lifecycle of one side.
+---
+--- @within lifecycles
+--- @private
+--- @param entries -- The loaded entries, in boot order
+--- @param customs -- The lifecycles the game added
+--- @param on_server -- Gives true on the server
 export function wire(
   entries: { Entry },
   customs: { CustomLifecycle },

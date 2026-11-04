@@ -14,6 +14,13 @@
   import emits no require, so two providers may use each other's types.
 ]]
 
+--- @class dependencies
+--- The target type of [Forge.use]. A provider field set to
+--- `Forge.use(target)` gets the provider that the target names before any
+--- Init.
+---
+--- Import these from `@packages/forge`.
+
 import { HashMap, Set } from '@alloy/std/collections'
 import { type Entry, type ProviderObject } from './provider'
 
@@ -26,13 +33,18 @@ const MARKER = {}
 export type Target = string | ModuleScript
 
 --- One dependency field of a provider.
+---
+--- @private
 export type Link = { field: string, target: Target }
 
 --- The dependencies of every entry, resolved.
+---
+--- @interface Links
+--- @private
+--- .uses { [Entry]: { Entry } } -- The entries each entry uses, each once
+--- .fields { [Entry]: { [string]: Entry } } -- The entry each dependency field of an entry names
 export type Links = {
-  --- The entries each entry uses, each once.
   uses: { [Entry]: { Entry } },
-  --- The entry each dependency field of an entry names.
   fields: { [Entry]: { [string]: Entry } },
 }
 
@@ -43,6 +55,11 @@ export type Links = {
 ---
 --- A ModuleScript target loads that provider when the game did not add
 --- it; a name finds a provider the game added.
+---
+--- @within dependencies
+--- @private
+--- @param target -- The provider name, or its ModuleScript
+--- @return any -- A marker that Forge replaces with the provider
 @allow(explicit_any)
 export function use(target: Target) -> any
   const good = target is string ? target ~= '' : target is ModuleScript
@@ -63,6 +80,11 @@ local function is_marker(value: unknown) -> boolean
 end
 
 --- The dependency fields of a provider, in no set order.
+---
+--- @within dependencies
+--- @private
+--- @param provider -- The provider to read
+--- @return { Link } -- One link for each field that holds a marker
 export function links_of(provider: ProviderObject) -> { Link }
   const out: { Link } = {}
 
@@ -93,6 +115,11 @@ end
 
 --- Resolves every dependency field of every entry. Errors with
 --- MissingDependency when one names a provider Forge never loaded.
+---
+--- @within dependencies
+--- @private
+--- @param entries -- The loaded entries
+--- @return Links -- The uses and the dependency fields of each entry
 export function link(entries: { Entry }) -> Links
   local uses: { [Entry]: { Entry } } = {}
   local fields: { [Entry]: { [string]: Entry } } = {}
@@ -144,12 +171,16 @@ local function best(ready: { Entry }, index_of: { [Entry]: number }) -> number
   return at
 end
 
---[[
-  Kahn's algorithm: the entries with each one after everything it uses.
-  Among the entries whose uses are all done, the higher priority goes
-  first, then the one added first. Nil when a cycle leaves some entries
-  unordered.
-]]
+--- Kahn's algorithm: the entries with each one after everything it uses.
+--- Among the entries whose uses are all done, the higher priority goes
+--- first, then the one added first. Nil when a cycle leaves some entries
+--- unordered.
+---
+--- @within dependencies
+--- @private
+--- @param entries -- The loaded entries
+--- @param uses -- The entries each entry uses
+--- @return { Entry }? -- The entries in Init order, or nil for a cycle
 export function order(entries: { Entry }, uses: { [Entry]: { Entry } }) -> { Entry }?
   local index_of: { [Entry]: number } = {}
   local waiting: { [Entry]: number } = {}
@@ -195,6 +226,12 @@ end
 
 --- One cycle among the entries, as `A -> B -> A`. Called once `order`
 --- has shown that a cycle exists.
+---
+--- @within dependencies
+--- @private
+--- @param entries -- The loaded entries
+--- @param uses -- The entries each entry uses
+--- @return string -- The names on the cycle, such as `A -> B -> A`
 export function cycle_path(entries: { Entry }, uses: { [Entry]: { Entry } }) -> string
   local state: HashMap<Entry, string> = new HashMap()
   const stack: { Entry } = {}
@@ -244,6 +281,11 @@ export function cycle_path(entries: { Entry }, uses: { [Entry]: { Entry } }) -> 
 end
 
 --- Puts each provider in the fields that use it.
+---
+--- @within dependencies
+--- @private
+--- @param entries -- The loaded entries
+--- @param links -- The resolved dependencies
 export function inject(entries: { Entry }, links: Links) -> ()
   for _, entry in entries do
     for field, dependency in links.fields[entry] do

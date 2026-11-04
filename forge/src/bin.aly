@@ -7,16 +7,22 @@
 
 --- An item a Bin cleans up: a connection (disconnected), an instance
 --- (destroyed), a thread (cancelled), or a function (called).
+---
+--- @type BinItem RBXScriptConnection | Instance | thread | () -> ()
+--- @within Bin
 export type BinItem = RBXScriptConnection | Instance | thread | () -> ()
 
---- A cleanup container. Empty cleans the items newest first, and the Bin
---- stays usable after it.
+--- @class Bin
+--- A cleanup container. [Bin:Empty] cleans the items newest first, and the
+--- Bin stays usable after it.
 export struct Bin
   private items: { unknown } = {}
 end
 
 impl Bin
   --- An empty Bin.
+  ---
+  --- @return Bin -- The new Bin, with no items
   function new() -> Bin
     return new Bin {}
   end
@@ -25,6 +31,12 @@ impl Bin
   --- so an add can wrap an assignment:
   ---
   ---     const touched = bin:Add(part.Touched:Connect(on_touch))
+  ---
+  --- @method Add
+  --- @within Bin
+  --- @param item -- A [BinItem] to clean up
+  --- @return T -- The same item
+  --- @error string -- When `item` is not a [BinItem] (BadArgument)
   function Add<T>(self, item: T) -> T
     const kind = typeof(item)
 
@@ -46,6 +58,9 @@ impl Bin
   end
 
   --- Cleans every item, newest first, and clears the Bin.
+  ---
+  --- @method Empty
+  --- @within Bin
   function Empty(self) -> ()
     const items = self.items
     self.items = {}
