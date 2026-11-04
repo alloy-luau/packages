@@ -1,6 +1,6 @@
 [package]
 name = "alloy/shift"
-version = "0.1.0"
+version = "0.1.1"
 description = "State machines over Alloy enums: transitions as a match, enter and exit hooks, timers, and history"
 authors = ["savruun"]
 repository = "alloy-luau/packages"

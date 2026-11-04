@@ -10,8 +10,11 @@
 import { Heap } from '@alloy/std/collections'
 
 --- One timer: the event, and the time when it falls due.
+--- @private
 export type Timer<E> = { at: number, order: number, event: E }
 
+--- @class Timers
+--- @private
 --- The timers of one machine, earliest first.
 export struct Timers<E>
   private heap: Heap<Timer<E>>
@@ -20,6 +23,8 @@ end
 
 impl Timers<E>
   --- An empty set of timers.
+  --- @private
+  --- @return Timers<E> -- The timers, with none set.
   function new() -> Timers<E>
     return new Timers<<E>> {
       heap = new Heap(function(a: Timer<E>, b: Timer<E>) -> boolean
@@ -29,13 +34,23 @@ impl Timers<E>
     }
   end
 
+  --- @method add
+  --- @within Timers
+  --- @private
   --- Sets a timer that falls due at `at`.
+  --- @param at -- The time on the clock of the machine.
+  --- @param event -- The event that the timer sends.
   function add(self, at: number, event: E) -> ()
     self.count += 1
     self.heap:push({ at = at, order = self.count, event = event })
   end
 
+  --- @method take
+  --- @within Timers
+  --- @private
   --- Takes the earliest timer when it falls due at `time` or before.
+  --- @param time -- The time on the clock of the machine.
+  --- @return Timer<E>? -- The earliest timer, or nil when none falls due.
   function take(self, time: number) -> Timer<E>?
     const next = self.heap:peek()
 
@@ -46,12 +61,19 @@ impl Timers<E>
     return self.heap:pop()
   end
 
+  --- @method clear
+  --- @within Timers
+  --- @private
   --- Drops every timer.
   function clear(self) -> ()
     self.heap:clear()
   end
 
+  --- @method len
+  --- @within Timers
+  --- @private
   --- How many timers wait.
+  --- @return number -- The count of timers.
   function len(self) -> number
     return self.heap:len()
   end

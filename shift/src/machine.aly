@@ -26,18 +26,19 @@ import { Timers } from './timers'
 --- machine, so a hook can set a timer or send an event.
 export type Hook<S, E> = (state: S, machine: Machine<S, E>) -> ()
 
---- How a machine starts and moves.
+--- @interface Options
+--- How a machine starts and moves. The `transition` must not change the game:
+--- [Machine:can] calls it to ask.
+--- .initial S -- The state that the machine enters first.
+--- .transition (state: S, event: E) -> S? -- The next state, or nil for no change.
+--- .enter Hook<S, E>? -- Runs when the machine enters a state, the initial state too.
+--- .exit Hook<S, E>? -- Runs when the machine leaves a state.
+--- .history number? -- How many states [Machine:history] keeps. The default is 10.
 export interface Options<S, E>
-  -- The state that the machine enters first.
   initial: S
-  -- The next state for a state and an event, or nil for no change. It
-  -- must not change the game: `can` calls it to ask.
   transition: (state: S, event: E) -> S?
-  -- Runs when the machine enters a state, the initial state too.
   enter: Hook<S, E>?
-  -- Runs when the machine leaves a state.
   exit: Hook<S, E>?
-  -- How many states `history` keeps. The default is 10.
   history: number?
 end
 
@@ -49,10 +50,14 @@ const HISTORY = 10
 -- stops with an error, so the server does not hang.
 const MAX_TIMERS = 10000
 
+--- @class Machine
 --- A state machine over the enums `S` and `E` of the game. Luau cannot
 --- infer `S` from a unit variant, so write both types:
 --- `new Machine<<DoorState, DoorEvent>>({ ... })`.
 export struct Machine<S, E>
+  --- @prop changed Signal<S, S, E>
+  --- @within Machine
+  --- @readonly
   --- Fires `(from, to, event)` after each step.
   read changed: Signal<S, S, E>
   private current: S
@@ -68,6 +73,9 @@ end
 
 impl Machine<S, E>
   --- A machine in `options.initial`. It runs `enter` of that state now.
+  --- @param options -- How the machine starts and moves.
+  --- @return Machine<S, E> -- The machine, in its initial state.
+  --- @error string -- When the `enter` hook of the initial state raises an error.
   function new(options: Options<S, E>) -> Machine<S, E>
     const machine = new Machine<<S, E>> {
       changed = new Signal<<S, S, E>>(),
@@ -86,7 +94,10 @@ impl Machine<S, E>
     return machine
   end
 
+  --- @method state
+  --- @within Machine
   --- The state that the machine is in.
+  --- @return S -- The state now.
   function state(self) -> S
     return self.current
   end
@@ -94,6 +105,10 @@ impl Machine<S, E>
   --- Moves the machine with an event. An event with no transition
   --- changes nothing. From inside a hook, the event waits until the
   --- step in progress ends.
+  --- @method send
+  --- @within Machine
+  --- @param event -- The event to send.
+  --- @error string -- When a hook or the transition raises an error. The events that wait drop.
   function send(self, event: E) -> ()
     self.events:push(event)
 
@@ -102,13 +117,21 @@ impl Machine<S, E>
     end
   end
 
+  --- @method can
+  --- @within Machine
   --- Whether `event` moves the machine from the state that it is in.
+  --- @param event -- The event to ask about.
+  --- @return boolean -- True when the transition gives a state for `event`.
   function can(self, event: E) -> boolean
     return self.options.transition(self.current, event) ~= nil
   end
 
   --- Sends `event` after `seconds` on the clock of the machine, unless
   --- the machine leaves the state first. Call it in `enter`.
+  --- @method after
+  --- @within Machine
+  --- @param seconds -- The delay, on the clock of the machine.
+  --- @param event -- The event to send when the timer falls due.
   function after(self, seconds: number, event: E) -> ()
     self.timers:add(self.clock + seconds, event)
   end
@@ -116,6 +139,11 @@ impl Machine<S, E>
   --- Moves the clock by `dt` seconds and fires each timer that falls
   --- due, earliest first. Each timer fires at its own time, so a long
   --- step runs a chain of timed states in full.
+  --- @method update
+  --- @within Machine
+  --- @param dt -- The seconds to move the clock, such as the delta of a frame.
+  --- @error string -- When more than 10000 timers fire in one update, such as a loop at 0 seconds.
+  --- @error string -- When a hook or the transition raises an error.
   function update(self, dt: number) -> ()
     const target = self.clock + dt
     local fired = 0
@@ -130,13 +158,19 @@ impl Machine<S, E>
     self.clock = target
   end
 
+  --- @method elapsed
+  --- @within Machine
   --- The seconds since the machine entered its state, on its clock.
+  --- @return number -- The seconds in the state now.
   function elapsed(self) -> number
     return self.clock - self.entered
   end
 
   --- The last states, oldest first, as a new array. The last one is
   --- the state now. `history():join(' > ')` gives a line for a log.
+  --- @method history
+  --- @within Machine
+  --- @return S[] -- The last states, oldest first.
   function history(self) -> S[]
     return self.trail:to_array()
   end
