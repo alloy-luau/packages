@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.1
+
+- The doc comments use the Moonwave format. The API tab on Ember shows
+  each class, function, parameter, and return value.
+
+The code is the same as 0.1.0.
+
 ## 0.1.0
 
 The first release.

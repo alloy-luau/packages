@@ -7,10 +7,16 @@
   a test or a loop of the game's own can call it as well.
 ]]
 
+--- @class frame
+--- The frame loop that springs, tweens, deferred effects, and intervals
+--- share. A test or a game loop drives it with [frame.manual_frames] and
+--- [frame.step]. Import these from `@packages/bevel`.
+
 import RunService from '@game/RunService'
 import { batch } from './reactive'
 
 --- One job of the frame loop. It gives true when it is done.
+--- @private
 export type Job = (dt: number) -> boolean
 
 -- The jobs that run each frame.
@@ -24,6 +30,8 @@ local automatic = true
 
 --- Moves every active job by `dt` seconds, in one batch: the effects that
 --- the jobs mark run once, at the end.
+--- @within frame
+--- @param dt -- The time to move, in seconds
 export function step(dt: number) -> ()
   batch(function() -> ()
     for job in table.clone(jobs) do
@@ -40,6 +48,9 @@ export function step(dt: number) -> ()
 end
 
 --- Adds a job to the frame loop, and connects the loop when it was idle.
+--- @within frame
+--- @private
+--- @param job -- The job to add
 export function start(job: Job) -> ()
   jobs[job] = true
 
@@ -49,12 +60,16 @@ export function start(job: Job) -> ()
 end
 
 --- Takes a job off the frame loop.
+--- @within frame
+--- @private
+--- @param job -- The job to take off
 export function stop(job: Job) -> ()
   jobs[job] = nil
 end
 
 --- Stops the Heartbeat connection, so only calls to `step` move time.
 --- A test, or a game that runs its own loop, calls it once.
+--- @within frame
 export function manual_frames() -> ()
   automatic = false
 

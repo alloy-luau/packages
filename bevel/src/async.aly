@@ -12,6 +12,11 @@
   value at a fixed rate.
 ]]
 
+--- @class async
+--- Async and deferred logic: [async.resource] loads a value with code
+--- that may yield, [async.deferred] runs an effect on the next frame, and
+--- [async.interval] polls a value. Import these from `@packages/bevel`.
+
 import {
   current_owner,
   effect,
@@ -37,6 +42,9 @@ set_frame_hook(function() start(deferred_job) end)
 --- Fluid's `deferred`. It runs `fn` now, and after a change of a signal
 --- that `fn` read, runs it again on the next frame, once for all the
 --- writes in between. `fn` gets `on_cleanup`, as an effect does.
+--- @within async
+--- @param fn -- The code to run. It gets `on_cleanup`
+--- @return EffectRef -- The handle that stops the effect
 export function deferred(fn: (on_cleanup: OnCleanup) -> ()) -> EffectRef
   return effect_of(fn, true)
 end
@@ -59,6 +67,9 @@ export type Resource<T> = {
 --- a value before it ends. The signals that the loader reads before its
 --- first yield start a new load when they change, and a new load cancels
 --- the one before it.
+--- @within async
+--- @param loader -- Loads the value. It may yield, and it gets `set`
+--- @return Resource<T> -- The signals of the load, and `reload`
 @allow(explicit_any)
 export function resource<T>(loader: (set: (value: T) -> ()) -> T?) -> Resource<T>
   const value = signal(nil :: T?)
@@ -119,6 +130,10 @@ end
 
 --- Fluid's `interval`. A signal that runs `fn` again every `seconds`, and
 --- holds what it gives. The reads in `fn` link to nothing.
+--- @within async
+--- @param seconds -- The time between two runs of `fn`
+--- @param fn -- Gives the value
+--- @return Signal<T> -- A signal that holds the last value of `fn`
 @allow(explicit_any)
 export function interval<T>(seconds: number, fn: () -> T) -> Signal<T>
   const out = signal(untracked(fn))

@@ -16,6 +16,12 @@
   `damping_ratio`, or `mass`, `stiffness`, and `damping`.
 ]]
 
+--- @class animate
+--- Springs, tweens, and blends. [animate.spring] and [animate.tween] each
+--- follow a target signal and read as a signal of their own. The curves
+--- are in [Easing], and the spring presets in [Springs].
+--- Import these from `@packages/bevel`.
+
 import {
   effect,
   on_destroy,
@@ -126,6 +132,12 @@ end
 
 --- A blend of two values of one kind: `a` at 0, `b` at 1. A Color3
 --- blends in Oklab; a CFrame blends its rotation the short way round.
+--- @within animate
+--- @param a -- The value at 0
+--- @param b -- The value at 1, of the same kind as `a`
+--- @param t -- How far to go from `a` to `b`
+--- @return T -- The blend
+--- @error string -- When `a` or `b` is a kind of value that Bevel cannot move
 @allow(explicit_any)
 export function lerp<T>(a: T, b: T, t: number) -> T
   if a is CFrame and b is CFrame then
@@ -244,7 +256,9 @@ export type Spring<T> = typeof(
   )
 )
 
--- The state of one spring.
+--- @class SpringState
+--- @private
+--- The state of one spring.
 struct SpringState
   kind: Kind
   current: { number }
@@ -324,6 +338,9 @@ impl SpringState
   end
 
   --- Jumps to a value, and keeps the velocity.
+  --- @method set_position
+  --- @within SpringState
+  --- @param value -- The new position
   function set_position(self, value: unknown) -> ()
     const _, parts = pack(value)
     self.current = parts
@@ -332,6 +349,9 @@ impl SpringState
   end
 
   --- Sets the velocity, in units a second.
+  --- @method set_velocity
+  --- @within SpringState
+  --- @param value -- The new velocity
   function set_velocity(self, value: unknown) -> ()
     const _, parts = pack(value)
     self.speeds = parts
@@ -339,6 +359,9 @@ impl SpringState
   end
 
   --- Adds to the velocity: a push.
+  --- @method impulse
+  --- @within SpringState
+  --- @param value -- The velocity to add
   function impulse(self, value: unknown) -> ()
     const _, parts = pack(value)
 
@@ -350,11 +373,17 @@ impl SpringState
   end
 
   --- The velocity now, as a value of the spring's kind.
+  --- @method velocity
+  --- @within SpringState
+  --- @return unknown -- The velocity
   function velocity(self) -> unknown
     return unpack(self.kind, table.clone(self.speeds))
   end
 
   --- Whether the spring rests at its target. It reads as a signal.
+  --- @method resting
+  --- @within SpringState
+  --- @return boolean -- True when the spring rests
   function resting(self) -> boolean
     return (self.resting_now :: () -> boolean)()
   end
@@ -366,6 +395,11 @@ end
 ---   const scale = signal(1)
 ---   const shown = spring(scale, { duration = 0.4, bounce = 0.3 })
 ---   scale:set(1.2)  -- `shown()` springs to 1.2
+--- @within animate
+--- @param target -- The value to follow, or a signal of it
+--- @param options -- How the spring moves. See [SpringOptions] and [Springs]
+--- @return Spring<T> -- The spring, which reads as the value now
+--- @error string -- When the target is a kind of value that Bevel cannot move
 @allow(explicit_any)
 export function spring<T>(target: Readable<T>, options: SpringOptions?) -> Spring<T>
   const tuned: SpringOptions = options ?? {}
@@ -407,10 +441,18 @@ end
 --- An easing curve: progress from 0 to 1 in, eased progress out.
 export type Easing = (t: number) -> number
 
---- Easing curves for `tween`.
+--- @class Easing
+--- Easing curves for [animate.tween].
 export namespace Easing
   --- A curve as CSS and Core Animation write it: a cubic Bézier from
   --- (0, 0) to (1, 1), with the control points (x1, y1) and (x2, y2).
+  --- @function cubic_bezier
+  --- @within Easing
+  --- @param x1 number -- The x of the first control point
+  --- @param y1 number -- The y of the first control point
+  --- @param x2 number -- The x of the second control point
+  --- @param y2 number -- The y of the second control point
+  --- @return Easing -- The curve
   public function cubic_bezier(x1: number, y1: number, x2: number, y2: number) -> Easing
     -- The x and y of the curve at the parameter u.
     local function curve(a: number, b: number, u: number) -> number
@@ -440,23 +482,40 @@ export namespace Easing
   end
 
   --- No easing.
+  --- @function linear
+  --- @within Easing
+  --- @param t number -- The progress, from 0 to 1
+  --- @return number -- The same progress
   public function linear(t: number) -> number
     return t
   end
 
   --- Core Animation's ease in: slow at the start.
+  --- @prop ease_in Easing
+  --- @within Easing
+  --- @readonly
   public const ease_in: Easing = cubic_bezier(0.42, 0, 1, 1)
 
   --- Core Animation's ease out: slow at the end.
+  --- @prop ease_out Easing
+  --- @within Easing
+  --- @readonly
   public const ease_out: Easing = cubic_bezier(0, 0, 0.58, 1)
 
   --- Core Animation's ease in and out: slow at both ends.
+  --- @prop ease_in_out Easing
+  --- @within Easing
+  --- @readonly
   public const ease_in_out: Easing = cubic_bezier(0.42, 0, 0.58, 1)
 
   --- The shapes of Roblox's `Enum.EasingStyle`, by name.
+  --- @type Style 'Linear' | 'Sine' | 'Quad' | 'Cubic' | 'Quart' | 'Quint' | 'Exponential' | 'Circular' | 'Back' | 'Elastic' | 'Bounce'
+  --- @within Easing
   public type Style = 'Linear' | 'Sine' | 'Quad' | 'Cubic' | 'Quart' | 'Quint' | 'Exponential' | 'Circular' | 'Back' | 'Elastic' | 'Bounce'
 
   --- The sides of a curve that ease, as `Enum.EasingDirection` names them.
+  --- @type Direction 'In' | 'Out' | 'InOut'
+  --- @within Easing
   public type Direction = 'In' | 'Out' | 'InOut'
 
   -- The In form of each style.
@@ -500,6 +559,11 @@ export namespace Easing
 
   --- A Roblox easing style as a curve: `style('Quad', 'Out')`. The
   --- direction is `Out` by default, as it is in a `TweenInfo`.
+  --- @function style
+  --- @within Easing
+  --- @param name Style -- The easing style
+  --- @param direction Direction? -- The side that eases, `Out` by default
+  --- @return Easing -- The curve
   public function style(name: Style, direction: Direction?) -> Easing
     const side = direction ?? 'Out'
 
@@ -523,6 +587,10 @@ export type TweenOptions = { duration: number?, easing: Easing?, delay: number? 
 
 --- A signal that follows `target` with a tween: each new target starts a
 --- move from the value now, over `duration`, along the `easing` curve.
+--- @within animate
+--- @param target -- The value to follow, or a signal of it
+--- @param options -- How the tween moves. See [TweenOptions]
+--- @return Signal<T> -- A signal that holds the value now
 @allow(explicit_any)
 export function tween<T>(target: Readable<T>, options: TweenOptions?) -> Signal<T>
   const tuned: TweenOptions = options ?? {}
@@ -570,26 +638,45 @@ export function tween<T>(target: Readable<T>, options: TweenOptions?) -> Signal<
   return (output :: any) :: Signal<T>
 end
 
+--- @class Springs
 --- Apple's spring presets. Each takes a `duration`, 0.5 by default, and
 --- an `extra_bounce` to add on top of its own.
 export namespace Springs
   --- No bounce: a smooth settle.
+  --- @function smooth
+  --- @within Springs
+  --- @param duration number? -- The time to settle, 0.5 by default
+  --- @param extra_bounce number? -- The bounce to add, 0 by default
+  --- @return SpringOptions -- The options for [animate.spring]
   public function smooth(duration: number?, extra_bounce: number?) -> SpringOptions
     return { duration = duration ?? 0.5, bounce = 0 + (extra_bounce ?? 0) }
   end
 
   --- A small bounce, quick to settle.
+  --- @function snappy
+  --- @within Springs
+  --- @param duration number? -- The time to settle, 0.5 by default
+  --- @param extra_bounce number? -- The bounce to add, 0 by default
+  --- @return SpringOptions -- The options for [animate.spring]
   public function snappy(duration: number?, extra_bounce: number?) -> SpringOptions
     return { duration = duration ?? 0.5, bounce = 0.15 + (extra_bounce ?? 0) }
   end
 
   --- A clear bounce.
+  --- @function bouncy
+  --- @within Springs
+  --- @param duration number? -- The time to settle, 0.5 by default
+  --- @param extra_bounce number? -- The bounce to add, 0 by default
+  --- @return SpringOptions -- The options for [animate.spring]
   public function bouncy(duration: number?, extra_bounce: number?) -> SpringOptions
     return { duration = duration ?? 0.5, bounce = 0.3 + (extra_bounce ?? 0) }
   end
 
   --- SwiftUI's interactive spring, for a value that follows a finger or a
   --- drag: quick, and damped near critical.
+  --- @function interactive
+  --- @within Springs
+  --- @return SpringOptions -- The options for [animate.spring]
   public function interactive() -> SpringOptions
     return { response = 0.15, damping_ratio = 0.86 }
   end

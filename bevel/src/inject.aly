@@ -5,12 +5,21 @@
   the owners, as Angular's element injectors walk up the tree.
 ]]
 
+--- @class inject
+--- Services and injectors. Mark a service with [inject.injectable], get
+--- its instance with [inject.inject], and give a subtree its own
+--- instances with [inject.provide]. Import these from `@packages/bevel`.
+
 import { Attributes } from '@alloy/std/roblox'
 import { current_owner, new_owner, on_destroy, run_in } from './reactive'
 
 --- Marks a service. The contract asks for `new()` with no parameters,
 --- because the injector calls it. `scope = 'root'` lets the root
 --- injector build it; any other scope needs a `provide` above it.
+--- @function injectable
+--- @within inject
+--- @tag attribute
+--- @param scope string? -- Where the service lives, `'root'` by default
 export attribute injectable(scope: string = 'root') on struct as
   requires public function new()
 end
@@ -25,6 +34,7 @@ type Hooks = { on_destroy: ((unknown) -> ())? }
 --- returns. Luau builds a struct class field by field, and a generic
 --- such as `<T>(class: { new: () -> T })` infers nothing from that
 --- table, so a type function reads the type.
+--- @private
 export type function instance_of(class)
   const new = class:readproperty(types.singleton('new'))
 
@@ -42,6 +52,11 @@ end
 --- Angular's `inject()`. The instance that the nearest `provide` holds,
 --- or else the one root instance, built on the first call. The result
 --- types as the class's instance: `inject(Wallet)` is a `Wallet`.
+--- @within inject
+--- @param class -- The service class, marked `@injectable`
+--- @return instance_of<C> -- The instance of the class
+--- @error string -- When the class is not marked `@injectable`
+--- @error string -- When the scope of the class is not `'root'` and no `provide` holds it
 @allow(explicit_any)
 export function inject<C>(class: C) -> instance_of<C>
   local owner = current_owner()
@@ -76,6 +91,10 @@ end
 --- instances first. A service that writes `on_destroy` hears when the
 --- provide goes. The list is `{ any }`: Luau tables are invariant, so a
 --- typed list of classes would refuse `[ TodoStore ]`.
+--- @within inject
+--- @param classes -- The service classes to build
+--- @param build -- Makes what reads the new instances
+--- @return T -- What `build` gives
 export function provide<T>(classes: { any }, build: () -> T) -> T
   local owner = new_owner(current_owner())
   local services: { [unknown]: unknown } = {}

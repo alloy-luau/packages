@@ -4,11 +4,20 @@
   into the game.
 ]]
 
+--- @class component
+--- Components and the functions that show them. Mark an impl with
+--- [component.component], turn the class into a tag with [component.mount],
+--- and put the root component into the game with [component.bootstrap].
+--- Import these from `@packages/bevel`.
+
 import { current_owner, dispose, new_owner, on_destroy, root, run_in } from './reactive'
 
 --- Marks a component impl. The contract asks for `new(props)`, which
 --- builds the component from the props of its tag, and `template(self)`,
 --- which gives the Instance that it shows.
+--- @function component
+--- @within component
+--- @tag attribute
 export attribute component on impl as
   requires public function new
   requires public function template(self)
@@ -22,6 +31,9 @@ type Hooks<C> = { on_init: ((C) -> ())?, on_destroy: ((C) -> ())? }
 --- Instance. Each call builds a component in an owner of its own, runs
 --- `on_init`, then `template`. The owner goes with the view, and
 --- `on_destroy` runs then.
+--- @within component
+--- @param class -- The component class, with `new` and `template`
+--- @return (P) -> Instance -- The tag: it takes the props and gives the view
 export function mount<P, C>(class: { new: (P) -> C, template: (C) -> Instance }) -> (P) -> Instance
   const hooks = (class :: unknown) :: Hooks<C>
 
@@ -50,6 +62,10 @@ end
 
 --- Angular's `bootstrapApplication()`. It builds the root component under
 --- `target`, and gives the function that takes it all down.
+--- @within component
+--- @param component -- The tag of the root component, from [component.mount]
+--- @param target -- The Instance that holds the view
+--- @return () -> () -- Disposes the root and destroys the view
 export function bootstrap(component: ({}) -> Instance, target: Instance) -> () -> ()
   return root(function(dispose_root)
     local view = component({})

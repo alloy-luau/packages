@@ -17,11 +17,18 @@
   first.
 ]]
 
+--- @class reactive
+--- The reactive core: signals, computed values, effects, and the owners
+--- that clean them up. Make a value with [reactive.signal], derive one with
+--- [reactive.computed], and run code on a change with [reactive.effect].
+--- Import these from `@packages/bevel`.
+
 -- A signal is a table that calls: `count()` reads it. A type that is a
 -- function and a table at once breaks the struct types that Alloy
 -- writes, so both types are tables with a `__call`.
 
 --- A value that changes. Call it to read it: `count()`.
+--- @type Signal typeof(setmetatable({}, {} :: { __call: (self: unknown) -> T }))
 export type Signal<T> = typeof(setmetatable({}, {} :: { __call: (self: unknown) -> T }))
 
 --- A signal that code can write: `:set(value)`, or `:update(fn)` to
@@ -49,6 +56,7 @@ export type EffectRef = { destroy: () -> () }
 export type OnCleanup = (cleanup: () -> ()) -> ()
 
 --- A scope that holds what code made, so that one call undoes it.
+--- @private
 export type Owner = {
   parent: Owner?,
   children: { [Owner]: boolean },
@@ -57,6 +65,8 @@ export type Owner = {
   alive: boolean,
 }
 
+--- @class Node
+--- @private
 --- One node of the graph: a signal, a computed value, or an effect.
 struct Node
   value: unknown = nil
@@ -95,6 +105,10 @@ local wake_frame: (() -> ())? = nil
 const MAX_RUNS = 10000
 
 --- A new owner inside `parent`. Disposing the parent disposes it too.
+--- @within reactive
+--- @private
+--- @param parent -- The owner that holds the new owner, or nil for none
+--- @return Owner -- The new owner
 export function new_owner(parent: Owner?) -> Owner
   const owner: Owner = { parent = parent, children = {}, cleanups = {}, alive = true }
 
@@ -107,6 +121,9 @@ end
 
 --- Disposes an owner once: its child owners, then its cleanups, newest
 --- first.
+--- @within reactive
+--- @private
+--- @param owner -- The owner to dispose
 export function dispose(owner: Owner) -> ()
   if not owner.alive then
     return
@@ -131,12 +148,20 @@ export function dispose(owner: Owner) -> ()
 end
 
 --- The owner that is current now, or nil outside every owner.
+--- @within reactive
+--- @private
+--- @return Owner? -- The current owner, or nil
 export function current_owner() -> Owner?
   return current
 end
 
 --- Runs `fn` with `owner` as the current owner, and with no reader, so
 --- the reads inside link to nothing.
+--- @within reactive
+--- @private
+--- @param owner -- The owner that is current while `fn` runs
+--- @param fn -- The function to run
+--- @return T -- What `fn` gives
 export function run_in<T>(owner: Owner?, fn: () -> T) -> T
   const previous_owner, previous_observer = current, observer
   current, observer = owner, nil
@@ -313,6 +338,9 @@ local computed_of: (fn: () -> unknown) -> unknown
 
 impl Node
   --- Reads the value, and links the reader that runs now.
+  --- @method __call
+  --- @within Node
+  --- @return unknown -- The value now
   function __call(self) -> unknown
     if self.compute ~= nil and not self.effect and self.dirty then
       recompute(self)
@@ -323,6 +351,10 @@ impl Node
   end
 
   --- Writes a value. An equal value changes nothing and runs nothing.
+  --- @method set
+  --- @within Node
+  --- @param value -- The new value
+  --- @error string -- When an effect writes a signal that it reads
   function set(self, value: unknown) -> ()
     if value == self.value then
       return
@@ -334,11 +366,17 @@ impl Node
   end
 
   --- Writes a value from the old one.
+  --- @method update
+  --- @within Node
+  --- @param fn -- Gives the new value from the old value
   function update(self, fn: (unknown) -> unknown) -> ()
     self:set(fn(self.value))
   end
 
   --- A signal that reads this one and cannot write it.
+  --- @method readonly
+  --- @within Node
+  --- @return unknown -- A computed value that reads this signal
   function readonly(self) -> unknown
     return computed_of(function() return self:__call() end)
   end
@@ -346,6 +384,9 @@ end
 
 --- Angular's `signal()`. Call it to read; `:set(value)` and
 --- `:update(fn)` write it.
+--- @within reactive
+--- @param value -- The first value
+--- @return WritableSignal<T> -- The new signal
 -- Luau cannot cast a table to a type that is also a function, so the
 -- cast goes through `any`. A Node is callable through `__call`.
 @allow(explicit_any)
@@ -354,11 +395,18 @@ export function signal<T>(value: T) -> WritableSignal<T>
 end
 
 --- Whether a value is a signal: what `signal()` or `computed()` made.
+--- @within reactive
+--- @private
+--- @param value -- The value to test
+--- @return boolean -- True for a signal or a computed value
 export function is_signal(value: unknown) -> boolean
   return value is table and getmetatable(value) == Node
 end
 
 --- Reads a signal, or calls a function that reads signals.
+--- @within reactive
+--- @param value -- A signal, or a function that reads signals
+--- @return T -- The value now
 @allow(explicit_any)
 export function read < T > (value: Readable<T>) -> T
   return (value :: any)()
@@ -366,6 +414,9 @@ end
 
 --- Angular's `computed()`. It runs `fn` when something reads it and a
 --- signal that `fn` read has changed since the last run.
+--- @within reactive
+--- @param fn -- Gives the value from the signals that it reads
+--- @return Signal<T> -- A signal that holds what `fn` gives
 @allow(explicit_any)
 export function computed<T>(fn: () -> T) -> Signal<T>
   const node = new Node { compute = function(_cleanup) return fn() end, dirty = true }
@@ -382,6 +433,10 @@ computed_of = computed
 --- Angular's `effect()`. It runs `fn` now, and again each time a signal
 --- that `fn` read changes. `fn` gets `on_cleanup`, which keeps a function
 --- that runs before the next run and when the effect stops.
+--- @within reactive
+--- @param fn -- The code to run. It gets `on_cleanup`
+--- @return EffectRef -- The handle that stops the effect
+--- @error string -- When the effect writes a signal that it reads
 export function effect(fn: (on_cleanup: OnCleanup) -> ()) -> EffectRef
   return effect_of(fn, false)
 end
@@ -389,6 +444,11 @@ end
 --- An effect that runs at once, and after a change runs again on the
 --- next frame in place of at the write. `deferred` in the async module
 --- is the public form.
+--- @within reactive
+--- @private
+--- @param fn -- The code to run. It gets `on_cleanup`
+--- @param deferred -- True to run again on the next frame, false to run at the write
+--- @return EffectRef -- The handle that stops the effect
 export function effect_of(fn: (on_cleanup: OnCleanup) -> (), deferred: boolean) -> EffectRef
   const node = new Node {
     compute = function(on_cleanup: OnCleanup) -> unknown
@@ -411,12 +471,18 @@ end
 
 --- Sets the function that asks the frame loop for a frame, when a
 --- deferred effect waits.
+--- @within reactive
+--- @private
+--- @param hook -- The function that asks for a frame
 export function set_frame_hook(hook: () -> ()) -> ()
   wake_frame = hook
 end
 
 --- Runs the deferred effects that wait, in one batch. Gives true when
 --- none wait after the run.
+--- @within reactive
+--- @private
+--- @return boolean -- True when no deferred effect waits after the run
 export function run_deferred() -> boolean
   const pending = waiting
   waiting = {}
@@ -443,6 +509,9 @@ end
 --- Angular's `untracked()`. It runs `fn`, and the reads inside link to
 --- nothing.
 --- `fn` may give any number of values, or none.
+--- @within reactive
+--- @param fn -- The function to run
+--- @return T... -- What `fn` gives
 @allow(explicit_any, raw_pcall)
 export function untracked<T...>(fn: () -> T...) -> T...
   const previous = observer
@@ -460,6 +529,8 @@ end
 
 --- Runs `fn`, and runs the effects that its writes mark once, at the
 --- end, in place of once for each write.
+--- @within reactive
+--- @param fn -- The function that writes the signals
 export function batch(fn: () -> ()) -> ()
   batching += 1
 
@@ -478,6 +549,9 @@ end
 
 --- Runs `fn` in a new owner that no other owner holds. `fn` gets the
 --- function that disposes the owner.
+--- @within reactive
+--- @param fn -- The function to run. It gets the function that disposes the owner
+--- @return T -- What `fn` gives
 export function root<T>(fn: (dispose: () -> ()) -> T) -> T
   const owner = new_owner(nil)
 
@@ -486,6 +560,9 @@ end
 
 --- Angular's `DestroyRef.onDestroy`. `fn` runs when the current owner
 --- goes: a component, a run of an effect, or a root.
+--- @within reactive
+--- @param fn -- The function to run when the owner goes
+--- @error string -- When no owner is current
 export function on_destroy(fn: () -> ()) -> ()
   const owner = current
   assert(

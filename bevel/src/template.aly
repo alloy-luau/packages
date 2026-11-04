@@ -7,6 +7,12 @@
   numbered entry is a child.
 ]]
 
+--- @class template
+--- The factory that `.alx` tags call, and the control flow of a template:
+--- [template.each] for a list, [template.when] for a condition, and
+--- [template.model] for a two-way binding.
+--- Import these from `@packages/bevel`.
+
 import {
   dispose,
   effect,
@@ -106,6 +112,9 @@ end
 --- The factory of `.alx` tags. `create('TextLabel')(props)` makes the
 --- Instance, sets and binds the properties, puts the children under it,
 --- and sets `Parent` last.
+--- @within template
+--- @param class_name -- The class of the Instance, such as `'TextLabel'`
+--- @return (props: { [unknown]: unknown }) -> Instance -- Takes the props and makes the Instance
 export function create(class_name: string) -> (props: { [unknown]: unknown }) -> Instance
   return function(props)
     local instance = new Instance(class_name)
@@ -151,6 +160,11 @@ type Row = { view: Instance, owner: Owner, index: WritableSignal<number> }
 --- key when it is nil. A view stays while its key is in the list, and
 --- `index` follows its place. A view that is a GuiObject gets its place
 --- as `LayoutOrder`.
+--- @within template
+--- @param items -- The list, or a signal of it
+--- @param render -- Builds the view of one item. It gets the item and its `index` signal
+--- @param track -- Gives the key of an item. With nil, the item is its own key
+--- @return Directive -- The child to put in a template
 -- `index` is a WritableSignal, and a signal is a table that calls. The
 -- render takes it as a plain function, so a callback with no types infers
 -- it, and the cast goes through `any`.
@@ -206,6 +220,11 @@ end
 --- while `condition` is truthy and `otherwise` while it is not. It builds
 --- again only when the truth changes, not on each change of the signals
 --- that `condition` reads.
+--- @within template
+--- @param condition -- The value whose truth picks the view
+--- @param render -- Builds the view while `condition` is truthy
+--- @param otherwise -- Builds the view while `condition` is not truthy. With nil, nothing shows
+--- @return Directive -- The child to put in a template
 export function when<T>(
   condition: Readable<T>,
   render: () -> Instance,
@@ -246,6 +265,9 @@ end
 
 --- Angular's `[(ngModel)]`. `Text={model(name)}` writes the signal into
 --- the property, and a change of the property writes the signal back.
+--- @within template
+--- @param value -- The signal to bind
+--- @return Model -- The property value to put in a template
 @allow(explicit_any)
 export function model<T>(value: WritableSignal<T>) -> Model
   return { __bevel_model = (value :: any) :: WritableSignal<unknown> }
