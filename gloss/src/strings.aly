@@ -20,6 +20,12 @@
     placeholder. `check` compares them.
 ]]
 
+--- @class strings
+--- The types that hold a language to the shape of the base.
+--- [Gloss:add] takes a [strings.Strings], and [Gloss:draft] takes a
+--- [strings.Draft].
+--- Import these from `@packages/gloss`.
+
 import { form_of, forms_of } from './plural'
 import { placeholders } from './format'
 
@@ -97,6 +103,10 @@ type Node = { [unknown]: unknown }
 
 --- Whether a table is a set of plural forms: it holds `other`, and each of
 --- its keys is a form.
+--- @within strings
+--- @private
+--- @param value -- A table of a language
+--- @return boolean -- True when the table is a set of plural forms
 export function is_plural(value: Node) -> boolean
   if value.other == nil then
     return false
@@ -132,6 +142,11 @@ end
 --- string takes the string of the base. A plural table or an array comes
 --- whole from the language when it has one, so a French count never shows
 --- an English form.
+--- @within strings
+--- @private
+--- @param base -- A value of the base language
+--- @param over -- The same value of the other language, or nil
+--- @return unknown -- The value of the language, with the base in each gap
 export function merge(base: unknown, over: unknown) -> unknown
   if not (base is table) then
     return (type(over) == type(base) and over ~= '') ? over : base
@@ -313,6 +328,12 @@ end
 
 --- Lists each difference between a language and the base, one line each.
 --- An empty list means that the language is complete.
+--- @within strings
+--- @private
+--- @param code -- The code of the language, for each line
+--- @param base -- The table of the base language
+--- @param lang -- The table of the language, as the game gave it
+--- @return { string } -- One line for each difference
 export function check_language(code: string, base: unknown, lang: unknown) -> { string }
   const problems: { string } = {}
   walk(problems, code, '', base, lang)
@@ -321,6 +342,12 @@ end
 
 --- Picks the form of a plural for a count, in a language. A form that the
 --- table lacks reads `other`.
+--- @within strings
+--- @private
+--- @param forms -- The plural table
+--- @param code -- The code of the language
+--- @param count -- The count that picks the form
+--- @return string -- The text of the form
 export function pick_form(forms: Plural, code: string, count: number) -> string
   const form = form_of(code, count)
   const by_form: { [string]: string? } = {

@@ -12,6 +12,11 @@
   in the label as `{price}`, and does not stop the game.
 ]]
 
+--- @class format
+--- The placeholders of a string. [Gloss:format] and [Gloss:plural] take
+--- their values as [format.Args].
+--- Import these from `@packages/gloss`.
+
 import { language_of } from './plural'
 
 --- The values of the placeholders in a string, by name.
@@ -20,6 +25,7 @@ export type Args = { [string]: string | number }
 --- How a language writes a number: the mark between groups of three
 --- digits, the decimal mark, and the shortest whole part that takes
 --- group marks.
+--- @private
 type Separators = { group: string, decimal: string, min_digits: number }
 
 -- A no-break space keeps "1 500" on one line. CLDR gives French the
@@ -76,6 +82,12 @@ end
 --- Writes a number with the separators of a language. With `decimals`,
 --- the fraction has that many digits; without it, the fraction has at
 --- most two, and no zeros at the end.
+--- @within format
+--- @private
+--- @param value -- The number to write
+--- @param code -- The code of the language
+--- @param decimals -- The number of digits in the fraction
+--- @return string -- The number as text
 export function format_number(value: number, code: string, decimals: number?) -> string
   if value ~= value or value == math.huge or value == -math.huge then
     return tostring(value)
@@ -106,6 +118,12 @@ end
 
 --- Puts the value of each `{name}` in its place. A number takes the
 --- separators of the language.
+--- @within format
+--- @private
+--- @param text -- A string with `{name}` placeholders
+--- @param args -- The value of each placeholder, by name
+--- @param code -- The code of the language, for the number marks
+--- @return string -- The text, with each value in its place
 export function format_text(text: string, args: Args?, code: string) -> string
   if args == nil then
     return text
@@ -131,6 +149,10 @@ export function format_text(text: string, args: Args?, code: string) -> string
 end
 
 --- The names of the placeholders in a string, in order, each once.
+--- @within format
+--- @private
+--- @param text -- A string with `{name}` placeholders
+--- @return { string } -- The names, without the braces
 export function placeholders(text: string) -> { string }
   const names: { string } = {}
 

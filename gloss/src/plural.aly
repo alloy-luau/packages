@@ -16,11 +16,19 @@
   take `other`, and a translator writes one form less for each plural.
 ]]
 
+--- @class plural
+--- @private
+--- The CLDR plural rules of 26 languages. [Gloss:plural] reads them.
+
+--- @type Form 'zero' | 'one' | 'two' | 'few' | 'many' | 'other'
+--- @within plural
+--- @private
 --- The forms of a count, as CLDR names them.
 export type Form = 'zero' | 'one' | 'two' | 'few' | 'many' | 'other'
 
 --- The forms that a language uses, and the function that picks one for
 --- a count.
+--- @private
 type Rule = { forms: { Form }, pick: (n: number, i: number, v: number) -> Form }
 
 -- Japanese, Korean, Chinese, Thai, Vietnamese, Indonesian, and Malay
@@ -164,6 +172,10 @@ const RULES: { [string]: Rule } = {
 }
 
 --- The language part of a code: `fr` for `fr-ca`.
+--- @within plural
+--- @private
+--- @param code -- A code, such as `fr-ca`
+--- @return string -- The part before the dash, or the whole code when it has no dash
 export function language_of(code: string) -> string
   return string.match(code, '^[^-]+') ?? code
 end
@@ -174,6 +186,11 @@ local function rule_of(code: string) -> Rule
 end
 
 --- The form that a count takes in a language.
+--- @within plural
+--- @private
+--- @param code -- The code of the language
+--- @param count -- The count. A negative count takes the form of its size
+--- @return Form -- The form of the count
 export function form_of(code: string, count: number) -> Form
   const n = math.abs(count)
   const i = math.floor(n)
@@ -182,6 +199,10 @@ export function form_of(code: string, count: number) -> Form
 end
 
 --- The forms that a language uses, in CLDR order.
+--- @within plural
+--- @private
+--- @param code -- The code of the language
+--- @return { Form } -- The forms of the language
 export function forms_of(code: string) -> { Form }
   return rule_of(code).forms
 end
