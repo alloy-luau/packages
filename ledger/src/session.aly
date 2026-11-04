@@ -26,14 +26,17 @@ import { migrate, type Migration } from './migrate'
 
 --- Purchase ids that a record keeps. Roblox sends a receipt again only
 --- while it is not granted, so the newest ids are enough.
+--- @private
 const MAX_RECEIPTS = 100
 
 --- The seconds of the first wait between two tries. Each wait doubles
 --- it, with a random part from 0.5x to 1.5x.
+--- @private
 const BACKOFF = 1
 
 --- DataStore error codes that no retry fixes: a bad key, a bad value, a
 --- value too large, and Studio without API access.
+--- @private
 const PERMANENT: { [string]: boolean } = {
   ['101'] = true,
   ['102'] = true,
@@ -60,6 +63,7 @@ export type Template<T> = {
 }
 
 --- What each session of a store reads. The store builds it once.
+--- @private
 export type Settings<T> = {
   name: string,
   version: number,
@@ -72,17 +76,22 @@ export type Settings<T> = {
 }
 
 --- A lock as a record stores it.
+--- @private
 type Lock = { job: string, id: string, at: number }
 
 --- The state of a session: it takes writes while it is open.
+--- @private
 type State = 'open' | 'closed' | 'lost'
 
 --- The ids of this server's sessions: the job, a count, and a random
 --- part, so no two sessions anywhere share one.
+--- @private
 const random = new Random()
 local count = 0
 
 --- A new lock id.
+--- @within Session
+--- @private
 local function new_id() -> string
   count += 1
 
@@ -90,12 +99,16 @@ local function new_id() -> string
 end
 
 --- A lock for session `id`, written now.
+--- @within Session
+--- @private
 local function lock_of(id: string) -> Lock
   return { job = game.JobId, id = id, at = os.time() }
 end
 
 --- Whether a DataStore error is one that no retry fixes. The message
 --- starts with its code, as "104: Cannot store Array in data store".
+--- @within Session
+--- @private
 local function permanent(message: string) -> boolean
   const code = string.match(message, '^(%d%d%d)')
 
@@ -103,6 +116,9 @@ local function permanent(message: string) -> boolean
 end
 
 --- Waits before try `attempt` + 1.
+--- @within Session
+--- @private
+--- @yields
 local function back_off(attempt: number) -> ()
   task.wait(BACKOFF * 2 ^ (attempt - 1) * (0.5 + math.random()))
 end
@@ -110,6 +126,9 @@ end
 --- Runs `call`, a backend call, up to `attempts` times, with a wait
 --- between tries, until it gives no error. A permanent error stops the
 --- tries at once.
+--- @within Session
+--- @private
+--- @yields
 local function retry(attempts: number, call: () -> string?) -> Result<nil, string>
   local last = 'no attempt ran'
 
@@ -136,6 +155,8 @@ end
 
 --- The schema version of a stored record. A record from before Ledger
 --- wrote versions is version 1.
+--- @within Session
+--- @private
 local function version_of(record: { [unknown]: unknown }) -> number
   const version = record.version
 
@@ -145,6 +166,9 @@ end
 --- Takes the lock off a record that this session claimed, and keeps the
 --- data as it is. A load that cannot read the data calls it, so the
 --- player can load again at once.
+--- @within Session
+--- @private
+--- @yields
 local function release<T>(settings: Settings<T>, key: string, id: string) -> ()
   const result = retry(settings.attempts, function() -> string?
     return settings.backend:update(key, function(old: unknown) -> unknown
@@ -169,12 +193,19 @@ local function release<T>(settings: Settings<T>, key: string, id: string) -> ()
   end
 end
 
+--- @class Session
 --- One record, held in memory while this server owns its lock.
 export struct Session<T>
   --- The key of the record.
+  --- @prop key string
+  --- @within Session
+  --- @readonly
   read key: string
-  --- The data. Change it inside `update`, so a change after the session
-  --- ends is an Err and not a write that never saves.
+  --- The data. Change it inside [Session:update], so a change after the
+  --- session ends is an Err and not a write that never saves.
+  --- @prop data T
+  --- @within Session
+  --- @readonly
   read data: T
   private settings: Settings<T>
   private id: string
@@ -186,6 +217,9 @@ end
 
 impl Session<T>
   --- Whether the session still takes changes and writes.
+  --- @method active
+  --- @within Session
+  --- @return boolean -- True while the session is open
   function active(self) -> boolean
     return self.state == 'open'
   end
@@ -193,6 +227,10 @@ impl Session<T>
   --- Runs `change` on the data. It is an Err when the session has ended:
   --- closed, or lost to another server. `change` must not yield, so a
   --- save sees all of it or none of it.
+  --- @method update
+  --- @within Session
+  --- @param change -- Changes the data in place
+  --- @return Result<nil, string> -- Ok, or an Err when the session has ended
   function update(self, change: (data: T) -> ()) -> Result<nil, string>
     if self.state ~= 'open' then
       return Err(`{self.settings.name}: the session of {self.key} is {self.state}`)
@@ -206,6 +244,10 @@ impl Session<T>
   --- Writes the data now and renews the lock. Yields. It is an Err when
   --- the tries run out, or when another server took the lock: the
   --- session is then lost, and it writes nothing again.
+  --- @method save
+  --- @within Session
+  --- @return Result<nil, string> -- Ok when the data saved
+  --- @yields
   function save(self) -> Result<nil, string>
     -- `Session.write(self)`, not `self:write()`: flux does not see a
     -- private method of a generic struct through `self`.
@@ -215,6 +257,10 @@ impl Session<T>
   --- Writes the data and takes the lock off, so the next server loads
   --- at once. Yields. The session ends, even when the write fails; the
   --- lock then times out. A second close waits for the first, and is Ok.
+  --- @method close
+  --- @within Session
+  --- @return Result<nil, string> -- Ok when the data saved and the lock came off
+  --- @yields
   function close(self) -> Result<nil, string>
     return Session.write(self, true)
   end
@@ -225,6 +271,12 @@ impl Session<T>
   --- means `grant` ran now, Ok(false) that it ran before. An Err means
   --- the save failed: answer `NotProcessedYet`, and the next receipt
   --- saves again without a second grant. `grant` must not yield.
+  --- @method purchase
+  --- @within Session
+  --- @param id -- The `PurchaseId` of the receipt
+  --- @param grant -- Gives the product to the data
+  --- @return Result<boolean, string> -- Ok(true) when `grant` ran now, Ok(false) when it ran before
+  --- @yields
   function purchase(self, id: string, grant: (data: T) -> ()) -> Result<boolean, string>
     if self.state ~= 'open' then
       return Err(`{self.settings.name}: the session of {self.key} is {self.state}`)
@@ -247,12 +299,20 @@ impl Session<T>
   end
 
   --- Whether the record holds the purchase `id`.
+  --- @method has_receipt
+  --- @within Session
+  --- @param id -- The `PurchaseId` of the receipt
+  --- @return boolean -- True when the record holds the id
   function has_receipt(self, id: string) -> boolean
     return table.find(self.receipts, id) ~= nil
   end
 
   --- The one write path: the lock check, the data, and the lock, in one
   --- transform.
+  --- @method write
+  --- @within Session
+  --- @private
+  --- @yields
   private function write(self, release: boolean) -> Result<nil, string>
     -- One write at a time, so an older write never lands after a newer
     -- one.
@@ -320,6 +380,9 @@ impl Session<T>
   end
 
   --- Ends the session, and takes it out of the store's open sessions.
+  --- @method finish
+  --- @within Session
+  --- @private
   private function finish(self, state: State) -> ()
     self.state = state
 
@@ -330,9 +393,12 @@ impl Session<T>
 end
 
 --- What one try at a lock found.
+--- @interface Found
+--- @private
+--- .outcome 'claimed' | 'locked' | 'refused' -- `claimed`: the lock is ours. `locked`: a live session holds it. `refused`: the record does not load, and `reason` says why.
+--- .record { [unknown]: unknown } -- The record with the new lock, when the outcome is `claimed`
+--- .reason string -- Why the record does not load, or which server holds the lock
 type Found = {
-  --- `claimed`: the lock is ours. `locked`: a live session holds it.
-  --- `refused`: the record does not load, and `reason` says why.
   outcome: 'claimed' | 'locked' | 'refused',
   record: { [unknown]: unknown },
   reason: string,
@@ -340,6 +406,9 @@ type Found = {
 
 --- One try at the lock of `key`, in one write. A new key gets a record
 --- of the store's version.
+--- @within Session
+--- @private
+--- @yields
 local function try_lock<T>(
   settings: Settings<T>,
   key: string,
@@ -393,6 +462,9 @@ end
 --- The session of a record that `try_lock` claimed: the data after the
 --- migrations, read into the struct. Data that does not read is an Err,
 --- and the lock comes off again.
+--- @within Session
+--- @private
+--- @yields
 local function start<T>(
   settings: Settings<T>,
   key: string,
@@ -447,6 +519,9 @@ end
 --- makes the claim wait and try again; past the tries it is an Err. A
 --- record of a newer version, or data that does not read, is an Err
 --- too, and the record keeps its data.
+--- @within Session
+--- @private
+--- @yields
 export function claim<T>(
   settings: Settings<T>,
   key: string,

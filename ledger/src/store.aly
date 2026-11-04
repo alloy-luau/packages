@@ -17,38 +17,43 @@ import type { Migration } from './migrate'
 import { claim, type Session, type Settings, type Template } from './session'
 
 --- The seconds between two autosaves of a session, by default.
+--- @private
 const AUTOSAVE = 60
 
 --- The seconds after its last write that a lock goes stale, by default.
 --- It is three autosaves: a server that misses two still keeps its lock.
+--- @private
 const LOCK_TIMEOUT = 180
 
 --- Tries of each DataStore call, by default.
+--- @private
 const ATTEMPTS = 5
 
 --- The seconds that `close_all` waits for the saves. Roblox stops the
 --- server 30 seconds after `BindToClose` starts.
+--- @private
 const SHUTDOWN_WAIT = 25
 
 --- The seconds that a receipt waits for the player's session to load.
+--- @private
 const RECEIPT_WAIT = 60
 
 --- What a game gives a store.
+--- @interface Options
+--- .name string -- The DataStore name, and the name in each error
+--- .version number -- The schema version of the data. Start at 1, and add one with each migration.
+--- .migrations { Migration }? -- One migration for each version before `version`, in order
+--- .backend Backend? -- Where the records go. The default is the DataStore `name`.
+--- .autosave number? -- The seconds between two autosaves. 0 turns autosave off.
+--- .lock_timeout number? -- The seconds after its last write that a lock goes stale
+--- .attempts number? -- Tries of each backend call
 export interface Options
-  --- The DataStore name, and the name in each error.
   name: string
-  --- The schema version of the data. Start at 1, and add one with each
-  --- migration.
   version: number
-  --- One migration for each version before `version`, in order.
   migrations: { Migration }?
-  --- Where the records go. The default is the DataStore `name`.
   backend: Backend?
-  --- The seconds between two autosaves. 0 turns autosave off.
   autosave: number?
-  --- The seconds after its last write that a lock goes stale.
   lock_timeout: number?
-  --- Tries of each backend call.
   attempts: number?
 end
 
@@ -56,13 +61,19 @@ end
 export type Grant<T> = (data: T) -> ()
 
 --- The key of a player's record.
+--- @within Store
+--- @private
 local function player_key(user_id: number) -> string
   return `player_{user_id}`
 end
 
+--- @class Store
 --- One kind of saved data, and its open sessions.
 export struct Store<T>
   --- The name from the options.
+  --- @prop name string
+  --- @within Store
+  --- @readonly
   read name: string
   private settings: Settings<T>
   private autosave: number
@@ -76,6 +87,12 @@ impl Store<T>
   --- class. A wrong version, a missing migration, or an autosave that
   --- the lock timeout does not cover three times is a throw, because the
   --- code is wrong.
+  --- @param template -- The struct class of the data
+  --- @param options -- The name, the version, and the other settings of the store
+  --- @return Store<T> -- The new store
+  --- @error string -- When `version` is not a whole number from 1
+  --- @error string -- When the store does not have one migration for each version before `version`
+  --- @error string -- When `lock_timeout` is less than three autosaves
   function new(template: Template<T>, options: Options) -> Store<T>
     const migrations = options.migrations ?? {}
     const autosave = options.autosave ?? AUTOSAVE
@@ -110,6 +127,12 @@ impl Store<T>
   --- Loads the record under `key` with its lock, and keeps it open. The
   --- session saves on the autosave interval and at shutdown. Yields.
   --- `user_id` tags the key with its player.
+  --- @method open
+  --- @within Store
+  --- @param key -- The key of the record
+  --- @param user_id -- The player whose data the key holds, or nil
+  --- @return Result<Session<T>, string> -- The open session, or an Err when the data did not load
+  --- @yields
   function open(self, key: string, user_id: number?) -> Result<Session<T>, string>
     -- `Store.bind_close(self)`: flux does not see a private method of a
     -- generic struct through `self`.
@@ -139,6 +162,11 @@ impl Store<T>
   --- Opens the record of `player`, and closes it when the player leaves.
   --- Yields. An Err means the data did not load: kick the player, or
   --- play on with nothing saved. Never save over it.
+  --- @method join
+  --- @within Store
+  --- @param player -- The player whose record opens
+  --- @return Result<Session<T>, string> -- The open session, or an Err when the data did not load
+  --- @yields
   function join(self, player: Player) -> Result<Session<T>, string>
     Store.watch_players(self)
 
@@ -162,11 +190,19 @@ impl Store<T>
 
   --- The open session of `player`, or nil while it loads or after it
   --- ends.
+  --- @method get
+  --- @within Store
+  --- @param player -- The player whose session to find
+  --- @return Session<T>? -- The open session, or nil
   function get(self, player: Player) -> Session<T>?
     return self.settings.sessions[player_key(player.UserId)]
   end
 
   --- The open session under `key`, or nil.
+  --- @method session
+  --- @within Store
+  --- @param key -- The key of the record
+  --- @return Session<T>? -- The open session, or nil
   function session(self, key: string) -> Session<T>?
     return self.settings.sessions[key]
   end
@@ -174,6 +210,9 @@ impl Store<T>
   --- Closes every open session at once, and waits up to SHUTDOWN_WAIT
   --- seconds for the saves. A close that a leave started already counts:
   --- the second close waits for it.
+  --- @method close_all
+  --- @within Store
+  --- @yields
   function close_all(self) -> ()
     local pending = 0
 
@@ -202,6 +241,10 @@ impl Store<T>
   --- session that still loads. An unknown product, a player with no
   --- session, and a failed save answer `NotProcessedYet`, so Roblox
   --- sends the receipt again.
+  --- @method receipts
+  --- @within Store
+  --- @param grants -- The grant of each developer product, by product id
+  --- @return (receipt: { [string]: unknown }) -> Enum.ProductPurchaseDecision -- The function to set as `ProcessReceipt`. It yields.
   function receipts(
     self,
     grants: { [number]: Grant<T> }
@@ -238,6 +281,10 @@ impl Store<T>
 
   --- The session under `key`, once it is open. It waits up to
   --- RECEIPT_WAIT seconds, while the player is in the server.
+  --- @method wait_for
+  --- @within Store
+  --- @private
+  --- @yields
   private function wait_for(self, key: string, user_id: number) -> Session<T>?
     const started = os.clock()
 
@@ -257,6 +304,9 @@ impl Store<T>
   end
 
   --- Closes every session in `game:BindToClose`, once for each store.
+  --- @method bind_close
+  --- @within Store
+  --- @private
   private function bind_close(self) -> ()
     if self.bound then
       return
@@ -270,6 +320,9 @@ impl Store<T>
 
   --- Closes a player's session when the player leaves, once for each
   --- store.
+  --- @method watch_players
+  --- @within Store
+  --- @private
   private function watch_players(self) -> ()
     if self.watching then
       return

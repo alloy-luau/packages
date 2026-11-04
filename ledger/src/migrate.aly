@@ -26,12 +26,16 @@
 --- next version out. It must not yield. The `any` lets each migration
 --- name its own input and output shapes; the chain itself is untyped,
 --- as the module header says.
+--- @type Migration (old: any) -> any
+--- @within Store
 @allow(explicit_any)
 export type Migration = (old: any) -> any
 
 --- The saved data of a record, after the chain from version `from` up to
 --- version `to`. A version newer than `to` is an Err: the server runs
 --- older code, and a save from it would drop the new fields.
+--- @within Session
+--- @private
 export function migrate(
   data: { [string]: unknown },
   from: number,
