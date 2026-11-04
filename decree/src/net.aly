@@ -8,27 +8,37 @@
   the answer, and calls `list` for the commands to list or complete.
 ]]
 
+--- @class net
+--- The remote between a console UI and the server. The server calls
+--- [net.serve] once, and a console UI calls [net.run] and [net.list].
+--- Import these from `@packages/decree`.
+
 import Players from '@game/Players'
 import { type Entry, type Reply, answer, entries, levels } from './command'
 
 --- The answer when the server drops a line under its rate limit.
+--- @private
 const BUSY: Reply = { ok = false, text = 'Too many lines. Wait a moment, then try again.' }
 
 --- A line from a client, and the server's answer. The rate limit drops
 --- a flood before the server reads it.
+--- @private
 @ratelimit(20, 10)
 remote function DecreeLine(line: string) -> Reply? from client
 
 --- The commands that a client may run.
+--- @private
 @ratelimit(5, 10)
 remote function DecreeList() -> { Entry }? from client
 
---[[
-  Runs a line as `caller` on the server, with each player in the server
-  as a player the line can name, and gives the answer. `serve` answers
-  each client with it; a server hook, such as a chat command, calls it
-  as well.
-]]
+--- Runs a line as `caller` on the server, with each player in the server
+--- as a player the line can name, and gives the answer. `serve` answers
+--- each client with it; a server hook, such as a chat command, calls it
+--- as well.
+--- @within net
+--- @param caller -- The player who runs the line
+--- @param line -- The command and its arguments, as the player wrote them
+--- @return Reply -- The answer to the line
 export function execute(caller: Player, line: string) -> Reply
   return answer(caller, line, Players:GetPlayers())
 end
@@ -36,6 +46,8 @@ end
 --- Starts the commands on the server. `level` gives each player a
 --- level; each command names the lowest level that may run it. Call it
 --- once.
+--- @within net
+--- @param level -- Gives each player a level
 export function serve(level: (Player) -> number) -> ()
   levels(level)
   DecreeLine.on(execute)
@@ -44,11 +56,16 @@ end
 
 --- Sends a line to the server, and gives the answer. It waits for the
 --- server's `serve`.
+--- @within net
+--- @param line -- The command and its arguments, as the player wrote them
+--- @return Future<Reply> -- Settles with the server's answer
 export async function run(line: string) -> Reply
   return (await DecreeLine.call(line)) ?? BUSY
 end
 
 --- The commands that this player may run, as the server knows them.
+--- @within net
+--- @return Future<{ Entry }> -- Settles with one entry for each command
 export async function list() -> { Entry }
   return (await DecreeList.call()) ?? {}
 end

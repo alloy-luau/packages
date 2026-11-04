@@ -1,6 +1,6 @@
 [package]
 name = "alloy/decree"
-version = "0.1.0"
+version = "0.1.1"
 description = "Typed console commands for Roblox games: the server parses, checks, and runs each line"
 authors = ["savruun"]
 repository = "alloy-luau/packages"
