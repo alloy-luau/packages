@@ -16,21 +16,28 @@
   clone that called `ready`.
 ]]
 
+--- @class worker
+--- The worker end of a pool. The game's actor script binds each job
+--- message to [worker.serve], then calls [worker.ready].
+---
+--- Import these from `@packages/foundry`.
+
 import { type Respond } from './job'
 
 --- The attribute a worker sets on its Actor once it listens. The pool
 --- reads it before it sends a job.
 export const READY = 'FoundryReady'
 
---[[
-  The handler of a job message: it runs `work` on the input and answers
-  with the result, or with the error. Bind the message `as parallel`, so
-  `work` runs in the parallel phase. `respond` then goes back to the
-  serial phase to send the answer.
-
-  The pool runs the same `work` serial when no worker can, so one
-  function serves both paths.
-]]
+--- The handler of a job message: it runs `work` on the input and answers
+--- with the result, or with the error. Bind the message `as parallel`, so
+--- `work` runs in the parallel phase. `respond` then goes back to the
+--- serial phase to send the answer.
+---
+--- The pool runs the same `work` serial when no worker can, so one
+--- function serves both paths.
+--- @within worker
+--- @param work -- Runs one job on its input and gives the result.
+--- @return (job: number, input: I, respond: Respond<T>) -> () -- The message handler.
 export function serve<I, T>(
   work: (input: I) -> T
 ) -> (job: number, input: I, respond: Respond<T>) -> ()
@@ -50,6 +57,9 @@ end
 
 --- Marks the Actor of a worker script ready, so the pool sends it jobs.
 --- Call it with `script`, after the script binds its handlers.
+--- @within worker
+--- @param from -- The worker script, `script`.
+--- @error string -- When the script is under no Actor.
 export function ready(from: Instance) -> ()
   const actor = from:GetActor()
 
