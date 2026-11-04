@@ -13,6 +13,12 @@
   signal of an action's InputAction, as the engine does.
 ]]
 
+--- @class lever
+--- The specs and helpers of [Lever]. [lever.button], [lever.axis], and
+--- [lever.axis2] make the spec of an action for [Lever.new].
+---
+--- Import these from `@packages/lever`.
+
 import ReplicatedStorage from '@game/ReplicatedStorage'
 import UserInputService from '@game/UserInputService'
 import { Signal } from '@alloy/std/signal'
@@ -41,30 +47,39 @@ import {
   reserved,
 } from './keys'
 
+--- @type Kind "Button" | "Axis" | "Axis2"
+--- @within lever
 --- What an action reads, as InputActionType names it.
+---
+--- - `Button` is down or up: a key, a button, a click, or a touch button.
+--- - `Axis` is a number from -1 to 1: a trigger, two keys, or the mouse wheel.
+--- - `Axis2` is a Vector2: a stick, WASD, or a touch stick.
 export enum Kind
-  --- Down or up: a key, a button, a click, or a touch button.
   Button
-  --- A number from -1 to 1: a trigger, two keys, or the mouse wheel.
   Axis
-  --- A Vector2: a stick, WASD, or a touch stick.
   Axis2
 end
 
+--- @interface ActionSpec
+--- @within lever
 --- One action: what it reads, its context, and its default bindings.
---- `name` is the text that a controls screen shows for it.
+--- [lever.button], [lever.axis], and [lever.axis2] make one.
+--- .kind Kind -- What the action reads.
+--- .context C -- The context that the action belongs to.
+--- .bindings { Input } -- The default bindings.
+--- .name string? -- The text that a controls screen shows for it.
 export type ActionSpec<C> = { kind: Kind, context: C, bindings: { Input }, name: string? }
 
---[[
-  One context: a group of actions that turns on and off as one. A
-  context with a higher priority hears input first. With `sink`, the
-  keys that it binds do not reach a context of lower priority.
-  `enabled` is true when nil.
-
-  While a TextBox has the focus, no action of the game begins, so a
-  player who types in a chat box does not jump. `typing` lets one
-  context take input then, such as the chat's own keys.
-]]
+--- @interface ContextSpec
+--- @within lever
+--- One context: a group of actions that turns on and off as one.
+---
+--- While a TextBox has the focus, no action of the game begins, so a
+--- player who types in a chat box does not jump.
+--- .priority number -- A context with a higher priority hears input first.
+--- .sink boolean? -- When true, the keys that it binds do not reach a context of lower priority.
+--- .enabled boolean? -- Whether the context starts on. It is true when nil.
+--- .typing boolean? -- When true, the context takes input while a TextBox has the focus.
 export type ContextSpec = {
   priority: number,
   sink: boolean?,
@@ -72,15 +87,17 @@ export type ContextSpec = {
   typing: boolean?,
 }
 
---[[
-  The bindings that a player changed, as a save layer keeps them: the
-  saved bindings of each action, by its name, then by the name of the
-  device. A device that the player did not change is not in it, so a
-  new default reaches every player.
-]]
+--- @interface Save
+--- @within lever
+--- The bindings that a player changed, as a save layer keeps them. A
+--- device that the player did not change is not in it, so a new default
+--- reaches every player. [Lever:save] writes it, and [Lever:load] reads it.
+--- .version number -- The version of the save.
+--- .actions { [string]: { [string]: { SavedBinding } } } -- By action name, then by device name.
 export type Save = { version: number, actions: { [string]: { [string]: { SavedBinding } } } }
 
 --- An action's value: a boolean, a number, or a Vector2, by its kind.
+--- @within lever
 export type Value = boolean | number | Vector2
 
 --- The InputActionType of each kind.
@@ -93,9 +110,11 @@ const TYPES: { [Kind]: Enum.InputActionType } = {
 --- The version that `save` writes.
 const SAVE_VERSION = 1
 
+--- @class Entry
+--- @private
 --- One action at run time.
 struct Entry<C>
-  --- The action's name in its enum.
+  -- The action's name in its enum.
   id: string
   kind: Kind
   context: C
@@ -103,17 +122,17 @@ struct Entry<C>
   instance: InputAction
   defaults: { [Device]: { Binding } }
   bindings: { [Device]: { Binding } }
-  --- The InputBindings that Lever made from `bindings` and `touch`.
+  -- The InputBindings that Lever made from `bindings` and `touch`.
   children: { InputBinding } = {}
   touch: GuiButton? = nil
-  --- The Scriptable binding that `fire` drives, made on the first fire.
+  -- The Scriptable binding that `fire` drives, made on the first fire.
   script: InputBinding? = nil
   value: Value = false
   held: boolean = false
-  --- Whether the action began, or ended, since the last step.
+  -- Whether the action began, or ended, since the last step.
   began: boolean = false
   ended: boolean = false
-  --- Whether it began, or ended, between the last two steps.
+  -- Whether it began, or ended, between the last two steps.
   pressed: boolean = false
   released: boolean = false
 end
@@ -217,9 +236,12 @@ local function layout(key: Enum.KeyCode, fallback: string) -> string
   return fallback
 end
 
---- The text of a key for this player, as `lever:label` writes it: "E",
+--- The text of a key for this player, as [Lever:label] writes it: "E",
 --- "Space", "Left Click", or "A". A test has no engine to ask, so it
 --- reads Lever's own names alone.
+--- @within lever
+--- @param key -- The key to name.
+--- @return string -- The text of the key for a prompt.
 export function key_label(key: Enum.KeyCode) -> string
   local result = label(key)
 
@@ -293,30 +315,47 @@ end
 
 --- The spec of a Button: a key, a click, a gamepad button, or a touch
 --- button.
+--- @within lever
+--- @param context -- The context that the action belongs to.
+--- @param bindings -- The default bindings. A bare KeyCode is a binding of one key.
+--- @param name -- The text that a controls screen shows. When nil, Lever spaces the variant name.
+--- @return ActionSpec<C> -- The spec, for the `action` function of [Lever.new].
 export function button<C>(context: C, bindings: { Input }, name: string?) -> ActionSpec<C>
   return { kind = Kind.Button, context = context, bindings = bindings, name = name }
 end
 
 --- The spec of an Axis: a number from -1 to 1, such as a trigger, the
 --- mouse wheel, or two keys as `{ up = ..., down = ... }`.
+--- @within lever
+--- @param context -- The context that the action belongs to.
+--- @param bindings -- The default bindings. A bare KeyCode is a binding of one key.
+--- @param name -- The text that a controls screen shows. When nil, Lever spaces the variant name.
+--- @return ActionSpec<C> -- The spec, for the `action` function of [Lever.new].
 export function axis<C>(context: C, bindings: { Input }, name: string?) -> ActionSpec<C>
   return { kind = Kind.Axis, context = context, bindings = bindings, name = name }
 end
 
---- The spec of an Axis2: a Vector2, such as a stick or `wasd()`.
+--- The spec of an Axis2: a Vector2, such as a stick or [binding.wasd].
+--- @within lever
+--- @param context -- The context that the action belongs to.
+--- @param bindings -- The default bindings, such as `wasd()` and `Thumbstick1`.
+--- @param name -- The text that a controls screen shows. When nil, Lever spaces the variant name.
+--- @return ActionSpec<C> -- The spec, for the `action` function of [Lever.new].
 export function axis2<C>(context: C, bindings: { Input }, name: string?) -> ActionSpec<C>
   return { kind = Kind.Axis2, context = context, bindings = bindings, name = name }
 end
 
---[[
-  Waits for the next press of a key of `device`, for a rebind screen.
-  `done` gets the key, or nil when the player presses a reserved key,
-  such as Escape. A key of another device does not end the wait. Gives a
-  function that stops the wait.
-
-  The press also reaches the game, so turn the gameplay context off
-  while a rebind screen shows.
-]]
+--- Waits for the next press of a key of `device`, for a rebind screen.
+--- `done` gets the key, or nil when the player presses a reserved key,
+--- such as Escape. A key of another device does not end the wait. Gives a
+--- function that stops the wait.
+---
+--- The press also reaches the game, so turn the gameplay context off
+--- while a rebind screen shows.
+--- @within lever
+--- @param device -- The device whose keys end the wait.
+--- @param done -- Gets the key, or nil for a reserved key.
+--- @return () -> () -- Stops the wait.
 export function capture(device: Device, done: (key: Enum.KeyCode?) -> ()) -> () -> ()
   local connection: RBXScriptConnection? = nil
 
@@ -343,22 +382,35 @@ export function capture(device: Device, done: (key: Enum.KeyCode?) -> ()) -> () 
   return stop
 end
 
+--- @class Lever
 --- The Lever class: the actions of one game, its contexts, and the
 --- player's bindings.
 export struct Lever<A, C>
+  --- @prop began Signal<A>
+  --- @within Lever
+  --- @readonly
   --- Fires when an action begins: a key goes down, or an axis leaves
   --- zero.
   read began: Signal<A>
+  --- @prop ended Signal<A>
+  --- @within Lever
+  --- @readonly
   --- Fires when an action ends: a key comes up, an axis comes back to
   --- zero, or its context turns off.
   read ended: Signal<A>
+  --- @prop rebound Signal<A>
+  --- @within Lever
+  --- @readonly
   --- Fires when the bindings of an action change.
   read rebound: Signal<A>
+  --- @prop device_changed Signal<Device>
+  --- @within Lever
+  --- @readonly
   --- Fires when the player moves to another device.
   read device_changed: Signal<Device>
   private folder: Folder
   private contexts: { [C]: InputContext }
-  --- The contexts that take input while a TextBox has the focus.
+  -- The contexts that take input while a TextBox has the focus.
   private typists: { [C]: boolean } = {}
   private entries: { [A]: Entry<C> } = {}
   private order: { A } = {}
@@ -368,6 +420,7 @@ export struct Lever<A, C>
 end
 
 --- A key in a binding: where a rebind found it.
+--- @private
 type Holder<A> = { action: A, binding: Binding, part: Part }
 
 --- The Scriptable binding of an action, made on the first call.
@@ -630,18 +683,25 @@ local function watch<A, C>(self: Lever<A, C>) -> ()
 end
 
 impl Lever<A, C>
-  --[[
-    A new Lever, with its InputContexts and InputActions in a Folder
-    named Lever under `parent`, ReplicatedStorage when nil.
-
-    - `actions` and `contexts` are the game's two unit enums themselves.
-    - `action` gives the spec of each action. Write it as a match with
-      no default arm, so a new action with no spec fails the build.
-    - `context` gives the spec of each context.
-
-    The arguments come one by one, not in a table, so that Luau reads
-    the two enum types from `action` and `context`.
-  ]]
+  --- A new Lever, with its InputContexts and InputActions in a Folder
+  --- named Lever under `parent`, ReplicatedStorage when nil.
+  ---
+  --- - `actions` and `contexts` are the game's two unit enums themselves.
+  --- - `action` gives the spec of each action. Write it as a match with
+  ---   no default arm, so a new action with no spec fails the build.
+  --- - `context` gives the spec of each context.
+  ---
+  --- The arguments come one by one, not in a table, so that Luau reads
+  --- the two enum types from `action` and `context`.
+  --- @param actions -- The unit enum of the actions, such as `Action`.
+  --- @param contexts -- The unit enum of the contexts, such as `Context`.
+  --- @param action -- Gives the [lever.ActionSpec] of each action.
+  --- @param context -- Gives the [lever.ContextSpec] of each context.
+  --- @param parent -- The parent of the Folder. ReplicatedStorage when nil.
+  --- @return Lever<A, C> -- The Lever, with each action on its default bindings.
+  --- @error string -- When `actions` or `contexts` holds no unit enum.
+  --- @error string -- When a spec names no context of this Lever.
+  --- @error string -- When a default binding holds no key.
   function new(
     actions: unknown,
     contexts: unknown,
@@ -687,12 +747,12 @@ impl Lever<A, C>
     return self
   end
 
-  --[[
-    Latches `pressed` and `released` for one frame. Call it once a
-    frame, before the code that reads them. Input comes before every
-    RunService event of a frame, so a step at the top of a frame's
-    systems sees the input of that frame.
-  ]]
+  --- @method step
+  --- @within Lever
+  --- Latches `pressed` and `released` for one frame. Call it once a
+  --- frame, before the code that reads them. Input comes before every
+  --- RunService event of a frame, so a step at the top of a frame's
+  --- systems sees the input of that frame.
   function step(self) -> ()
     for _, entry in self.entries do
       entry.pressed = entry.began
@@ -702,24 +762,45 @@ impl Lever<A, C>
     end
   end
 
+  --- @method held
+  --- @within Lever
   --- Whether an action is down now, or off zero.
+  --- @param action -- The action to read.
+  --- @return boolean -- True while the action is held.
+  --- @error string -- When `action` is no action of this Lever.
   function held(self, action: A) -> boolean
     return entry_of(self, action).held
   end
 
   --- Whether an action began in the frame of the last `step`. A tap
   --- that begins and ends in one frame counts.
+  --- @method pressed
+  --- @within Lever
+  --- @param action -- The action to read.
+  --- @return boolean -- True when the action began in that frame.
+  --- @error string -- When `action` is no action of this Lever.
   function pressed(self, action: A) -> boolean
     return entry_of(self, action).pressed
   end
 
+  --- @method released
+  --- @within Lever
   --- Whether an action ended in the frame of the last `step`.
+  --- @param action -- The action to read.
+  --- @return boolean -- True when the action ended in that frame.
+  --- @error string -- When `action` is no action of this Lever.
   function released(self, action: A) -> boolean
     return entry_of(self, action).released
   end
 
   --- The value of an Axis from -1 to 1. A Button reads 1 while held and
   --- 0 when not.
+  --- @method axis
+  --- @within Lever
+  --- @param action -- The action to read.
+  --- @return number -- The value now.
+  --- @error string -- When `action` is no action of this Lever.
+  --- @error string -- When the action is an Axis2.
   function axis(self, action: A) -> number
     const value = entry_of(self, action).value
 
@@ -732,7 +813,13 @@ impl Lever<A, C>
     error(`BadCall: {action} is an Axis2; read it with axis2`, 0)
   end
 
+  --- @method axis2
+  --- @within Lever
   --- The value of an Axis2.
+  --- @param action -- The action to read.
+  --- @return Vector2 -- The value now.
+  --- @error string -- When `action` is no action of this Lever.
+  --- @error string -- When the action is no Axis2.
   function axis2(self, action: A) -> Vector2
     const value = entry_of(self, action).value
 
@@ -743,13 +830,19 @@ impl Lever<A, C>
     error(`BadCall: {action} is no Axis2; read it with axis or held`, 0)
   end
 
+  --- @method enable
+  --- @within Lever
   --- Turns a context on.
+  --- @param context -- The context to turn on.
   function enable(self, context: C) -> ()
     self.contexts[context].Enabled = true
   end
 
   --- Turns a context off. Each of its actions that is held ends, so a
   --- run that a menu cuts off does not go on after the menu.
+  --- @method disable
+  --- @within Lever
+  --- @param context -- The context to turn off.
   function disable(self, context: C) -> ()
     self.contexts[context].Enabled = false
 
@@ -760,33 +853,59 @@ impl Lever<A, C>
     end
   end
 
+  --- @method enabled
+  --- @within Lever
   --- Whether a context is on.
+  --- @param context -- The context to read.
+  --- @return boolean -- True when the context is on.
   function enabled(self, context: C) -> boolean
     return self.contexts[context].Enabled
   end
 
+  --- @method actions
+  --- @within Lever
   --- Every action, sorted by name.
+  --- @return { A } -- A new array of the actions.
   function actions(self) -> { A }
     return table.clone(self.order)
   end
 
+  --- @method name
+  --- @within Lever
   --- The text that a controls screen shows for an action.
+  --- @param action -- The action to name.
+  --- @return string -- The `name` of its spec, or the variant name with spaces.
+  --- @error string -- When `action` is no action of this Lever.
   function name(self, action: A) -> string
     return entry_of(self, action).name
   end
 
+  --- @method instance
+  --- @within Lever
   --- The InputAction of an action, for an InputActionLabel or a test.
+  --- @param action -- The action to find.
+  --- @return InputAction -- The InputAction that Lever made for it.
+  --- @error string -- When `action` is no action of this Lever.
   function instance(self, action: A) -> InputAction
     return entry_of(self, action).instance
   end
 
   --- The device that the player uses now, from
   --- UserInputService.PreferredInput.
+  --- @method device
+  --- @within Lever
+  --- @return Device -- The device now.
   function device(self) -> Device
     return self.current
   end
 
+  --- @method bindings
+  --- @within Lever
   --- A copy of the bindings of an action for a device, in slot order.
+  --- @param action -- The action to read.
+  --- @param device -- The device of the bindings.
+  --- @return { Binding } -- A copy of the bindings. A change to it does not reach Lever.
+  --- @error string -- When `action` is no action of this Lever.
   function bindings(self, action: A, device: Device) -> { Binding }
     const result: { Binding } = {}
 
@@ -797,13 +916,18 @@ impl Lever<A, C>
     return result
   end
 
-  --[[
-    The text of an action's binding for a prompt: "E", "Space", "A", or
-    "W/A/S/D". It reads the binding in `slot` (1 when nil) of `device`
-    (the player's device when nil), and gives '' when there is none.
-    Keyboard keys follow the player's layout, and gamepad buttons follow
-    the brand of the gamepad.
-  ]]
+  --- @method label
+  --- @within Lever
+  --- The text of an action's binding for a prompt: "E", "Space", "A", or
+  --- "W/A/S/D". It reads the binding in `slot` (1 when nil) of `device`
+  --- (the player's device when nil), and gives '' when there is none.
+  --- Keyboard keys follow the player's layout, and gamepad buttons follow
+  --- the brand of the gamepad.
+  --- @param action -- The action to read.
+  --- @param device -- The device of the binding. The player's device when nil.
+  --- @param slot -- The slot of the binding. 1 when nil.
+  --- @return string -- The text, or '' when the slot has no binding.
+  --- @error string -- When `action` is no action of this Lever.
   function label(self, action: A, device: Device?, slot: number?) -> string
     const binding = entry_of(self, action).bindings[device ?? self.current][slot ?? 1]
 
@@ -812,6 +936,13 @@ impl Lever<A, C>
 
   --- The image that Roblox has for the key of an action's binding, such
   --- as the glyph of a gamepad button, or '' when it has none.
+  --- @method image
+  --- @within Lever
+  --- @param action -- The action to read.
+  --- @param device -- The device of the binding. The player's device when nil.
+  --- @param slot -- The slot of the binding. 1 when nil.
+  --- @return string -- The image as a content ID, or '' when Roblox has none.
+  --- @error string -- When `action` is no action of this Lever.
   function image(self, action: A, device: Device?, slot: number?) -> string
     const binding = entry_of(self, action).bindings[device ?? self.current][slot ?? 1]
     local result = ''
@@ -824,18 +955,26 @@ impl Lever<A, C>
     return result
   end
 
-  --[[
-    Binds new keys to an action, for a device. `change` holds the parts
-    that change: a bare key or `{ key = ... }` for a plain binding, or
-    `{ up = ... }` for one direction of a composite. The other parts
-    stay. `slot` picks the binding of that device, 1 when nil; one past
-    the last slot adds a binding.
-
-    A key that another binding of the same context holds moves: that
-    binding takes the old key of this one, so no key drives two actions
-    of one context. Gives the other action that changed, if any.
-    Contexts that are never on together can share keys.
-  ]]
+  --- @method rebind
+  --- @within Lever
+  --- Binds new keys to an action, for a device. `change` holds the parts
+  --- that change: a bare key or `{ key = ... }` for a plain binding, or
+  --- `{ up = ... }` for one direction of a composite. The other parts
+  --- stay. `slot` picks the binding of that device, 1 when nil; one past
+  --- the last slot adds a binding.
+  ---
+  --- A key that another binding of the same context holds moves: that
+  --- binding takes the old key of this one, so no key drives two actions
+  --- of one context. Gives the other action that changed, if any.
+  --- Contexts that are never on together can share keys.
+  --- @param action -- The action to bind.
+  --- @param device -- The device of the keys.
+  --- @param change -- The parts that change.
+  --- @param slot -- The slot of the binding. 1 when nil.
+  --- @return A? -- The other action that lost a key, or nil.
+  --- @error string -- When `action` is no action of this Lever.
+  --- @error string -- When a key is of another device, or Roblox reserves it.
+  --- @error string -- When `slot` is less than 1 or more than one past the last slot.
   function rebind(self, action: A, device: Device, change: Input, slot: number?) -> A?
     const entry = entry_of(self, action)
     const keys = normal(change)
@@ -885,6 +1024,12 @@ impl Lever<A, C>
 
   --- Removes the binding in `slot` (1 when nil) of an action for a
   --- device. A slot with no binding changes nothing.
+  --- @method unbind
+  --- @within Lever
+  --- @param action -- The action to change.
+  --- @param device -- The device of the binding.
+  --- @param slot -- The slot of the binding. 1 when nil.
+  --- @error string -- When `action` is no action of this Lever.
   function unbind(self, action: A, device: Device, slot: number?) -> ()
     const list = entry_of(self, action).bindings[device]
 
@@ -897,8 +1042,12 @@ impl Lever<A, C>
     self.rebound:Fire(action)
   end
 
+  --- @method reset
+  --- @within Lever
   --- Gives one action, or every action when nil, its default bindings
   --- again.
+  --- @param action -- The action to reset. Every action when nil.
+  --- @error string -- When `action` is no action of this Lever.
   function reset(self, action: A?) -> ()
     local actions = self.order
 
@@ -916,6 +1065,9 @@ impl Lever<A, C>
 
   --- The bindings that the player changed, for a save layer. Store the
   --- table as it is: it holds strings, numbers, and tables alone.
+  --- @method save
+  --- @within Lever
+  --- @return Save -- The changed bindings. [Lever:load] reads it back.
   function save(self) -> Save
     local actions: { [string]: { [string]: { SavedBinding } } } = {}
 
@@ -943,12 +1095,13 @@ impl Lever<A, C>
     return { version = SAVE_VERSION, actions = actions }
   end
 
-  --[[
-    Reads a save back. Every action takes its defaults first, then the
-    devices that the save holds. An action, a device, or a binding that
-    Lever does not know drops out, so a save from an older version of
-    the game loads.
-  ]]
+  --- @method load
+  --- @within Lever
+  --- Reads a save back. Every action takes its defaults first, then the
+  --- devices that the save holds. An action, a device, or a binding that
+  --- Lever does not know drops out, so a save from an older version of
+  --- the game loads.
+  --- @param data -- A [lever.Save] from [Lever:save], or any value from a store.
   function load(self, data: unknown) -> ()
     local actions: unknown = nil
 
@@ -969,10 +1122,14 @@ impl Lever<A, C>
     end
   end
 
-  --[[
-    Links a GuiButton to a Button action, for touch. The engine drives
-    the action while the button is down. nil takes the link away.
-  ]]
+  --- @method touch
+  --- @within Lever
+  --- Links a GuiButton to a Button action, for touch. The engine drives
+  --- the action while the button is down. nil takes the link away.
+  --- @param action -- The Button action to drive.
+  --- @param button -- The GuiButton, or nil to take the link away.
+  --- @error string -- When `action` is no action of this Lever.
+  --- @error string -- When the action is no Button.
   function touch(self, action: A, button: GuiButton?) -> ()
     local entry = entry_of(self, action)
 
@@ -984,16 +1141,21 @@ impl Lever<A, C>
     sync(self, action)
   end
 
-  --[[
-    Drives an action from code, through a Scriptable InputBinding: a
-    touch stick of the game's own, or a script of a tutorial. The value
-    must fit the kind: a boolean, a number, or a Vector2. The engine
-    fires the action as it does for a key.
-  ]]
+  --- @method fire
+  --- @within Lever
+  --- Drives an action from code, through a Scriptable InputBinding: a
+  --- touch stick of the game's own, or a script of a tutorial. The value
+  --- must fit the kind: a boolean, a number, or a Vector2. The engine
+  --- fires the action as it does for a key.
+  --- @param action -- The action to drive.
+  --- @param value -- The new value of the action.
+  --- @error string -- When `action` is no action of this Lever.
   function fire(self, action: A, value: Value) -> ()
     script_of(entry_of(self, action)):Fire(value)
   end
 
+  --- @method destroy
+  --- @within Lever
   --- Takes Lever down: its instances, its connections, and its signals.
   function destroy(self) -> ()
     for _, connection in self.connections do

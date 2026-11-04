@@ -8,6 +8,13 @@
   every EnumItem the value 0, and the names are the same everywhere.
 ]]
 
+--- @class keys
+--- Keys and devices. [keys.Device] names the device of a key.
+---
+--- Import these from `@packages/lever`.
+
+--- @type Device "Keyboard" | "Gamepad" | "Touch"
+--- @within keys
 --- The devices a player plays with. Keyboard includes the mouse.
 export enum Device
   Keyboard
@@ -178,6 +185,10 @@ local function starts(name: string, prefix: string) -> boolean
 end
 
 --- The device of a key. The mouse counts as the keyboard.
+--- @within keys
+--- @private
+--- @param key -- The key to sort.
+--- @return Device -- The device of the key.
 export function device_of(key: Enum.KeyCode) -> Device
   const name = key.Name
 
@@ -192,6 +203,10 @@ end
 
 --- The device of a UserInputService.PreferredInput. A gamepad with no
 --- stick, such as a TV remote, counts as a gamepad.
+--- @within keys
+--- @private
+--- @param preferred -- The PreferredInput to sort.
+--- @return Device -- The device of the input.
 export function device_of_preferred(preferred: Enum.PreferredInput) -> Device
   const name = preferred.Name
 
@@ -206,18 +221,30 @@ end
 
 --- The text of a key for a prompt: "E", "Space", "Left Click", "A".
 --- A key with no entry shows its name in Enum.KeyCode.
+--- @within keys
+--- @private
+--- @param key -- The key to name.
+--- @return string -- The text of the key.
 export function label(key: Enum.KeyCode) -> string
   return LABELS[key.Name] ?? key.Name
 end
 
 --- Whether Roblox or the system uses a key, so that a player cannot
 --- bind it.
+--- @within keys
+--- @private
+--- @param key -- The key to test.
+--- @return boolean -- True when a player cannot bind the key.
 export function reserved(key: Enum.KeyCode) -> boolean
   return RESERVED[key.Name] ~= nil
 end
 
 --- The KeyCode of a name, or nil when Lever does not know the name. A
 --- save holds names, and this reads them back.
+--- @within keys
+--- @private
+--- @param name -- The name of the key in Enum.KeyCode.
+--- @return Enum.KeyCode? -- The key, or nil.
 export function key_named(name: string) -> Enum.KeyCode?
   if LABELS[name] == nil then
     return nil
@@ -229,6 +256,11 @@ end
 --- What a press of `key` does while a rebind waits for a key of
 --- `device`. A reserved key cancels the wait, so Escape backs out. A key
 --- of another device, or one that Lever does not know, changes nothing.
+--- @within keys
+--- @private
+--- @param device -- The device that the rebind waits for.
+--- @param key -- The key of the press.
+--- @return Pick -- What the press does.
 export function pick(device: Device, key: Enum.KeyCode) -> Pick
   if reserved(key) then
     return Pick.Cancel

@@ -1,6 +1,6 @@
 [package]
 name = "alloy/lever"
-version = "0.1.0"
+version = "0.1.1"
 description = "Input actions for Roblox games: an enum of actions on the Input Action System"
 authors = ["savruun"]
 repository = "alloy-luau/packages"

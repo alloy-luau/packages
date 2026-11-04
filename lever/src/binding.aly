@@ -8,20 +8,30 @@
   know, because a save can come from an older version of the game.
 ]]
 
+--- @class binding
+--- Bindings as data: a table of keys by part. [binding.wasd] and
+--- [binding.arrows] give the composites of a move.
+---
+--- Import these from `@packages/lever`.
+
 import { type Device, device_of, key_named, label } from './keys'
 
 --- A part of a binding, as InputBinding names it: `key` is its
 --- KeyCode, and the others are its composite directions.
+--- @within binding
 export type Part = 'key' | 'up' | 'down' | 'left' | 'right'
 
 --- One input that drives an action: a key, a button, a stick, or the
 --- keys of a composite direction.
+--- @within binding
 export type Binding = { [Part]: Enum.KeyCode }
 
 --- A binding, or a bare KeyCode for a binding of one key.
+--- @within binding
 export type Input = Enum.KeyCode | Binding
 
 --- A binding in a save: the name of each key by its part.
+--- @within binding
 export type SavedBinding = { [Part]: string }
 
 --- Each part, in the order that a save and a check read them.
@@ -31,6 +41,8 @@ export const PARTS: { Part } = { 'key', 'up', 'down', 'left', 'right' }
 const SHOWN: { Part } = { 'key', 'up', 'left', 'down', 'right' }
 
 --- The composite of W, A, S, and D, for an Axis2 such as a move.
+--- @within binding
+--- @return Binding -- A new binding of W, A, S, and D.
 export function wasd() -> Binding
   return {
     up = Enum.KeyCode.W,
@@ -41,6 +53,8 @@ export function wasd() -> Binding
 end
 
 --- The composite of the arrow keys, for an Axis2.
+--- @within binding
+--- @return Binding -- A new binding of the arrow keys.
 export function arrows() -> Binding
   return {
     up = Enum.KeyCode.Up,
@@ -52,6 +66,10 @@ end
 
 --- A binding of its own for an input, so that a change to it does not
 --- reach the caller's table.
+--- @within binding
+--- @private
+--- @param input -- A binding, or a bare KeyCode.
+--- @return Binding -- A new binding.
 export function normal(input: Input) -> Binding
   if input is EnumItem then
     return { key = input }
@@ -61,6 +79,11 @@ export function normal(input: Input) -> Binding
 end
 
 --- The device of a binding: the device of its first key.
+--- @within binding
+--- @private
+--- @param binding -- The binding to read.
+--- @return Device -- The device of its first key.
+--- @error string -- When the binding holds no key.
 export function binding_device(binding: Binding) -> Device
   for _, part in PARTS do
     if const key = binding[part] then
@@ -73,6 +96,11 @@ end
 
 --- The text of a binding for a prompt: "E", or "W/A/S/D" for a
 --- composite. `name` gives the text of each key, `label` when nil.
+--- @within binding
+--- @private
+--- @param binding -- The binding to show.
+--- @param name -- Gives the text of each key. `label` when nil.
+--- @return string -- The text for a prompt.
 export function text(binding: Binding, name: ((key: Enum.KeyCode) -> string)?) -> string
   const name_of = name ?? label
   const labels: { string } = {}
@@ -87,6 +115,10 @@ export function text(binding: Binding, name: ((key: Enum.KeyCode) -> string)?) -
 end
 
 --- The saved form of a binding.
+--- @within binding
+--- @private
+--- @param binding -- The binding to save.
+--- @return SavedBinding -- The name of each key by its part.
 export function encode(binding: Binding) -> SavedBinding
   local saved: SavedBinding = {}
 
@@ -148,6 +180,11 @@ local function line(binding: Binding) -> string
 end
 
 --- Whether two lists hold the same bindings in the same order.
+--- @within binding
+--- @private
+--- @param a -- The first list.
+--- @param b -- The second list.
+--- @return boolean -- True when the keys and the order are the same.
 export function same(a: { Binding }, b: { Binding }) -> boolean
   if #a ~= #b then
     return false
