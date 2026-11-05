@@ -1,13 +1,25 @@
 --[[
   Forge: OOP providers for Alloy, after Chief. This module sends out the
-  public API; each part lives in its own module beside it.
+  public API of the core; each part lives in its own module beside it.
 
     import { Forge, Provider, Lifecycle } from 'forge/src/index'
+
+  The file features send out their own names. The link file that Ember
+  writes joins each enabled feature to this module:
+
+    lifecycles    every
+    dependencies  use, Target
+    traits        Trait, TraitLifecycle, Attribute, Child
+    bin           Bin, BinItem
 ]]
 
 export { Forge, Phase, ProviderEvent, type Extension, type Options } from './core'
-export { Lifecycle, Provider, type Entry, type ProviderObject } from './provider'
-export { Dispatch, type CustomLifecycle, type Fire } from './lifecycles'
-export { type Target } from './dependencies'
-export { Attribute, Child, Trait, TraitLifecycle } from './traits'
-export { Bin, type BinItem } from './bin'
+export {
+  Dispatch,
+  Lifecycle,
+  Provider,
+  type CustomLifecycle,
+  type Entry,
+  type Fire,
+  type ProviderObject,
+} from './provider'

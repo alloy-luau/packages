@@ -22,6 +22,10 @@
 
   A provider that lists a client-only lifecycle on the server errors with
   `BadCall:`, and so does a server-only one on the client.
+
+  Feature: `lifecycles`. Without it, a provider can list Init and Start
+  only. Any other lifecycle errors with `MissingFeature:` when Forge
+  loads the provider.
 ]]
 
 import { Lifecycle, Provider } from '@packages/forge'

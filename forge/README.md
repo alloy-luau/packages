@@ -9,12 +9,15 @@ uses. Its contract makes the compiler check that the impl writes a
 private method for each one. Forge loads the providers, runs `Init` in
 order, wires the lifecycles, and starts them.
 
-Forge has Chief's parts in one package: the core, lifecycles,
-dependencies, traits, and Bin.
+Forge has Chief's parts in one package. Only the core installs by
+default: providers, the Init and Start barrier, and extensions.
+Lifecycles, dependencies, traits, and Bin are opt-in features. A game
+turns on the features it uses, and the others stay out of its install.
 
 Forge needs Alloy 0.1.0-rc.9 or later. Installed with
-[Ember](https://emberpm.dev), it needs Alloy 0.1.3 and embr 0.7.1 or
-later.
+[Ember](https://emberpm.dev), it needs Alloy 0.1.3 and embr 1.0.0-rc.3
+or later. An older embr installs every file but links the core only, so
+each feature stays off.
 
 ## Learn
 
@@ -24,11 +27,50 @@ later.
 - [examples](https://github.com/alloy-luau/packages/tree/main/forge/examples)
   holds small games: a coin economy, and doors driven by a trait.
 
+## Features
+
+| Feature | What it adds | Turns on |
+| --- | --- | --- |
+| `lifecycles` | The built-in lifecycles past Init and Start (`PlayerAdded`, `Heartbeat`, and the rest), custom lifecycles, `Forge.every`, and `forge:AddLifecycles`. | |
+| `dependencies` | `Forge.use`, the Init order by the uses, and the type `Target`. | |
+| `traits` | `Trait`, `TraitLifecycle`, `Attribute`, `Child`, `forge:AddTraits`, `Forge.trait`, and `Forge.traits`. | `bin` |
+| `bin` | `Bin` and `BinItem`. | |
+
+Add Forge with the features the game uses:
+
+```sh
+embr add alloy/forge --features lifecycles,dependencies,traits
+embr install
+```
+
+The same in `ember.toml`:
+
+```toml
+[dependencies]
+forge = { name = "alloy/forge", version = "^0.2.0", features = ["lifecycles", "dependencies", "traits"] }
+```
+
+- With no features, only the core installs. The core does not change
+  with the features, so a game with all four gets the same core.
+- Each feature is a file feature. Install deletes the files of a
+  feature that is off, and the link file joins the entry of each enabled
+  feature to the core. Each entry plugs into the core when it loads, so
+  a game turns a feature on in `ember.toml` and changes no code.
+- The names of a feature come only with it. A game that imports `Trait`
+  without the `traits` feature does not compile.
+- The Forge methods are the same with every feature set. The methods of
+  a feature that is off error with `MissingFeature:`, and the message
+  names the feature to turn on. A provider that lists a lifecycle past
+  Init and Start errors the same way when the `lifecycles` feature is
+  off.
+- Each section below names the feature it needs.
+
 ## Quick start
 
 The examples in this file import from `@shared/forge`, the one module of
 the game that brings Forge in. The section "Using Forge from a game"
-sets it up.
+sets it up. The quick start needs the `lifecycles` and `dependencies`
+features.
 
 A main script only sets up Forge:
 
@@ -98,21 +140,24 @@ PreLoad -> Load -> PostLoad -> PreInit -> Init -> PostInit -> PreStart -> Start 
 3. Forge sorts the providers by priority, higher first. Ties keep the
    order they were added in.
 4. `PostLoad`: the extensions hear it, and one may call `LoadProvider`.
-   Then Forge loads each provider that a `Forge.use` names by its
-   ModuleScript and that no one added.
-5. `PreInit`: Forge orders the providers so that each one inits after
-   the providers it uses, and puts each provider into the fields that
-   use it. Then the extensions hear it; one may reorder the entries.
-   After this phase the order is final.
+5. `PreInit`: with the `dependencies` feature, Forge loads each provider
+   that a `Forge.use` names by its ModuleScript and that no one added.
+   Then it orders the providers so that each one inits after the
+   providers it uses, and puts each provider into the fields that use
+   it. Then the extensions hear it; one may reorder the entries. After
+   this phase the order is final.
 6. `Init`: each listed `Init` runs, in order, on its own thread. An
    `Init` that yields errors with `NoYield:`. Each provider fires
    `Initialized`.
-7. `PostInit`: Forge wires the lifecycles, then the extensions hear it.
+7. `PostInit`: with the `lifecycles` feature, Forge wires the
+   lifecycles. Then the extensions hear it.
 8. `PreStart`: the extensions hear it.
 9. `Start`: each listed `Start` is spawned. Each provider fires
    `Started`.
-10. `PostStart`: Forge starts to watch the trait tags, then the
-    extensions hear it.
+10. `PostStart`: with the `traits` feature, Forge starts to watch the
+    trait tags. Then the extensions hear it.
+
+A feature does its step before the game's extensions hear the phase.
 
 With `Verbose` on, which is the default, Forge then prints a summary:
 
@@ -186,6 +231,9 @@ them through the instance it holds. The user's methods stay private, and
 no other module of the game can call `Init` or `Start`.
 
 ## Lifecycles
+
+Feature: `lifecycles`. Without it, a provider can list `Init` and
+`Start` only.
 
 A lifecycle binds an event to a method. A provider opts in when it lists
 the method in `@Provider`, and the contract makes it write the method.
@@ -298,6 +346,8 @@ An extension may add a lifecycle up to `PreInit`. After Forge wires them,
 
 ## Dependencies
 
+Feature: `dependencies`.
+
 A provider field holds another provider:
 
 ```aly
@@ -350,6 +400,8 @@ One provider's module never requires another's, so two providers may
 name each other's types.
 
 ## Traits
+
+Feature: `traits`, which turns on `bin`.
 
 A trait binds behavior to each instance that carries a CollectionService
 tag. Each tagged instance gets an object of its own, so a trait is not a
@@ -445,6 +497,8 @@ The field follows at the next `AttributeChanged`.
 
 ## Bin
 
+Feature: `bin`. The `traits` feature turns it on.
+
 A Bin holds connections, instances, threads and functions. `Empty`
 disconnects, destroys, cancels and calls them, newest first, so teardown
 unwinds setup. Forge gives one to every trait object.
@@ -485,6 +539,8 @@ export type Extension = {
   every entry loaded so far.
 - `onProvider(forge, event, entry)` fires as each provider is `Loaded`,
   `Initialized` and `Started`.
+- The features of Forge are extensions too. Each one hears a phase
+  before the game's extensions do.
 
 The rules:
 
@@ -532,6 +588,7 @@ Each error starts with its kind:
 | `CyclicDependency:` | The uses form a cycle; the message has the path. |
 | `MissingDependency:` | A use names a provider Forge never loaded. |
 | `FrozenModule:` | Forge cannot put a dependency into a frozen provider. |
+| `MissingFeature:` | A call needs a feature that is off, or a provider lists a lifecycle past `Init` and `Start` while the `lifecycles` feature is off. The message names the feature. |
 
 And the warnings: `LifecycleError:` (an Await handler failed),
 `BadInstance:` (an instance fails a trait's contract), `BadAttribute:`
@@ -549,40 +606,45 @@ And the warnings: `LifecycleError:` (an Await handler failed),
 | `forge:AddProviders(modules)` | Adds an array of provider modules, such as a folder's children. Chainable. |
 | `forge:AddExtension(extension)` | Adds an extension. Chainable. |
 | `forge:AddExtensions(extensions)` | Adds an array of extensions. Chainable. |
-| `forge:AddLifecycle(lifecycle)` | Adds a custom lifecycle, up to `PreInit`. Chainable. |
-| `forge:AddLifecycles(lifecycles)` | Adds an array of custom lifecycles. Chainable. |
-| `forge:AddTrait(module)` | Adds a trait module, and requires it now. Chainable. |
-| `forge:AddTraits(modules)` | Adds an array of trait modules. Chainable. |
+| `forge:AddLifecycle(lifecycle)` | Adds a custom lifecycle, up to `PreInit`. Chainable. Feature `lifecycles`. |
+| `forge:AddLifecycles(lifecycles)` | Adds an array of custom lifecycles. Chainable. Feature `lifecycles`. |
+| `forge:AddTrait(module)` | Adds a trait module, and requires it now. Chainable. Feature `traits`. |
+| `forge:AddTraits(modules)` | Adds an array of trait modules. Chainable. Feature `traits`. |
 | `forge:LoadProvider(module)` | Loads one provider now and gives its entry. For extensions, during `Load` and `PostLoad`. |
 | `forge:Start()` | Runs the boot. Chainable. |
-| `Forge.every(seconds, method)` | A lifecycle that ticks about every `seconds`. |
-| `Forge.use(target)` | A dependency marker, by provider name or ModuleScript. |
-| `Forge.trait<<T>>(instance, trait)` | The object a trait bound to an instance, or nil. |
-| `Forge.traits<<T>>(trait)` | Every object a trait has bound. |
+| `Forge.every(seconds, method)` | A lifecycle that ticks about every `seconds`. Feature `lifecycles`. |
+| `Forge.use(target)` | A dependency marker, by provider name or ModuleScript. Feature `dependencies`. |
+| `Forge.trait<<T>>(instance, trait)` | The object a trait bound to an instance, or nil. Feature `traits`. |
+| `Forge.traits<<T>>(trait)` | Every object a trait has bound. Feature `traits`. |
+
+The `lifecycles` feature also exports the free function `every`, and the
+`dependencies` feature exports `use`. Each is the same function as the
+Forge call with that name.
 
 ### Attributes
 
 | Attribute | On | What it does |
 | --- | --- | --- |
 | `@Provider(lifecycles = [], priority = 0)` | impl, struct | Marks a provider. |
-| `@Trait(tag, instance = 'Instance', lifecycles = [])` | impl, struct | Marks a trait. |
-| `@Attribute(name, kind)` | field | Fills a trait field from an attribute. |
-| `@Child(name, class_name = 'Instance', wait = 0)` | field | Fills a trait field from a child. |
+| `@Trait(tag, instance = 'Instance', lifecycles = [])` | impl, struct | Marks a trait. Feature `traits`. |
+| `@Attribute(name, kind)` | field | Fills a trait field from an attribute. Feature `traits`. |
+| `@Child(name, class_name = 'Instance', wait = 0)` | field | Fills a trait field from a child. Feature `traits`. |
 
 ### Enums and types
 
 | Name | What it is |
 | --- | --- |
 | `Lifecycle` | The built-in lifecycles, `Init` and `Start` among them. |
-| `TraitLifecycle` | `Init`, `Start`, `AttributeChanged` and `Destroy`. |
+| `TraitLifecycle` | `Init`, `Start`, `AttributeChanged` and `Destroy`. Feature `traits`. |
 | `Phase` | The phases an extension hears. |
 | `ProviderEvent` | `Loaded`, `Initialized` and `Started`. |
 | `Dispatch` | `Spawn`, `Inline` and `Await`. |
-| `CustomLifecycle` | A lifecycle table. |
+| `CustomLifecycle`, `Fire` | A lifecycle table, and the `fire` it gets. |
 | `Extension` | An extension table. |
 | `Entry` | One loaded provider. |
 | `Options` | The options of `new Forge`. |
-| `Bin`, `BinItem` | The cleanup container and what it holds. |
+| `Target` | What `Forge.use` takes: a provider name or a ModuleScript. Feature `dependencies`. |
+| `Bin`, `BinItem` | The cleanup container and what it holds. Feature `bin`. |
 
 ## Using Forge from a game
 
@@ -595,10 +657,10 @@ mounts Forge's build output where the require expects it.
 Forge is the Ember package `alloy/forge`. In an Alloy game, an
 `ember.toml` with `language = "alloy"` in its `[target]`:
 
-1. Add Forge, and install it:
+1. Add Forge with the features the game uses, and install it:
 
    ```sh
-   embr add alloy/forge
+   embr add alloy/forge --features traits
    embr install
    ```
 
@@ -608,6 +670,17 @@ Forge is the Ember package `alloy/forge`. In an Alloy game, an
    game checks each `@Provider` contract against Forge's source. Ember
    also runs `alloy build` in the installed Forge, with the game's own
    `alloy`.
+
+   With features on, `forge.luau` also requires the entry of each
+   enabled feature, and joins them into one table. `forge.aly` gets one
+   `export { ... } from` line for each one. With `traits`, which turns
+   on `bin`:
+
+   ```aly
+   export { Forge, Phase, ProviderEvent, Dispatch, Lifecycle, Provider, Extension, Options, CustomLifecycle, Entry, Fire, ProviderObject } from "./.ember/alloy_forge/src/index"
+   export { Bin, BinItem } from "./.ember/alloy_forge/src/bin"
+   export { TraitLifecycle, Trait, Attribute, Child } from "./.ember/alloy_forge/src/traits"
+   ```
 
 2. Mount the packages folder in the game's `alloy.toml`, or under
    `mount` in its `.config.aly`:
@@ -653,10 +726,17 @@ beside the game on disk:
    ```aly
    -- src/shared/forge.aly
    export { Forge, Lifecycle, Provider } from '../../../packages/forge/src/index'
+   export { every } from '../../../packages/forge/src/lifecycles'
+   export { Trait, TraitLifecycle } from '../../../packages/forge/src/traits'
    ```
 
-   The path leads from this module to Forge's source on disk. Add the
-   other names the game uses, such as `Trait` or `Bin`.
+   The path leads from this module to Forge's source on disk. With no
+   link file, this module turns the features on: each `export ... from`
+   line of a feature requires its module, and the module plugs into the
+   core as it loads. Write one line for each feature the game uses.
+   Each line must name at least one value of the feature: `every` for
+   `lifecycles`, `use` for `dependencies`, `Trait` for `traits`, or
+   `Bin` for `bin`. A line with types only emits no require.
 
 `alloy build` in the game then builds Forge first, and `alloy check`
 checks each contract against Forge's source. The built require names
@@ -680,6 +760,14 @@ priority sort, the dependency order and its cycles, the dispatch modes,
 the Bin order, the contract, the phase order, the trait contracts, and
 the errors.
 
+Each spec loads its own module. The core spec loads no feature, so it
+checks the core alone. Each feature spec checks that the feature plugs
+into the core when its entry loads.
+
+The core never imports a feature module, since install deletes the
+files of a feature that is off. A feature may import the core, and
+`traits` imports `bin`, which it turns on.
+
 Forge lives in [alloy-luau/packages](https://github.com/alloy-luau/packages),
 the repository of the official Alloy packages, in the `forge` folder.
 Each package there is a member of one Ember workspace and keeps its own
@@ -687,8 +775,8 @@ version. Run the commands above from `forge`. `embr publish` from
 `forge` publishes Forge alone.
 
 The `how_to` and `examples` files import `@packages/forge`. To check
-them, copy them into a game that installs Forge, then run `alloy flux`
-there.
+them, copy them into a game that installs Forge with all four features,
+then run `alloy flux` there.
 
 ## Inspired by Chief
 

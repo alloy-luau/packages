@@ -12,6 +12,9 @@
     connection, or nil when nothing stays connected. Call `fire(...)` to
     give the arguments to each provider that lists the method.
   - `Dispatch`: how `fire` runs the handlers. `Spawn` when nil.
+
+  Feature: `lifecycles`. The type and `Dispatch` are in the core, but only
+  the feature wires a lifecycle.
 ]]
 
 import Players from '@game/Players'

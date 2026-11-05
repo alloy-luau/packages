@@ -1,7 +1,7 @@
 [package]
 name = "alloy/forge"
-version = "0.1.2"
-description = "OOP providers for Alloy, after Chief: lifecycles, dependencies, traits, and Bin in one package"
+version = "0.2.0"
+description = "OOP providers for Alloy, after Chief: a small core, with lifecycles, dependencies, traits, and Bin as opt-in features"
 authors = ["savruun"]
 repository = "alloy-luau/packages"
 license = "MIT"
@@ -11,3 +11,29 @@ environment = "roblox"
 language = "alloy"
 main = "build/index.luau"
 includes = ["src", "build", ".config.aly", "README.md", "CHANGELOG.md", "LICENSE"]
+
+# The core installs alone. Each feature below is a file feature: install
+# deletes its files when it is off, and the link file joins its entry to
+# the core when it is on. Each entry plugs into the core as it loads.
+[features]
+default = []
+lifecycles = []
+dependencies = []
+traits = ["bin"]
+bin = []
+
+[feature-files.lifecycles]
+entry = "build/lifecycles"
+files = ["build/lifecycles.luau", "src/lifecycles.aly"]
+
+[feature-files.dependencies]
+entry = "build/dependencies"
+files = ["build/dependencies.luau", "src/dependencies.aly"]
+
+[feature-files.traits]
+entry = "build/traits"
+files = ["build/traits.luau", "src/traits.aly"]
+
+[feature-files.bin]
+entry = "build/bin"
+files = ["build/bin.luau", "src/bin.aly"]

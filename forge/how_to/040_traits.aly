@@ -11,6 +11,10 @@
 
   The contract asks for an `instance` field and a `bin` field, which
   Forge fills, and a private method for each listed step.
+
+  Feature: `traits`, which turns on `bin`. Without it, the package has no
+  `Trait`, `TraitLifecycle`, `Attribute` or `Child`, and `AddTraits`
+  errors with `MissingFeature:`.
 ]]
 
 import { Attribute, Bin, Child, Trait, TraitLifecycle } from '@packages/forge'

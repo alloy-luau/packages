@@ -7,6 +7,9 @@
     added, by the name of its ModuleScript.
   - By module: `Forge.use(script.Parent->'PlayerProvider'!)` also loads
     that provider when no one added it.
+
+  Feature: `dependencies`. Without it, `Forge.use` errors with
+  `MissingFeature:`.
 ]]
 
 import { Forge, Lifecycle, Provider } from '@packages/forge'

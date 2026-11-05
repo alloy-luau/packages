@@ -4,8 +4,21 @@
   would run first, and a trait's Destroy could race its own cleanup.
 ]]
 
+--- @class sync
+--- The synchronous steps of Forge. Forge and the traits feature use it;
+--- a game does not.
+--- @private
+
 --- Runs a step on a thread of its own. It gives false and a traceback
 --- when the step errors or yields, and true when it runs through.
+---
+--- @within sync
+--- @private
+--- @param step -- The name of the step, for the message
+--- @param callback -- The step to run
+--- @param ... -- The arguments of the step
+--- @return boolean -- True when the step runs through
+--- @return string? -- The traceback when it errors or yields
 @allow(explicit_any)
 export function run_sync(step: string, callback: (...any) -> (), ...: unknown) -> (boolean, string?)
   const thread = coroutine.create(callback)

@@ -1,6 +1,6 @@
 --[[
-  Traits: behavior bound to Roblox instances through CollectionService
-  tags. A trait is a struct whose impl carries `@Trait`. Each tagged
+  The traits feature: behavior bound to Roblox instances through
+  CollectionService tags. A trait is a struct whose impl carries `@Trait`. Each tagged
   instance that meets the contract gets an object of its own, so a trait
   is not a singleton, and its module exports the struct.
 
@@ -25,12 +25,17 @@
 
   Watching starts at PostStart, after the whole boot, so a trait may use
   any provider.
+
+  This module is the entry of the feature. It plugs into the hook of the
+  core when it loads, and serves Forge:AddTrait, Forge.trait and
+  Forge.traits. It needs the bin feature, which `traits` turns on.
 ]]
 
 --- @class traits
---- The attributes and steps of a trait: behavior that Forge binds to each
---- instance with a CollectionService tag. Add a trait with
---- [Forge:AddTrait], and read its objects with [Forge.trait].
+--- The traits feature: the attributes and steps of a trait, behavior that
+--- Forge binds to each instance with a CollectionService tag. Add a trait
+--- with [Forge:AddTrait], and read its objects with [Forge.trait]. Turn it
+--- on in `ember.toml` with `features = ["traits"]`.
 ---
 --- Import these from `@packages/forge`.
 
@@ -38,7 +43,8 @@ import CollectionService from '@game/CollectionService'
 import { HashMap } from '@alloy/std/collections'
 import { Attributes } from '@alloy/std/roblox'
 import { Bin } from './bin'
-import { type ProviderObject, check_contract, exported } from './provider'
+import { type Extension, Forge, Phase, hook } from './core'
+import { type Entry, type ProviderObject, check_contract, exported } from './provider'
 import { run_sync } from './sync'
 
 --- A per-instance step a trait can list in `@Trait`. The value is the
@@ -105,18 +111,12 @@ type AttributeSpec = { field: string, name: string, kind: string }
 --- @private
 type ChildSpec = { field: string, name: string, class_name: string, wait: number }
 
---- A trait, read from its struct.
+--- A trait, read from its struct: the name of its ModuleScript, the
+--- struct that builds an object with defaults, the tag, the class of a
+--- tagged instance, the steps, and the `@Attribute` and `@Child` fields.
 ---
---- @interface TraitInfo
 --- @private
---- .name string -- The name of its ModuleScript
---- .struct (fields: { [string]: unknown }) -> ProviderObject -- Builds an object with defaults
---- .tag string -- The CollectionService tag to watch
---- .instance string -- The class a tagged instance must be
---- .lifecycles { string } -- The steps the impl writes
---- .attributes { AttributeSpec } -- The `@Attribute` fields
---- .children { ChildSpec } -- The `@Child` fields
-export type TraitInfo = {
+type TraitInfo = {
   name: string,
   struct: (fields: { [string]: unknown }) -> ProviderObject,
   tag: string,
@@ -132,13 +132,7 @@ local bound_by_trait: HashMap<unknown, HashMap<Instance, ProviderObject>> = new 
 
 --- Reads a trait from the value of its module. Errors with BadArgument
 --- when the value carries no `@Trait`.
----
---- @within traits
---- @private
---- @param name -- The name of the module, for the messages
---- @param value -- The value of the module
---- @return TraitInfo -- The trait
-export function info_of(name: string, value: unknown) -> TraitInfo
+local function info_of(name: string, value: unknown) -> TraitInfo
   const struct = exported(value)
   const read = Attributes.get(struct, Trait)
 
@@ -341,11 +335,7 @@ end
 
 --- Watches one trait's tag: binds each tagged instance, now and later,
 --- and unbinds on untag. Forge calls it once per trait at PostStart.
----
---- @within traits
---- @private
---- @param info -- The trait to watch
-export function watch(info: TraitInfo) -> ()
+local function watch(info: TraitInfo) -> ()
   if bound_by_trait:has(info.struct) then
     warn(`DuplicateTrait: {info.name} is wired already; was it added to two Forges?`)
 
@@ -426,35 +416,56 @@ export function watch(info: TraitInfo) -> ()
   end
 end
 
---- The object a trait has bound to an instance, or nil. Name the type
---- to get it typed: `Forge.trait<<Door>>(part, Door)`.
----
---- @within traits
---- @private
---- @param instance -- The tagged instance
---- @param trait -- The trait struct, or the value of its module
---- @return T? -- The bound object, or nil
-export function get<T>(instance: Instance, trait: unknown) -> T?
-  return (bound_by_trait:get(exported(trait))?:get(instance) :: unknown) :: T?
+--- The object a trait has bound to an instance, or nil. It serves
+--- [Forge.trait].
+local function get(instance: Instance, trait: unknown) -> unknown
+  return bound_by_trait:get(exported(trait))?:get(instance)
 end
 
---- Every object a trait has bound, in no set order.
----
---- @within traits
---- @private
---- @param trait -- The trait struct, or the value of its module
---- @return { T } -- The bound objects
-export function get_all<T>(trait: unknown) -> { T }
-  const out: { T } = {}
+--- Every object a trait has bound, in no set order. It serves
+--- [Forge.traits].
+local function get_all(trait: unknown) -> { unknown }
+  const out: { unknown } = {}
 
   if const bound = bound_by_trait:get(exported(trait)) then
     for _, object in bound do
-      table.insert(out, (object :: unknown) :: T)
+      table.insert(out, object)
     end
   end
 
   return out
 end
+
+--- The traits that the game added to each Forge. Weak keys, so a Forge
+--- that is gone takes its list with it.
+local added = setmetatable({} :: { [Forge]: { TraitInfo } }, { __mode = 'k' })
+
+--- Adds a trait module to a Forge, and requires it now, so a bad trait
+--- fails here and not later as a tag that does nothing. It serves
+--- [Forge:AddTrait].
+local function add(forge: Forge, module: ModuleScript) -> ()
+  const list = added[forge] ?? {}
+  added[forge] = list
+  table.insert(list, info_of(module.Name, import<<unknown>>(module)))
+end
+
+--- The extension of the feature: it starts to watch the tags at
+--- PostStart, before the game's extensions hear the phase.
+const feature: Extension = {
+  Name = 'traits',
+  onPhase = function(forge: Forge, phase: Phase, _entries: { Entry }) -> ()
+    if phase == Phase.PostStart then
+      for _, info in added[forge] ?? {} do
+        watch(info)
+      end
+    end
+  end,
+}
+
+hook.AddTrait = add
+hook.trait = get
+hook.traits = get_all
+table.insert(hook.extensions, feature)
 
 --- The tests of traits, with the fixture structs they bind. The ship
 --- artifact leaves the whole group out.
@@ -533,5 +544,22 @@ namespace TraitTests
   --- Does not bind to the wrong class.
   public function refuses_the_wrong_class() -> ()
     $assert_eq(build(info_of('Door', Door), new Instance('Folder')), nil)
+  end
+  --- The entry of the feature plugs into the hook of the core, and the
+  --- lookups of Forge reach it.
+  public function the_feature_plugs_in_when_it_loads() -> ()
+    $assert_eq(hook.AddTrait, add)
+    $assert(table.find(hook.extensions, feature) ~= nil)
+    $assert_eq(Forge.trait<<Door>>(new Instance('Part'), Door), nil)
+    $assert_eq(#Forge.traits<<Door>>(Door), 0)
+  end
+
+  --- A Forge with the feature on boots, and AddTrait still checks its
+  --- argument first.
+  public function a_forge_with_traits_boots() -> ()
+    new Forge({ Verbose = false }):Start()
+    $expect(function() -> ()
+      new Forge({ Verbose = false }):AddTrait((new Instance('Folder') :: unknown) :: ModuleScript)
+    end):toThrow('BadArgument')
   end
 end

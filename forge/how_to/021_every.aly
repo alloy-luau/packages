@@ -5,6 +5,8 @@
 
   The main script adds it. Each call makes a new lifecycle, so two
   intervals can drive two methods.
+
+  Feature: `lifecycles`.
 ]]
 
 import { Forge } from '@packages/forge'

@@ -1,18 +1,20 @@
 --[[
   The core of Forge: it loads the providers, runs the Init and Start
-  barrier, and tells extensions at each step. Lifecycles, dependencies
-  and traits hook into the same steps; an extension of the game's own
-  can hook into them too.
+  barrier, and tells extensions at each step. The file features
+  (lifecycles, dependencies, traits) plug into the same steps through
+  `hook`; an extension of the game's own can hook into them too.
 
     new Forge()
       :AddProviders(script.Parent->'Providers'!:GetChildren())
-      :AddLifecycles([ Forge.every(60, 'Autosave') ])
       :Start()
 
   The boot runs these phases in order:
 
     PreLoad -> Load -> PostLoad -> PreInit -> Init -> PostInit
       -> PreStart -> Start -> PostStart
+
+  The core never requires a feature module. Install deletes the files of
+  a feature that is off, so such a require would fail.
 ]]
 
 --- @class core
@@ -22,19 +24,18 @@
 --- Import these from `@packages/forge`.
 
 import { HashMap, Set } from '@alloy/std/collections'
-import { type CustomLifecycle, check_lifecycle, every, wire } from './lifecycles'
-import { type Target, cycle_path, inject, link, links_of, order, use } from './dependencies'
 import {
+  type CustomLifecycle,
   type Entry,
   Lifecycle,
   Provider,
   check_contract,
   exported,
+  is_boot,
   options_of,
   unlisted,
 } from './provider'
 import { run_sync } from './sync'
-import { type TraitInfo, get, get_all, info_of, watch } from './traits'
 
 --- A boot phase an [Extension] hears. Load, Init and Start run between
 --- them, and no hook fires for those three.
@@ -77,11 +78,8 @@ export struct Forge
   private by_module: HashMap<ModuleScript, Entry> = new HashMap()
   private structs: Set<unknown> = new Set()
   private extensions: { Extension } = {}
-  private lifecycles: { CustomLifecycle } = {}
-  private trait_infos: { TraitInfo } = {}
   -- Where the boot is: Idle, a Phase, Load, Init, or Start.
   private phase: string = 'Idle'
-  private wired: boolean = false
   private started: boolean = false
 end
 
@@ -102,6 +100,53 @@ export type Extension = {
   onPhase: ((forge: Forge, phase: Phase, entries: { Entry }) -> ())?,
   onProvider: ((forge: Forge, event: ProviderEvent, entry: Entry) -> ())?,
 }
+
+--- The hook of the file features. A feature module fills its part when it
+--- loads, so a game turns a feature on in `ember.toml` and changes no
+--- code. Each Forge runs `extensions` before its own extensions. Each call
+--- serves the Forge methods of one feature, and stays nil while that
+--- feature is off.
+---
+--- @interface Hook
+--- @within core
+--- @private
+--- .extensions { Extension } -- The extensions of the features, in load order
+--- .AddLifecycle ((forge: Forge, lifecycle: CustomLifecycle) -> ())? -- Serves [Forge:AddLifecycle]
+--- .every ((seconds: number, method: string) -> CustomLifecycle)? -- Serves [Forge.every]
+--- .use ((target: string | ModuleScript) -> any)? -- Serves [Forge.use]
+--- .AddTrait ((forge: Forge, module: ModuleScript) -> ())? -- Serves [Forge:AddTrait]
+--- .trait ((instance: Instance, trait: unknown) -> unknown)? -- Serves [Forge.trait]
+--- .traits ((trait: unknown) -> { unknown })? -- Serves [Forge.traits]
+@allow(explicit_any)
+export type Hook = {
+  extensions: { Extension },
+  AddLifecycle: ((forge: Forge, lifecycle: CustomLifecycle) -> ())?,
+  every: ((seconds: number, method: string) -> CustomLifecycle)?,
+  use: ((target: string | ModuleScript) -> any)?,
+  AddTrait: ((forge: Forge, module: ModuleScript) -> ())?,
+  trait: ((instance: Instance, trait: unknown) -> unknown)?,
+  traits: ((trait: unknown) -> { unknown })?,
+}
+
+--- The one hook that every feature module plugs into.
+---
+--- @prop hook Hook
+--- @within core
+--- @private
+export const hook: Hook = { extensions = {} }
+
+--- The call that a feature serves, or an error that names the feature
+--- when it is off.
+local function served<F>(call: F?, feature: string, method: string) -> F
+  if call == nil then
+    error(
+      `MissingFeature: {method} needs the {feature} feature of alloy/forge; turn it on in ember.toml`,
+      0
+    )
+  end
+
+  return call
+end
 
 --- Errors unless a value is a ModuleScript.
 local function check_module(value: unknown, index: number, call: string) -> ()
@@ -214,9 +259,28 @@ local function lists(entry: Entry, method: string) -> boolean
   return table.find(entry.Lifecycles, method) ~= nil
 end
 
---- Whether this runs on the server. Forge asks when a provider lists a
---- lifecycle of one side, and for the boot summary.
-local function on_server() -> boolean
+--- Errors when a provider lists a lifecycle past Init and Start. Forge
+--- asks while the lifecycles feature is off, since nothing would call
+--- such a method.
+local function check_boot_only(entry: Entry) -> ()
+  for _, method in entry.Lifecycles do
+    if not is_boot(method) then
+      error(
+        `MissingFeature: {entry.Name} lists '{method}', which needs the lifecycles feature of alloy/forge; turn it on in ember.toml`,
+        0
+      )
+    end
+  end
+end
+
+--- Whether this runs on the server. Forge asks for the boot summary, and
+--- the lifecycles feature asks when a provider lists a lifecycle of one
+--- side.
+---
+--- @within core
+--- @private
+--- @return boolean -- True on the server
+export function on_server() -> boolean
   local server = false
 
   -- A statement, not a `@cfg` return, which unreachable_code misreads:
@@ -265,18 +329,26 @@ impl Forge
     end
   end
 
-  --- Tells each extension that the boot reached a phase.
+  --- Tells each extension that the boot reached a phase. The features
+  --- hear it first, while the boot is still in the step before it, so the
+  --- dependencies feature can load providers at PreInit.
   ---
   --- @method FirePhase
   --- @within Forge
   --- @private
   --- @param phase -- The phase the boot reached
   private function FirePhase(self, phase: Phase) -> ()
+    for _, extension in hook.extensions do
+      if const heard = extension.onPhase then
+        heard(self, phase, self.entries)
+      end
+    end
+
     self.phase = phase
 
     for _, extension in self.extensions do
-      if const hook = extension.onPhase then
-        hook(self, phase, self.entries)
+      if const heard = extension.onPhase then
+        heard(self, phase, self.entries)
       end
     end
   end
@@ -289,9 +361,11 @@ impl Forge
   --- @param event -- The step the provider took
   --- @param entry -- The entry of the provider
   private function FireProvider(self, event: ProviderEvent, entry: Entry) -> ()
-    for _, extension in self.extensions do
-      if const hook = extension.onProvider then
-        hook(self, event, entry)
+    for _, list in [ hook.extensions, self.extensions ] do
+      for _, extension in list do
+        if const heard = extension.onProvider then
+          heard(self, event, entry)
+        end
       end
     end
   end
@@ -380,23 +454,11 @@ impl Forge
   --- @within Forge
   --- @param lifecycle -- The lifecycle to add, such as one from [Forge.every]
   --- @return Forge -- The same Forge, for a chain of calls
+  --- @error string -- When the lifecycles feature is off (MissingFeature)
   --- @error string -- When Forge has wired the lifecycles (BadCall)
   --- @error string -- When `lifecycle` is not a lifecycle, or is added already (BadArgument)
   function AddLifecycle(self, lifecycle: CustomLifecycle) -> Forge
-    if self.wired then
-      error('BadCall: Bad call for AddLifecycle (Forge has wired the lifecycles)', 0)
-    end
-
-    check_lifecycle(lifecycle, 1, 'AddLifecycle')
-
-    if table.find(self.lifecycles, lifecycle) then
-      error(
-        `BadArgument: Bad argument #1 for AddLifecycle (the lifecycle '{lifecycle.Method}' is added already)`,
-        0
-      )
-    end
-
-    table.insert(self.lifecycles, lifecycle)
+    served(hook.AddLifecycle, 'lifecycles', 'AddLifecycle')(self, lifecycle)
 
     return self
   end
@@ -407,6 +469,7 @@ impl Forge
   --- @within Forge
   --- @param lifecycles -- The lifecycles to add
   --- @return Forge -- The same Forge, for a chain of calls
+  --- @error string -- When the lifecycles feature is off (MissingFeature)
   --- @error string -- When Forge has wired the lifecycles (BadCall)
   --- @error string -- When `lifecycles` is not an array of new lifecycles (BadArgument)
   function AddLifecycles(self, lifecycles: { CustomLifecycle }) -> Forge
@@ -426,12 +489,14 @@ impl Forge
   --- @within Forge
   --- @param module -- The ModuleScript of the trait
   --- @return Forge -- The same Forge, for a chain of calls
+  --- @error string -- When the traits feature is off (MissingFeature)
   --- @error string -- When Forge has started (BadCall)
   --- @error string -- When `module` is not a ModuleScript, or exports no `@Trait` (BadArgument)
   function AddTrait(self, module: ModuleScript) -> Forge
+    const add = served(hook.AddTrait, 'traits', 'AddTrait')
     self:CheckIdle('AddTrait')
     check_module(module, 1, 'AddTrait')
-    table.insert(self.trait_infos, info_of(module.Name, import<<unknown>>(module)))
+    add(self, module)
 
     return self
   end
@@ -442,6 +507,7 @@ impl Forge
   --- @within Forge
   --- @param modules -- The ModuleScripts of the traits
   --- @return Forge -- The same Forge, for a chain of calls
+  --- @error string -- When the traits feature is off (MissingFeature)
   --- @error string -- When Forge has started (BadCall)
   --- @error string -- When an item is not a ModuleScript, or exports no `@Trait` (BadArgument)
   function AddTraits(self, modules: { Instance }) -> Forge
@@ -466,6 +532,7 @@ impl Forge
   --- @return Entry -- The entry of the provider
   --- @error string -- When the boot is not at Load or PostLoad (BadCall)
   --- @error string -- When `module` holds no provider, or a second instance of one (BadArgument)
+  --- @error string -- When it lists a lifecycle past Init and Start, and the lifecycles feature is off (MissingFeature)
   function LoadProvider(self, module: ModuleScript) -> Entry
     if self.phase ~= 'Load' and self.phase ~= Phase.PostLoad then
       error(
@@ -482,6 +549,10 @@ impl Forge
 
     const entry, struct = entry_of(module, import<<unknown>>(module))
 
+    if hook.AddLifecycle == nil then
+      check_boot_only(entry)
+    end
+
     if self.structs:has(struct) then
       error(
         `BadArgument: {entry.Name} is a second instance of a provider struct; a provider is one instance`,
@@ -495,51 +566,6 @@ impl Forge
     self:FireProvider(ProviderEvent.Loaded, entry)
 
     return entry
-  end
-
-  --- Loads each provider that a `use` names by its ModuleScript and that
-  --- no one added. LoadProvider adds to the entries, so the walk reaches
-  --- the whole graph.
-  ---
-  --- @method LoadDependencies
-  --- @within Forge
-  --- @private
-  private function LoadDependencies(self) -> ()
-    local index = 1
-
-    while index <= #self.entries do
-      for _, found in links_of(self.entries[index].Provider) do
-        const target: Target = found.target
-
-        if target is not string and not self.by_module:has(target) then
-          self:LoadProvider(target)
-        end
-      end
-
-      index += 1
-    end
-  end
-
-  --- Orders the entries so each inits after what it uses, and puts each
-  --- provider into the fields that use it.
-  ---
-  --- @method OrderDependencies
-  --- @within Forge
-  --- @private
-  private function OrderDependencies(self) -> ()
-    const links = link(self.entries)
-    const sorted = order(self.entries, links.uses)
-
-    if sorted == nil then
-      error(
-        `CyclicDependency: Forge cannot order Init: {cycle_path(self.entries, links.uses)}. Move the calls out of Init, or turn one use around`,
-        0
-      )
-    end
-
-    table.clear(self.entries)
-    table.move(sorted, 1, #sorted, 1, self.entries)
-    inject(self.entries, links)
   end
 
   --- Runs every listed Init, in order. An Init that yields errors with
@@ -590,6 +616,7 @@ impl Forge
   --- @error string -- When a provider lists a lifecycle of the other side (BadCall)
   --- @error string -- When a provider breaks its contract (BadArgument)
   --- @error string -- When a provider lists a lifecycle that nothing fires (BadArgument)
+  --- @error string -- When a provider needs a feature that is off (MissingFeature)
   --- @error string -- When a `use` names a provider that Forge never loaded (MissingDependency)
   --- @error string -- When the uses form a cycle (CyclicDependency)
   --- @error string -- When a provider with a `use` field is frozen (FrozenModule)
@@ -611,26 +638,14 @@ impl Forge
 
     sort_by_priority(self.entries)
     self:FirePhase(Phase.PostLoad)
-    -- After the extensions, so a provider an extension loads gets its
-    -- dependencies too.
-    self:LoadDependencies()
-
-    self.phase = Phase.PreInit
-    self:OrderDependencies()
+    -- The dependencies feature loads, orders and fills the uses here.
     self:FirePhase(Phase.PreInit)
-
     self:RunInit()
-    wire(self.entries, self.lifecycles, on_server)
-    self.wired = true
+    -- The lifecycles feature wires the lifecycles here.
     self:FirePhase(Phase.PostInit)
-
     self:FirePhase(Phase.PreStart)
     self:RunStart()
-
-    for _, trait in self.trait_infos do
-      watch(trait)
-    end
-
+    -- The traits feature starts to watch the tags here.
     self:FirePhase(Phase.PostStart)
 
     if self.verbose then
@@ -648,9 +663,10 @@ impl Forge
   --- @param seconds -- The time between two calls
   --- @param method -- The method name that a provider lists and writes
   --- @return CustomLifecycle -- The new lifecycle
+  --- @error string -- When the lifecycles feature is off (MissingFeature)
   --- @error string -- When `seconds` is not positive, or `method` is empty (BadArgument)
   function every(seconds: number, method: string) -> CustomLifecycle
-    return every(seconds, method)
+    return served(hook.every, 'lifecycles', 'Forge.every')(seconds, method)
   end
 
   --- Declares a dependency: put it in a provider field, and Forge puts the
@@ -661,10 +677,11 @@ impl Forge
   ---
   --- @param target -- The provider name, or its ModuleScript
   --- @return any -- A marker that Forge replaces with the provider
+  --- @error string -- When the dependencies feature is off (MissingFeature)
   --- @error string -- When `target` is an empty name or no ModuleScript (BadArgument)
   @allow(explicit_any)
-  function use(target: Target) -> any
-    return use(target)
+  function use(target: string | ModuleScript) -> any
+    return served(hook.use, 'dependencies', 'Forge.use')(target)
   end
 
   --- The object a trait has bound to an instance, or nil:
@@ -673,16 +690,18 @@ impl Forge
   --- @param instance -- The tagged instance
   --- @param trait -- The trait struct, or the value of its module
   --- @return T? -- The bound object, or nil when the trait has not bound to `instance`
+  --- @error string -- When the traits feature is off (MissingFeature)
   function trait<T>(instance: Instance, trait: unknown) -> T?
-    return get(instance, trait)
+    return served(hook.trait, 'traits', 'Forge.trait')(instance, trait) :: T?
   end
 
   --- Every object a trait has bound: `Forge.traits<<Door>>(Door)`.
   ---
   --- @param trait -- The trait struct, or the value of its module
   --- @return { T } -- The bound objects, in no set order
+  --- @error string -- When the traits feature is off (MissingFeature)
   function traits<T>(trait: unknown) -> { T }
-    return get_all(trait)
+    return (served(hook.traits, 'traits', 'Forge.traits')(trait) :: unknown) :: { T }
   end
 end
 
@@ -860,38 +879,89 @@ namespace CoreTests
     end):toThrow('BadCall')
   end
 
-  --- Errors on one lifecycle added twice.
-  public function refuses_a_lifecycle_added_twice() -> ()
-    const tick = Forge.every(1, 'Tick')
+  --- With no feature loaded, the core boots on its own: every phase
+  --- fires, and the hook holds no feature.
+  public function the_core_boots_alone() -> ()
+    const heard: { string } = {}
 
-    $expect(function() -> ()
-      quiet():AddLifecycles([ tick, tick ])
-    end):toThrow('BadArgument')
+    quiet()
+      :AddExtension({
+        Name = 'Recorder',
+        onPhase = function(_forge: Forge, phase: Phase, _entries: { Entry }) -> ()
+        table.insert(heard, phase)
+      end,
+      })
+      :Start()
+
+    $assert_eq(#hook.extensions, 0)
+    $assert_eq(hook.AddLifecycle, nil)
+    $assert_eq(hook.use, nil)
+    $assert_eq(hook.AddTrait, nil)
+    $assert_eq(#heard, 6)
   end
 
-  --- Lets an extension add a lifecycle before the wiring, and refuses one
-  --- after it.
-  public function takes_a_lifecycle_until_the_wiring() -> ()
-    local late: string? = nil
-    const forge = quiet():AddExtension({
-      Name = 'Adder',
-      onPhase = function(given: Forge, phase: Phase, _entries: { Entry }) -> ()
-        if phase == Phase.PreLoad then
-          given:AddLifecycle(Forge.every(1, 'Early'))
-        elseif phase == Phase.PostInit then
-          const added = Result.pcall(function() -> ()
-            given:AddLifecycle(Forge.every(1, 'Late'))
-          end)
+  --- With no feature loaded, each Forge method of a feature names the
+  --- feature it needs.
+  public function a_method_of_a_feature_that_is_off_names_it() -> ()
+    $expect(function() -> ()
+      Forge.every(1, 'Tick')
+    end):toThrow('MissingFeature: Forge.every needs the lifecycles feature')
+    $expect(function() -> ()
+      quiet():AddLifecycle({ Method = 'Tick', Connect = function(_fire) -> RBXScriptConnection?
+        return nil
+      end })
+    end):toThrow('MissingFeature: AddLifecycle needs the lifecycles feature')
+    $expect(function() -> ()
+      Forge.use('Data')
+    end):toThrow('MissingFeature: Forge.use needs the dependencies feature')
+    $expect(function() -> ()
+      quiet():AddTrait(module('Door'))
+    end):toThrow('MissingFeature: AddTrait needs the traits feature')
+    $expect(function() -> ()
+      Forge.trait(module('Door'), {})
+    end):toThrow('MissingFeature: Forge.trait needs the traits feature')
+    $expect(function() -> ()
+      Forge.traits({})
+    end):toThrow('MissingFeature: Forge.traits needs the traits feature')
+  end
 
-          if local Err(problem) = added then
-            late = problem
-          end
-        end
+  --- With the lifecycles feature off, a provider may list Init and Start
+  --- only.
+  public function a_lifecycle_past_start_needs_the_lifecycles_feature() -> ()
+    check_boot_only(entry_of(module('Plain'), { default = new Plain {} }))
+    $expect(function() -> ()
+      check_boot_only(entry_of(module('Keyed'), { default = new Keyed {} }))
+    end):toThrow('MissingFeature: Keyed lists \'Autosave\'')
+  end
+
+  --- A feature hears each phase before the game's extensions do.
+  public function a_feature_hears_each_phase_first() -> ()
+    const heard: { string } = {}
+    const feature: Extension = {
+      Name = 'Feature',
+      onPhase = function(_forge: Forge, phase: Phase, _entries: { Entry }) -> ()
+        table.insert(heard, `feature {phase}`)
+      end,
+    }
+
+    table.insert(hook.extensions, feature)
+    const forge = quiet():AddExtension({
+      Name = 'Game',
+      onPhase = function(_forge: Forge, phase: Phase, _entries: { Entry }) -> ()
+        table.insert(heard, `game {phase}`)
       end,
     })
+    const ran = Result.pcall(function() -> ()
+      forge:Start()
+    end)
+    table.remove(hook.extensions, table.find(hook.extensions, feature) :: number)
 
-    forge:Start()
+    if local Err(problem) = ran then
+      error(problem, 0)
+    end
 
-    $assert(string.find(late ?? '', 'BadCall', 1, true) ~= nil)
+    $assert_eq(heard[1], 'feature PreLoad')
+    $assert_eq(heard[2], 'game PreLoad')
+    $assert_eq(#heard, 12)
   end
 end

@@ -8,17 +8,21 @@
      `Loaded`.
   3. Forge sorts the providers by priority, higher first. Ties keep the
      order in which the game added them.
-  4. PostLoad: the extensions hear it. Then Forge loads each provider
+  4. PostLoad: the extensions hear it.
+  5. PreInit: with the dependencies feature, Forge loads each provider
      that a `Forge.use` names by its ModuleScript and that no one added.
-  5. PreInit: Forge orders the providers so that each one inits after
-     the providers that it uses, and puts each provider into the fields
-     that use it. After this phase the order is final.
+     Then it orders the providers so that each one inits after the
+     providers that it uses, and puts each provider into the fields that
+     use it. After this phase the order is final.
   6. Init: each listed Init runs, in order, on its own thread. An Init
      that yields errors with `NoYield:`.
-  7. PostInit: Forge wires the lifecycles.
+  7. PostInit: with the lifecycles feature, Forge wires the lifecycles.
   8. PreStart: the extensions hear it.
   9. Start: Forge spawns each listed Start.
-  10. PostStart: Forge starts to watch the trait tags (step 040).
+  10. PostStart: with the traits feature, Forge starts to watch the
+      trait tags (step 040).
+
+  A feature does its step before the game's extensions hear the phase.
 
   Init is the place to set up state. Start is the place for work that
   yields or loops, because every provider is ready by then.

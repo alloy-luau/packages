@@ -6,6 +6,15 @@
   These files import Forge from `@packages/forge`, where `embr install`
   puts it. A game can also re-export Forge from one module of its own,
   such as `@shared/forge`, and import from there.
+
+  Only the core installs by default: providers, Init and Start, and
+  extensions. The rest are features. Each later step names the feature
+  it needs. This tour uses all four, so its game turns them all on in
+  `ember.toml`:
+
+    forge = { name = "alloy/forge", version = "^0.2.0", features = ["lifecycles", "dependencies", "traits"] }
+
+  The `traits` feature turns on `bin`.
 ]]
 
 import { Forge } from '@packages/forge'

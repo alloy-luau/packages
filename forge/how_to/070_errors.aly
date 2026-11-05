@@ -11,6 +11,8 @@
   - `CyclicDependency:` the uses form a cycle. The message has the path.
   - `MissingDependency:` a use names a provider that Forge never loaded.
   - `FrozenModule:` Forge cannot put a dependency into a frozen provider.
+  - `MissingFeature:` a call or a provider needs a feature that is off.
+    The message names the feature to turn on in `ember.toml`.
 
   The warnings are `LifecycleError:`, `BadInstance:`, `BadAttribute:`,
   `TraitError:`, and `DuplicateTrait:`.

@@ -2,6 +2,9 @@
   A Bin holds connections, instances, threads, and functions. `Empty`
   disconnects, destroys, cancels, and calls them, newest first, so the
   teardown unwinds the setup. Forge gives one to every trait object.
+
+  Feature: `bin`. The `traits` feature turns it on, so a game with traits
+  has a Bin too.
 ]]
 
 import { Bin } from '@packages/forge'

@@ -1,69 +1,35 @@
 --[[
-  Lifecycles: events bound to provider methods. A provider opts in by
-  listing the method in `@Provider`, and the contract makes it write the
-  method. Forge wires each lifecycle at PostInit, after every Init and
-  before any Start, so a handler may assume every provider has
-  initialized.
+  The lifecycles feature: events bound to provider methods. A provider
+  opts in by listing the method in `@Provider`, and the contract makes
+  it write the method. Forge wires each lifecycle at PostInit, after
+  every Init and before any Start, so a handler may assume every
+  provider has initialized.
 
   A built-in (a Lifecycle other than Init and Start) wires itself once
   any provider lists it. `every` and custom lifecycles wire when the game
   adds them with AddLifecycles and a provider lists their method.
+
+  This module is the entry of the feature. It plugs into the hook of the
+  core when it loads, and serves Forge:AddLifecycle and Forge.every.
 ]]
 
 --- @class lifecycles
---- The types of a custom lifecycle, and the ways its `fire` runs the
---- handlers. Make one with [Forge.every], or write a [CustomLifecycle], and
---- add it with [Forge:AddLifecycle].
----
---- Import these from `@packages/forge`.
+--- The lifecycles feature. It wires the built-in lifecycles and each
+--- [CustomLifecycle] that the game adds with [Forge:AddLifecycle]. Turn it
+--- on in `ember.toml` with `features = ["lifecycles"]`.
 
 import Players from '@game/Players'
 import RunService from '@game/RunService'
 import { Set } from '@alloy/std/collections'
-import { type Entry, type ProviderObject, is_boot } from './provider'
-
---- How `fire` hands an event to the providers that listen. Spawn runs
---- each handler on its own thread. Inline runs them one after another on
---- the event's thread. Await runs them at once and returns when the last
---- one ends.
----
---- @type Dispatch "Spawn" | "Inline" | "Await"
---- @within lifecycles
-export enum Dispatch
-  --- Each handler runs on its own thread, and `fire` returns at once. A
-  --- slow or failing handler cannot hold up the others. The default.
-  Spawn
-  --- The handlers run one after another on the event's thread. No
-  --- thread per event, so the per-frame built-ins use it; a slow handler
-  --- delays the rest, and an error stops the dispatch.
-  Inline
-  --- The handlers run at once, and `fire` returns when the last one
-  --- ends. An error in one does not stop the others. For an event source
-  --- that must wait, such as BindToClose.
-  Await
-end
-
---- A handler's arguments pass through untyped: each lifecycle has its
---- own.
-@allow(explicit_any)
-export type Fire = (...any) -> ()
-
---- A lifecycle: an event bound to a method name. Add one with
---- [Forge:AddLifecycle].
----
---- `Connect` is a signal to connect to, or a function that takes `fire`
---- and returns a connection, or nil when nothing stays connected. Call
---- `fire(...)` to hand the arguments to each provider that listens.
----
---- @interface CustomLifecycle
---- .Method string -- The name a provider lists and writes
---- .Connect RBXScriptSignal | (fire: Fire) -> RBXScriptConnection? -- The event source
---- .Dispatch Dispatch? -- How `fire` runs the handlers. Spawn when nil.
-export type CustomLifecycle = {
-  Method: string,
-  Connect: RBXScriptSignal | (fire: Fire) -> RBXScriptConnection?,
-  Dispatch: Dispatch?,
-}
+import { type Extension, Forge, Phase, hook, on_server } from './core'
+import {
+  Dispatch,
+  type CustomLifecycle,
+  type Entry,
+  type Fire,
+  type ProviderObject,
+  is_boot,
+} from './provider'
 
 --- The lifecycles that connect client-only signals.
 const CLIENT_ONLY = $set[
@@ -240,23 +206,12 @@ const BUILTINS: { [string]: CustomLifecycle } = {
 }
 
 --- Whether a name is a built-in lifecycle that Forge wires to an event.
----
---- @within lifecycles
---- @private
---- @param method -- The method name of a lifecycle
---- @return boolean -- True when Forge has a built-in event for `method`
-export function is_builtin(method: string) -> boolean
+local function is_builtin(method: string) -> boolean
   return BUILTINS[method] ~= nil
 end
 
 --- Errors unless a value is a lifecycle Forge can wire.
----
---- @within lifecycles
---- @private
---- @param value -- The value to check
---- @param index -- The argument number, for the message
---- @param call -- The name of the call, for the message
-export function check_lifecycle(value: unknown, index: number, call: string) -> ()
+local function check_lifecycle(value: unknown, index: number, call: string) -> ()
   const bad = `BadArgument: Bad argument #{index} for {call}`
 
   if value is not table then
@@ -283,13 +238,13 @@ end
 --- A lifecycle that calls `method(self, dt)` about every `seconds`, with
 --- the real time since the last tick. A lag spike gives one late tick,
 --- not a burst. Each call makes a new lifecycle, so two intervals can
---- drive two methods.
+--- drive two methods. [Forge.every] calls it.
 ---
 --- @within lifecycles
---- @private
 --- @param seconds -- The time between two calls
 --- @param method -- The method name that a provider lists and writes
 --- @return CustomLifecycle -- The new lifecycle
+--- @error string -- When `seconds` is not positive, or `method` is empty (BadArgument)
 export function every(seconds: number, method: string) -> CustomLifecycle
   if seconds is not number or seconds <= 0 then
     error(
@@ -358,14 +313,7 @@ end
 
 --- A `fire` that hands its arguments to `method` of each listener, the
 --- way `mode` says.
----
---- @within lifecycles
---- @private
---- @param listeners -- The providers that listen
---- @param method -- The method name to call on each listener
---- @param mode -- How the handlers run
---- @return Fire -- The `fire` function
-export function dispatcher(listeners: { ProviderObject }, method: string, mode: Dispatch) -> Fire
+local function dispatcher(listeners: { ProviderObject }, method: string, mode: Dispatch) -> Fire
   return function(...) -> ()
     match mode with
       case Dispatch.Inline then
@@ -417,7 +365,7 @@ end
 local function check_listed(
   entries: { Entry },
   customs: { CustomLifecycle },
-  on_server: () -> boolean
+  side: () -> boolean
 ) -> ()
   local fired: Set<string> = new Set()
 
@@ -438,11 +386,11 @@ local function check_listed(
         )
       end
 
-      if CLIENT_ONLY:has(method) and on_server() then
+      if CLIENT_ONLY:has(method) and side() then
         error(`BadCall: {entry.Name} lists '{method}', which is client-only, on the server`, 0)
       end
 
-      if SERVER_ONLY:has(method) and not on_server() then
+      if SERVER_ONLY:has(method) and not side() then
         error(`BadCall: {entry.Name} lists '{method}', which is server-only, on the client`, 0)
       end
     end
@@ -450,20 +398,10 @@ local function check_listed(
 end
 
 --- Wires every lifecycle the providers list: the built-ins they name,
---- and each custom one. `on_server` says which side this is; Forge asks
---- only when a provider lists a lifecycle of one side.
----
---- @within lifecycles
---- @private
---- @param entries -- The loaded entries, in boot order
---- @param customs -- The lifecycles the game added
---- @param on_server -- Gives true on the server
-export function wire(
-  entries: { Entry },
-  customs: { CustomLifecycle },
-  on_server: () -> boolean
-) -> ()
-  check_listed(entries, customs, on_server)
+--- and each custom one. `side` says which side this is; Forge asks only
+--- when a provider lists a lifecycle of one side.
+local function wire(entries: { Entry }, customs: { CustomLifecycle }, side: () -> boolean) -> ()
+  check_listed(entries, customs, side)
 
   for method, lifecycle in BUILTINS do
     connect(lifecycle, listeners_of(entries, method))
@@ -473,6 +411,65 @@ export function wire(
     connect(lifecycle, listeners_of(entries, lifecycle.Method))
   end
 end
+
+--- What the feature keeps for one Forge: the lifecycles the game added,
+--- and whether Forge has wired them.
+---
+--- @private
+type State = { lifecycles: { CustomLifecycle }, wired: boolean }
+
+--- The state of each Forge. Weak keys, so a Forge that is gone takes its
+--- state with it.
+local states = setmetatable({} :: { [Forge]: State }, { __mode = 'k' })
+
+--- The state of one Forge, made at the first ask.
+local function state_of(forge: Forge) -> State
+  if const found = states[forge] then
+    return found
+  end
+
+  const made: State = { lifecycles = {}, wired = false }
+  states[forge] = made
+
+  return made
+end
+
+--- Adds a lifecycle to a Forge. It serves [Forge:AddLifecycle].
+local function add(forge: Forge, lifecycle: CustomLifecycle) -> ()
+  const state = state_of(forge)
+
+  if state.wired then
+    error('BadCall: Bad call for AddLifecycle (Forge has wired the lifecycles)', 0)
+  end
+
+  check_lifecycle(lifecycle, 1, 'AddLifecycle')
+
+  if table.find(state.lifecycles, lifecycle) then
+    error(
+      `BadArgument: Bad argument #1 for AddLifecycle (the lifecycle '{lifecycle.Method}' is added already)`,
+      0
+    )
+  end
+
+  table.insert(state.lifecycles, lifecycle)
+end
+
+--- The extension of the feature: it wires the lifecycles at PostInit,
+--- before the game's extensions hear the phase.
+const feature: Extension = {
+  Name = 'lifecycles',
+  onPhase = function(forge: Forge, phase: Phase, entries: { Entry }) -> ()
+    if phase == Phase.PostInit then
+      local state = state_of(forge)
+      wire(entries, state.lifecycles, on_server)
+      state.wired = true
+    end
+  end,
+}
+
+hook.AddLifecycle = add
+hook.every = every
+table.insert(hook.extensions, feature)
 
 --- The tests of lifecycles, with the fixture providers they fire. The ship
 --- artifact leaves the whole group out.
@@ -648,5 +645,80 @@ namespace LifecycleTests
     $expect(function() -> ()
       wire([ entry('Camera', counter(), [ 'PreRender' ]) ], [], server)
     end):toThrow('BadCall')
+  end
+  --- A Forge that prints nothing.
+  private function quiet() -> Forge
+    return new Forge({ Verbose = false })
+  end
+
+  --- The entry of the feature plugs into the hook of the core.
+  public function the_feature_plugs_in_when_it_loads() -> ()
+    $assert_eq(hook.AddLifecycle, add)
+    $assert_eq(hook.every, every)
+    $assert(table.find(hook.extensions, feature) ~= nil)
+    $assert_eq(Forge.every(5, 'Autosave').Method, 'Autosave')
+  end
+
+  --- The extension wires a custom lifecycle at PostInit, and closes the
+  --- Forge to new ones.
+  public function the_extension_wires_at_post_init() -> ()
+    const listed = counter()
+    local fire: Fire? = nil
+    const forge = quiet():AddLifecycle({
+      Method = 'Tick',
+      Connect = function(given: Fire) -> RBXScriptConnection?
+        fire = given
+
+        return nil
+      end,
+      Dispatch = Dispatch.Inline,
+    })
+    const on_phase = feature.onPhase :: (Forge, Phase, { Entry }) -> ()
+
+    on_phase(forge, Phase.PreInit, [ entry('Listed', listed, [ 'Tick' ]) ])
+    $assert_eq(fire, nil)
+
+    on_phase(forge, Phase.PostInit, [ entry('Listed', listed, [ 'Tick' ]) ])
+    ; (fire :: Fire)()
+
+    $assert_eq(listed.calls, 1)
+    $expect(function() -> ()
+      forge:AddLifecycle(Forge.every(1, 'Late'))
+    end):toThrow('BadCall')
+  end
+
+  --- Errors on one lifecycle added twice.
+  public function refuses_a_lifecycle_added_twice() -> ()
+    const tick = Forge.every(1, 'Tick')
+
+    $expect(function() -> ()
+      quiet():AddLifecycles([ tick, tick ])
+    end):toThrow('BadArgument')
+  end
+
+  --- Lets an extension add a lifecycle before the wiring, and refuses one
+  --- after it.
+  public function takes_a_lifecycle_until_the_wiring() -> ()
+    local late: string? = nil
+    const forge = quiet():AddExtension({
+      Name = 'Adder',
+      onPhase = function(given: Forge, phase: Phase, _entries: { Entry }) -> ()
+        if phase == Phase.PreLoad then
+          given:AddLifecycle(Forge.every(1, 'Early'))
+        elseif phase == Phase.PostInit then
+          const added = Result.pcall(function() -> ()
+            given:AddLifecycle(Forge.every(1, 'Late'))
+          end)
+
+          if local Err(problem) = added then
+            late = problem
+          end
+        end
+      end,
+    })
+
+    forge:Start()
+
+    $assert(string.find(late ?? '', 'BadCall', 1, true) ~= nil)
   end
 end

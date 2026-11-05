@@ -10,7 +10,8 @@
 
 --- @class provider
 --- What a provider is: the [provider.Provider] attribute, the lifecycles a
---- provider can list, and the [Entry] that Forge keeps for each provider.
+--- provider can list, the shape of a custom lifecycle, and the [Entry]
+--- that Forge keeps for each provider.
 ---
 --- Import these from `@packages/forge`.
 
@@ -18,9 +19,9 @@ import { Set } from '@alloy/std/collections'
 import { Attributes } from '@alloy/std/roblox'
 
 --- A lifecycle a provider can list in `@Provider`. Init and Start are
---- the boot barrier; the others are Roblox events that Forge wires at
---- PostInit, once any provider lists them. The value is the name of the
---- method it calls.
+--- the boot barrier. The others are Roblox events that the lifecycles
+--- feature wires at PostInit, once any provider lists them. The value is
+--- the name of the method it calls.
 ---
 --- @type Lifecycle "Init" | "Start" | "PlayerAdded" | "PlayerRemoving" | "CharacterAdded" | "CharacterRemoving" | "AppearanceLoaded" | "HumanoidDied" | "Closing" | "PreRender" | "PreAnimation" | "PreSimulation" | "PostSimulation" | "Heartbeat" | "LocalCharacterAdded" | "LocalCharacterRemoving" | "LocalAppearanceLoaded" | "LocalHumanoidDied"
 --- @within provider
@@ -68,6 +69,49 @@ export enum Lifecycle
   --- only.
   LocalHumanoidDied
 end
+
+--- How `fire` hands an event to the providers that listen. Spawn runs
+--- each handler on its own thread. Inline runs them one after another on
+--- the event's thread. Await runs them at once and returns when the last
+--- one ends.
+---
+--- @type Dispatch "Spawn" | "Inline" | "Await"
+--- @within provider
+export enum Dispatch
+  --- Each handler runs on its own thread, and `fire` returns at once. A
+  --- slow or failing handler cannot hold up the others. The default.
+  Spawn
+  --- The handlers run one after another on the event's thread. No
+  --- thread per event, so the per-frame built-ins use it; a slow handler
+  --- delays the rest, and an error stops the dispatch.
+  Inline
+  --- The handlers run at once, and `fire` returns when the last one
+  --- ends. An error in one does not stop the others. For an event source
+  --- that must wait, such as BindToClose.
+  Await
+end
+
+--- A handler's arguments pass through untyped: each lifecycle has its
+--- own.
+@allow(explicit_any)
+export type Fire = (...any) -> ()
+
+--- A lifecycle: an event bound to a method name. Add one with
+--- [Forge:AddLifecycle]. The lifecycles feature wires it.
+---
+--- `Connect` is a signal to connect to, or a function that takes `fire`
+--- and returns a connection, or nil when nothing stays connected. Call
+--- `fire(...)` to hand the arguments to each provider that listens.
+---
+--- @interface CustomLifecycle
+--- .Method string -- The name a provider lists and writes
+--- .Connect RBXScriptSignal | (fire: Fire) -> RBXScriptConnection? -- The event source
+--- .Dispatch Dispatch? -- How `fire` runs the handlers. Spawn when nil.
+export type CustomLifecycle = {
+  Method: string,
+  Connect: RBXScriptSignal | (fire: Fire) -> RBXScriptConnection?,
+  Dispatch: Dispatch?,
+}
 
 --- Marks a provider. `lifecycles` names each method Forge calls: a
 --- [Lifecycle], or the method name of a lifecycle added with

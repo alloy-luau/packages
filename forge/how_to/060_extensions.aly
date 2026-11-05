@@ -11,6 +11,9 @@
     PostStart, with every entry loaded so far.
   - `onProvider` fires as each provider is Loaded, Initialized, and
     Started.
+
+  The features of Forge are extensions too. They hear each phase before
+  the game's extensions do.
 ]]
 
 import { Forge, Phase, ProviderEvent, type Entry, type Extension } from '@packages/forge'

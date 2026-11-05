@@ -1,5 +1,5 @@
 --[[
-  Dependencies: a provider field that holds another provider.
+  The dependencies feature: a provider field that holds another provider.
 
     struct ShopProvider
       data: DataProvider = Forge.use('DataProvider')
@@ -12,16 +12,18 @@
 
   The field's type comes from `import type { DataProvider }`. A type-only
   import emits no require, so two providers may use each other's types.
+
+  This module is the entry of the feature. It plugs into the hook of the
+  core when it loads, and serves Forge.use.
 ]]
 
 --- @class dependencies
---- The target type of [Forge.use]. A provider field set to
---- `Forge.use(target)` gets the provider that the target names before any
---- Init.
----
---- Import these from `@packages/forge`.
+--- The dependencies feature. A provider field set to `Forge.use(target)`
+--- gets the provider that the target names before any Init. Turn it on in
+--- `ember.toml` with `features = ["dependencies"]`.
 
 import { HashMap, Set } from '@alloy/std/collections'
+import { type Extension, Forge, Phase, hook } from './core'
 import { type Entry, type ProviderObject } from './provider'
 
 --- The key only a marker carries. A local table collides with no key a
@@ -30,20 +32,22 @@ const MARKER = {}
 
 --- What a marker names: a provider by the name of its ModuleScript, or
 --- the ModuleScript itself. A ModuleScript that no one added loads too.
+---
+--- @type Target string | ModuleScript
+--- @within dependencies
 export type Target = string | ModuleScript
 
 --- One dependency field of a provider.
 ---
 --- @private
-export type Link = { field: string, target: Target }
+type Link = { field: string, target: Target }
 
---- The dependencies of every entry, resolved.
+--- The dependencies of every entry, resolved: `uses` holds the entries
+--- each entry uses, each once, and `fields` the entry that each
+--- dependency field of an entry names.
 ---
---- @interface Links
 --- @private
---- .uses { [Entry]: { Entry } } -- The entries each entry uses, each once
---- .fields { [Entry]: { [string]: Entry } } -- The entry each dependency field of an entry names
-export type Links = {
+type Links = {
   uses: { [Entry]: { Entry } },
   fields: { [Entry]: { [string]: Entry } },
 }
@@ -54,12 +58,12 @@ export type Links = {
 ---     data: DataProvider = Forge.use('DataProvider')
 ---
 --- A ModuleScript target loads that provider when the game did not add
---- it; a name finds a provider the game added.
+--- it; a name finds a provider the game added. [Forge.use] calls it.
 ---
 --- @within dependencies
---- @private
 --- @param target -- The provider name, or its ModuleScript
 --- @return any -- A marker that Forge replaces with the provider
+--- @error string -- When `target` is an empty name or no ModuleScript (BadArgument)
 @allow(explicit_any)
 export function use(target: Target) -> any
   const good = target is string ? target ~= '' : target is ModuleScript
@@ -80,12 +84,7 @@ local function is_marker(value: unknown) -> boolean
 end
 
 --- The dependency fields of a provider, in no set order.
----
---- @within dependencies
---- @private
---- @param provider -- The provider to read
---- @return { Link } -- One link for each field that holds a marker
-export function links_of(provider: ProviderObject) -> { Link }
+local function links_of(provider: ProviderObject) -> { Link }
   const out: { Link } = {}
 
   for field, value in provider do
@@ -115,12 +114,7 @@ end
 
 --- Resolves every dependency field of every entry. Errors with
 --- MissingDependency when one names a provider Forge never loaded.
----
---- @within dependencies
---- @private
---- @param entries -- The loaded entries
---- @return Links -- The uses and the dependency fields of each entry
-export function link(entries: { Entry }) -> Links
+local function link(entries: { Entry }) -> Links
   local uses: { [Entry]: { Entry } } = {}
   local fields: { [Entry]: { [string]: Entry } } = {}
 
@@ -175,13 +169,7 @@ end
 --- Among the entries whose uses are all done, the higher priority goes
 --- first, then the one added first. Nil when a cycle leaves some entries
 --- unordered.
----
---- @within dependencies
---- @private
---- @param entries -- The loaded entries
---- @param uses -- The entries each entry uses
---- @return { Entry }? -- The entries in Init order, or nil for a cycle
-export function order(entries: { Entry }, uses: { [Entry]: { Entry } }) -> { Entry }?
+local function order(entries: { Entry }, uses: { [Entry]: { Entry } }) -> { Entry }?
   local index_of: { [Entry]: number } = {}
   local waiting: { [Entry]: number } = {}
   local users: { [Entry]: { Entry } } = {}
@@ -226,13 +214,7 @@ end
 
 --- One cycle among the entries, as `A -> B -> A`. Called once `order`
 --- has shown that a cycle exists.
----
---- @within dependencies
---- @private
---- @param entries -- The loaded entries
---- @param uses -- The entries each entry uses
---- @return string -- The names on the cycle, such as `A -> B -> A`
-export function cycle_path(entries: { Entry }, uses: { [Entry]: { Entry } }) -> string
+local function cycle_path(entries: { Entry }, uses: { [Entry]: { Entry } }) -> string
   local state: HashMap<Entry, string> = new HashMap()
   const stack: { Entry } = {}
 
@@ -281,12 +263,7 @@ export function cycle_path(entries: { Entry }, uses: { [Entry]: { Entry } }) -> 
 end
 
 --- Puts each provider in the fields that use it.
----
---- @within dependencies
---- @private
---- @param entries -- The loaded entries
---- @param links -- The resolved dependencies
-export function inject(entries: { Entry }, links: Links) -> ()
+local function inject(entries: { Entry }, links: Links) -> ()
   for _, entry in entries do
     for field, dependency in links.fields[entry] do
       if table.isfrozen(entry.Provider) then
@@ -300,6 +277,59 @@ export function inject(entries: { Entry }, links: Links) -> ()
     end
   end
 end
+
+--- Loads each provider that a `use` names by its ModuleScript and that
+--- no one added. LoadProvider adds to the entries, so the walk reaches
+--- the whole graph.
+local function load_all(forge: Forge, entries: { Entry }) -> ()
+  local index = 1
+
+  while index <= #entries do
+    for _, found in links_of(entries[index].Provider) do
+      const target: Target = found.target
+
+      if target is not string and find(entries, target) == nil then
+        forge:LoadProvider(target)
+      end
+    end
+
+    index += 1
+  end
+end
+
+--- Orders the entries in place so each inits after what it uses, and
+--- puts each provider into the fields that use it.
+local function order_all(entries: { Entry }) -> ()
+  const links = link(entries)
+  const sorted = order(entries, links.uses)
+
+  if sorted == nil then
+    error(
+      `CyclicDependency: Forge cannot order Init: {cycle_path(entries, links.uses)}. Move the calls out of Init, or turn one use around`,
+      0
+    )
+  end
+
+  table.clear(entries)
+  table.move(sorted, 1, #sorted, 1, entries)
+  inject(entries, links)
+end
+
+--- The extension of the feature. Forge fires it at PreInit before the
+--- game's extensions, while loading is still open. So a provider that an
+--- extension loads at PostLoad gets its dependencies too.
+const feature: Extension = {
+  Name = 'dependencies',
+  onPhase = function(forge: Forge, phase: Phase, entries: { Entry }) -> ()
+    if phase == Phase.PreInit then
+      load_all(forge, entries)
+      order_all(entries)
+    end
+  end,
+}
+
+hook.use = use
+table.insert(hook.extensions, feature)
 
 --- The tests of dependencies, with the entries they order. The ship
 --- artifact leaves the whole group out.
@@ -406,5 +436,37 @@ namespace DependencyTests
     $expect(function() -> ()
       inject(set, links)
     end):toThrow('FrozenModule')
+  end
+  --- The entry of the feature plugs into the hook of the core, and
+  --- Forge.use makes a marker through it.
+  public function the_feature_plugs_in_when_it_loads() -> ()
+    $assert_eq(hook.use, use)
+    $assert(table.find(hook.extensions, feature) ~= nil)
+    $assert(is_marker(Forge.use('Data')))
+  end
+
+  --- The extension orders the entries and fills the uses at PreInit.
+  public function the_extension_orders_and_fills_at_pre_init() -> ()
+    const set = [ entry('Shop', 0, [ 'Data' ]), entry('Data', 0, []) ]
+    const data = set[2].Provider
+    const on_phase = feature.onPhase :: (Forge, Phase, { Entry }) -> ()
+
+    on_phase(new Forge({ Verbose = false }), Phase.PostLoad, set)
+    $assert_eq(names(set), 'Shop,Data')
+
+    on_phase(new Forge({ Verbose = false }), Phase.PreInit, set)
+    $assert_eq(names(set), 'Data,Shop')
+    $assert_eq(set[2].Provider.dep_Data, data)
+  end
+
+  --- A Forge with the feature on boots, and a cycle fails it at PreInit.
+  public function the_extension_reports_a_cycle() -> ()
+    const cycle = [ entry('Shop', 0, [ 'Data' ]), entry('Data', 0, [ 'Shop' ]) ]
+    const on_phase = feature.onPhase :: (Forge, Phase, { Entry }) -> ()
+
+    new Forge({ Verbose = false }):Start()
+    $expect(function() -> ()
+      on_phase(new Forge({ Verbose = false }), Phase.PreInit, cycle)
+    end):toThrow('CyclicDependency: Forge cannot order Init: Shop -> Data -> Shop')
   end
 end
