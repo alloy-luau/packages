@@ -1,0 +1,79 @@
+--[[
+  The frame loop that springs and tweens share. One Heartbeat connection
+  runs while any of them moves, and goes when the last one stops.
+
+  `step(dt)` moves everything by `dt` seconds. svelte-aly calls it each
+  frame; a test or a loop of the game's own can call it as well.
+]]
+
+--- @class frame
+--- The frame loop that springs and tweens share. A test or a game loop
+--- drives it with [frame.manual_frames] and [frame.step].
+--- Import these from `@packages/svelte-aly`.
+
+import RunService from '@game/RunService'
+import { batch } from './reactive'
+
+--- One job of the frame loop. It gives true when it is done.
+--- @private
+export type Job = (dt: number) -> boolean
+
+-- The jobs that run each frame.
+local jobs: { [Job]: boolean } = {}
+
+-- The Heartbeat connection, while a job is active.
+local connection: RBXScriptConnection? = nil
+
+-- Whether svelte-aly connects to Heartbeat by itself.
+local automatic = true
+
+--- Moves every active job by `dt` seconds, in one batch: the effects that
+--- the jobs mark run once, at the end.
+--- @within frame
+--- @param dt -- The time to move, in seconds
+export function step(dt: number) -> ()
+  batch(function() -> ()
+    for job in table.clone(jobs) do
+      if job(dt) then
+        jobs[job] = nil
+      end
+    end
+  end)
+
+  if next(jobs) == nil and connection ~= nil then
+    connection:Disconnect()
+    connection = nil
+  end
+end
+
+--- Adds a job to the frame loop, and connects the loop when it was idle.
+--- @within frame
+--- @private
+--- @param job -- The job to add
+export function start(job: Job) -> ()
+  jobs[job] = true
+
+  if connection == nil and automatic then
+    connection = RunService.Heartbeat:Connect(step)
+  end
+end
+
+--- Takes a job off the frame loop.
+--- @within frame
+--- @private
+--- @param job -- The job to take off
+export function stop(job: Job) -> ()
+  jobs[job] = nil
+end
+
+--- Stops the Heartbeat connection, so only calls to `step` move time.
+--- A test, or a game that runs its own loop, calls it once.
+--- @within frame
+export function manual_frames() -> ()
+  automatic = false
+
+  if connection ~= nil then
+    connection:Disconnect()
+    connection = nil
+  end
+end

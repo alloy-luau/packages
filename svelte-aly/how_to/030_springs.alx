@@ -1,0 +1,36 @@
+--[[
+  A spring moves a value to its target, the way Apple's springs move a
+  view. `Spring.of(fn)` follows what `fn` reads. `new Spring(value)`
+  holds its own target: write `.target` to move it.
+
+  The options follow Apple: a `duration` and a `bounce`. The presets
+  `Springs.smooth`, `Springs.snappy`, and `Springs.bouncy` give a bounce
+  of 0, 0.15, and 0.3.
+]]
+
+<script>
+  import { Spring, Springs } from '@packages/svelte-aly'
+
+  let open = $state(false)
+
+  const size = Spring.of(function()
+    return if open then new UDim2(0, 320, 0, 200) else new UDim2(0, 160, 0, 48)
+  end, Springs.bouncy(0.45))
+</script>
+
+<ScreenGui ResetOnSpawn={false}>
+  <TextButton Size={size} Activated={function() open = not open end}>
+    {if open then 'Close' else 'Open'}
+  </TextButton>
+</ScreenGui>
+
+<!--
+  The rules:
+
+  - A template binds a spring as it binds a state: `Size={size}`.
+  - `.current` reads the value now and `.target` the goal. `.resting` is
+    true once the spring rests.
+  - A spring moves numbers, Vector2, Vector3, UDim, UDim2, Color3,
+    CFrame, and Rect. A Color3 moves in Oklab.
+  - A new target keeps the velocity of the motion before it.
+-->

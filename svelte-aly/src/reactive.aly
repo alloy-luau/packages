@@ -1,0 +1,651 @@
+--[[
+  The reactive core of svelte-aly: state, derived values, effects, and
+  the owners that clean them up. The algorithm is Bevel's.
+
+  `count.value` reads a value and links the reader that runs now, a
+  derived value or an effect. A write marks each reader dirty. A dirty
+  derived value runs again when something reads it. A dirty effect waits
+  in a queue, and the queue runs at the end of the write.
+
+  An owner is a scope. An effect, a derived value, and a cleanup join the
+  owner that is current when code makes them. Disposing an owner undoes
+  all of it: its child owners first, then its cleanups, newest first.
+]]
+
+--- @class reactive
+--- The reactive core: state, derived values, and effects. The svelte-aly
+--- ingot writes these calls for the runes `$state`, `$derived`, and
+--- `$effect`. Without the ingot, call them and use `.value`.
+--- Import these from `@packages/svelte-aly`.
+
+--- A value that changes: what `$state` makes. Read and write `.value`.
+--- @type State { value: T }
+export type State<T> = { value: T }
+
+--- A value that other values give: what `$derived` makes. Read `.value`.
+export type Derived<T> = { read value: T }
+
+--- A scope that holds what code made, so that one call undoes it.
+--- @private
+export type Owner = {
+  parent: Owner?,
+  children: { [Owner]: boolean },
+  cleanups: { () -> () },
+  alive: boolean,
+}
+
+-- One node of the graph. Code holds a handle, and `.value` on the
+-- handle goes through the metatable to the node, so the node itself
+-- has no metatable and can hold nil fields.
+type Node = {
+  current: unknown,
+  observers: { [Node]: boolean },
+  sources: { [Node]: boolean },
+  compute: (() -> unknown)?,
+  effect: boolean,
+  dirty: boolean,
+  alive: boolean,
+  cleanup: (() -> ())?,
+  owner: Owner?,
+  run: Owner?,
+}
+
+-- The handle that code holds: the node under a raw key.
+type Handle = { __svelte_node: Node }
+
+-- The derived value or effect that runs now. A read links to it.
+local observer: Node? = nil
+
+-- The owner that new effects, derived values, and cleanups join.
+local current: Owner? = nil
+
+-- The effects that wait to run, how deep the batches go, and whether
+-- the queue runs now.
+local queue: { Node } = {}
+local batching = 0
+local flushing = false
+
+-- An effect that writes a state that it reads would run forever. Past
+-- this many runs in one write, svelte-aly stops with an error.
+const MAX_RUNS = 10000
+
+--- A new owner inside `parent`. Disposing the parent disposes it too.
+--- @within reactive
+--- @private
+--- @param parent -- The owner that holds the new owner, or nil for none
+--- @return Owner -- The new owner
+export function new_owner(parent: Owner?) -> Owner
+  const owner: Owner = { parent = parent, children = {}, cleanups = {}, alive = true }
+
+  if parent ~= nil then
+    parent.children[owner] = true
+  end
+
+  return owner
+end
+
+--- Disposes an owner once: its child owners, then its cleanups, newest
+--- first.
+--- @within reactive
+--- @private
+--- @param owner -- The owner to dispose
+export function dispose(owner: Owner) -> ()
+  if not owner.alive then
+    return
+  end
+
+  owner.alive = false
+
+  for child in table.clone(owner.children) do
+    dispose(child)
+  end
+
+  const cleanups = owner.cleanups
+  owner.cleanups = {}
+
+  for i = #cleanups, 1, -1 do
+    cleanups[i]()
+  end
+
+  if owner.parent ~= nil then
+    owner.parent.children[owner] = nil
+  end
+end
+
+--- The owner that is current now, or nil outside every owner.
+--- @within reactive
+--- @private
+--- @return Owner? -- The current owner, or nil
+export function current_owner() -> Owner?
+  return current
+end
+
+--- Runs `fn` with `owner` as the current owner, and with no reader, so
+--- the reads inside link to nothing.
+--- @within reactive
+--- @private
+--- @param owner -- The owner that is current while `fn` runs
+--- @param fn -- The function to run
+export function run_in(owner: Owner?, fn: () -> ()) -> ()
+  const previous_owner, previous_observer = current, observer
+  current, observer = owner, nil
+
+  const result = Result.pcall(fn)
+  current, observer = previous_owner, previous_observer
+
+  match result with
+    case Ok(_) then return
+    case Err(message) then error(message, 0)
+  end
+end
+
+-- Links the node to the reader that runs now.
+local function link(node: Node) -> ()
+  const reader = observer
+
+  if reader ~= nil and reader.alive then
+    node.observers[reader] = true
+    reader.sources[node] = true
+  end
+end
+
+-- Takes the node off each node that it read.
+local function unlink(node: Node) -> ()
+  for source in node.sources do
+    source.observers[node] = nil
+  end
+
+  node.sources = {}
+end
+
+-- Marks each reader of the node dirty. A derived value passes the mark
+-- on; an effect waits in the queue.
+local function mark(node: Node) -> ()
+  for reader in node.observers do
+    if not reader.dirty then
+      reader.dirty = true
+
+      if reader.effect then
+        table.insert(queue, reader)
+      else
+        mark(reader)
+      end
+    end
+  end
+end
+
+-- Runs a derived value again, and links it to what it reads now.
+local function recompute(node: Node) -> ()
+  const compute = node.compute :: () -> unknown
+
+  unlink(node)
+
+  const previous = observer
+  observer = node
+
+  const result = Result.pcall(compute)
+  observer = previous
+
+  match result with
+    case Ok(value) then
+      node.current = value
+      node.dirty = false
+    case Err(message) then error(message, 0)
+  end
+end
+
+-- Runs the cleanup that the last run of an effect gave.
+local function run_cleanup(node: Node) -> ()
+  const cleanup = node.cleanup
+  node.cleanup = nil
+
+  if cleanup ~= nil then
+    cleanup()
+  end
+end
+
+-- Runs an effect again. What its last run made goes first.
+local function run_effect(node: Node) -> ()
+  if node.run ~= nil then
+    dispose(node.run)
+  end
+
+  run_cleanup(node)
+  unlink(node)
+  node.dirty = false
+
+  const run = new_owner(node.owner)
+  node.run = run
+
+  const previous_observer, previous_owner = observer, current
+  observer, current = node, run
+
+  const result = Result.pcall(node.compute :: () -> unknown)
+  observer, current = previous_observer, previous_owner
+
+  match result with
+    case Ok(cleanup) then
+      if cleanup is function then
+        node.cleanup = cleanup :: () -> ()
+      end
+    case Err(message) then error(message, 0)
+  end
+end
+
+-- Stops a derived value or an effect for good.
+local function stop_node(node: Node) -> ()
+  node.alive = false
+
+  if node.run ~= nil then
+    dispose(node.run)
+    node.run = nil
+  end
+
+  run_cleanup(node)
+  unlink(node)
+end
+
+-- Runs the effects in the queue, until it is empty.
+local function flush() -> ()
+  if batching > 0 or flushing then
+    return
+  end
+
+  flushing = true
+  local runs = 0
+
+  while #queue > 0 do
+    const pending = queue
+    queue = {}
+
+    for _, node in pending do
+      if node.alive and node.dirty then
+        runs += 1
+
+        if runs > MAX_RUNS then
+          queue = {}
+          flushing = false
+          error(
+            'svelte-aly: the effects ran more than 10000 times in one write; an effect writes a state that it reads',
+            0
+          )
+        end
+
+        match Result.pcall(run_effect, node) with
+          case Ok(_) then continue
+          case Err(message) then
+            queue = {}
+            flushing = false
+            error(message, 0)
+        end
+      end
+    end
+  end
+
+  flushing = false
+end
+
+-- Reads a node, and links the reader that runs now.
+local function read_node(node: Node) -> unknown
+  if node.compute ~= nil and not node.effect and node.dirty then
+    recompute(node)
+  end
+
+  link(node)
+  return node.current
+end
+
+-- Writes a state. An equal value runs nothing, but a table always runs
+-- the readers, so `items = items` after a change in place updates them.
+local function write_node(node: Node, value: unknown) -> ()
+  if value == node.current and not (value is table) then
+    return
+  end
+
+  node.current = value
+  mark(node)
+  flush()
+end
+
+-- The metatable of every handle. Only `value` is a key.
+const Handles = {}
+
+function Handles.__index(handle: Handle, key: unknown) -> unknown
+  if key ~= 'value' then
+    error(`svelte-aly: a state has no key '{tostring(key)}'; read .value`, 2)
+  end
+
+  return read_node(handle.__svelte_node)
+end
+
+function Handles.__newindex(handle: Handle, key: unknown, value: unknown) -> ()
+  const node = handle.__svelte_node
+
+  if key ~= 'value' then
+    error(`svelte-aly: a state has no key '{tostring(key)}'; write .value`, 2)
+  end
+
+  if node.compute ~= nil then
+    error('svelte-aly: a $derived value cannot be written', 2)
+  end
+
+  write_node(node, value)
+end
+
+-- Turns a handle into the text of its value, so that `{count}` in a
+-- backtick string or in markup text reads the value.
+function Handles.__tostring(handle: Handle) -> string
+  return tostring(read_node(handle.__svelte_node))
+end
+
+-- The metatables whose tables read as a state: `.value` reads them.
+local readable: { [unknown]: boolean } = { [Handles] = true }
+
+--- Marks the tables with this metatable as states, which `is_state`
+--- knows and `.value` reads. Motion uses it for springs and tweens.
+--- @within reactive
+--- @private
+--- @param metatable -- The metatable of the tables
+export function readable_metatable(metatable: unknown) -> ()
+  readable[metatable] = true
+end
+
+-- A handle for a new node.
+@allow(explicit_any)
+local function handle_of(node: Node) -> Handle
+  return setmetatable({ __svelte_node = node }, Handles) :: any
+end
+
+-- A node with nothing linked yet.
+local function new_node(
+  current_value: unknown,
+  compute: (() -> unknown)?,
+  is_effect: boolean
+) -> Node
+  return {
+    current = current_value,
+    observers = {},
+    sources = {},
+    compute = compute,
+    effect = is_effect,
+    dirty = compute ~= nil,
+    alive = true,
+    cleanup = nil,
+    owner = current,
+    run = nil,
+  }
+end
+
+--- Svelte's `$state`. Read and write `.value`; a write runs each effect
+--- that read it.
+--- @within reactive
+--- @param value -- The first value
+--- @return State<T> -- The new state
+-- The handle has no `value` field, so the cast goes through `any`.
+@allow(explicit_any)
+export function state<T>(value: T) -> State<T>
+  return (handle_of(new_node(value, nil, false)) :: any) :: State<T>
+end
+
+--- Svelte's `$derived`. It runs `fn` when something reads `.value` and
+--- a value that `fn` read has changed since the last run.
+--- @within reactive
+--- @param fn -- Gives the value from the values that it reads
+--- @return Derived<T> -- A value that holds what `fn` gives
+@allow(explicit_any)
+export function derived<T>(fn: () -> T) -> Derived<T>
+  const node = new_node(nil, fn, false)
+
+  if current ~= nil then
+    table.insert(current.cleanups, function() stop_node(node) end)
+  end
+
+  return (handle_of(node) :: any) :: Derived<T>
+end
+
+--- Svelte's `$effect`. It runs `fn` now, and again each time a value
+--- that `fn` read changes. A function that `fn` gives back runs before
+--- the next run and when the effect stops.
+--- @within reactive
+--- @param fn -- The code to run. It may give back a cleanup function
+--- @return () -> () -- Stops the effect
+--- @error string -- When the effect writes a state that it reads
+@allow(explicit_any)
+export function effect(fn: () -> ...any) -> () -> ()
+  const node = new_node(nil, fn :: any, true)
+  const stop = function() stop_node(node) end
+
+  if current ~= nil then
+    table.insert(current.cleanups, stop)
+  end
+
+  run_effect(node)
+  return stop
+end
+
+--- Svelte's `untrack`. It runs `fn`, and the reads inside link to
+--- nothing. `fn` may give any number of values, or none.
+--- @within reactive
+--- @param fn -- The function to run
+--- @return T... -- What `fn` gives
+@allow(explicit_any, raw_pcall)
+export function untrack<T...>(fn: () -> T...) -> T...
+  const previous = observer
+  observer = nil
+
+  const result = table.pack(pcall(fn :: any))
+  observer = previous
+
+  if not result[1] then
+    error(result[2], 0)
+  end
+
+  return (table.unpack :: any)(result, 2, result.n)
+end
+
+--- Runs `fn`, and runs the effects that its writes mark once, at the
+--- end, in place of once for each write.
+--- @within reactive
+--- @private
+--- @param fn -- The function that writes the states
+export function batch(fn: () -> ()) -> ()
+  batching += 1
+
+  const result = Result.pcall(fn)
+  batching -= 1
+
+  if batching == 0 then
+    flush()
+  end
+
+  match result with
+    case Ok(_) then return
+    case Err(message) then error(message, 0)
+  end
+end
+
+--- Whether a value is a handle that `state` or `derived` made.
+--- @within reactive
+--- @param value -- The value to test
+--- @return boolean -- True for a state or a derived value
+export function is_state(value: unknown) -> boolean
+  return value is table and readable[getmetatable(value)] ~= nil
+end
+
+--- Reads a prop. A state or a derived value gives its `.value`; any
+--- other value, a function too, gives itself. The ingot reads each name
+--- that `$props()` binds through this.
+--- @within reactive
+--- @param value -- The prop as the parent gave it
+--- @return T -- The value now
+@allow(explicit_any)
+export function get<T>(value: T | Derived<T>) -> T
+  if is_state(value) then
+    return (value :: any).value
+  end
+
+  return value :: any
+end
+
+--- Svelte's `onDestroy`. `fn` runs when the current owner goes: a
+--- component, a block, or a run of an effect.
+--- @within reactive
+--- @param fn -- The function to run when the owner goes
+--- @error string -- When no owner is current
+export function on_destroy(fn: () -> ()) -> ()
+  const owner = current
+  assert(owner ~= nil, 'on_destroy(): there is no owner; call it in a component or an effect')
+
+  table.insert(owner.cleanups, fn)
+end
+
+@test
+namespace ReactiveTests
+  --- A state reads what was written last.
+  public function a_state_reads_its_last_write() -> ()
+    local count = state(1)
+    count.value = 4
+    count.value += 1
+
+    $assert_eq(count.value, 5)
+  end
+
+  --- A derived value runs again only after a value that it read changes.
+  public function a_derived_value_runs_when_its_state_changes() -> ()
+    local count = state(2)
+    local runs = 0
+    const double = derived(function()
+      runs += 1
+      return count.value * 2
+    end)
+
+    $assert_eq(double.value, 4)
+    $assert_eq(double.value, 4)
+    $assert_eq(runs, 1)
+
+    count.value = 5
+    $assert_eq(double.value, 10)
+    $assert_eq(runs, 2)
+  end
+
+  --- An effect runs at once, and again after each change.
+  public function an_effect_runs_again_after_a_change() -> ()
+    local name = state('a')
+    const seen: { string } = {}
+
+    effect(function() table.insert(seen, name.value) end)
+    name.value = 'b'
+    name.value = 'b'
+
+    $assert_eq(table.concat(seen, ','), 'a,b')
+  end
+
+  --- A table always runs the readers, so a change in place can show.
+  public function a_table_write_always_runs() -> ()
+    local items = state({ 'a' })
+    local runs = 0
+
+    effect(function()
+      const _ = items.value
+      runs += 1
+    end)
+    table.insert(items.value, 'b')
+    items.value = items.value
+
+    $assert_eq(runs, 2)
+  end
+
+  --- The cleanup that an effect gives back runs before each run and at stop.
+  public function an_effect_cleans_up_before_each_run() -> ()
+    local count = state(0)
+    const log: { string } = {}
+    const stop = effect(function()
+      const n = count.value
+      table.insert(log, `run {n}`)
+
+      return function() table.insert(log, `clean {n}`) end
+    end)
+
+    count.value = 1
+    stop()
+    count.value = 2
+
+    $assert_eq(table.concat(log, ','), 'run 0,clean 0,run 1,clean 1')
+  end
+
+  --- A read in untrack links to nothing.
+  public function untrack_reads_link_to_nothing() -> ()
+    const a = state(1)
+    local b = state(1)
+    local runs = 0
+
+    effect(function()
+      runs += 1
+      const _ = a.value
+      untrack(function() return b.value end)
+    end)
+    b.value = 2
+
+    $assert_eq(runs, 1)
+  end
+
+  --- get reads a state, and gives back any other value.
+  public function get_reads_a_state_and_passes_the_rest() -> ()
+    const live = derived(function() return 3 end)
+    const callback = function() return 1 end
+
+    $assert_eq(get(live), 3)
+    $assert_eq(get(7), 7)
+    $assert_eq(get(callback), callback)
+  end
+
+  --- A state turns into the text of its value, and the read links.
+  public function a_state_reads_as_text() -> ()
+    local count = state(2)
+    const seen: { string } = {}
+
+    effect(function() table.insert(seen, `n {count}`) end)
+    count.value = 3
+
+    $assert_eq(table.concat(seen, ','), 'n 2,n 3')
+  end
+
+  --- A batch runs a marked effect once.
+  public function a_batch_runs_an_effect_once() -> ()
+    local a = state(1)
+    local b = state(1)
+    local runs = 0
+
+    effect(function()
+      runs += 1
+      const _ = a.value + b.value
+    end)
+    batch(function() -> ()
+      a.value = 2
+      b.value = 2
+    end)
+
+    $assert_eq(runs, 2)
+  end
+
+  --- A derived value cannot be written, and a state has only `value`.
+  @allow(explicit_any)
+  public function a_handle_takes_only_value() -> ()
+    const fixed = derived(function() return 1 end)
+
+    $expect(function()
+      local handle = fixed :: any
+      handle.value = 2
+    end):toThrow('cannot be written')
+    $expect(function() return (fixed :: any).other end):toThrow('no key')
+  end
+
+  --- An effect that writes what it reads stops with an error.
+  public function an_effect_that_feeds_itself_stops() -> ()
+    local count = state(0)
+
+    $expect(function() -> ()
+      effect(function() count.value += 1 end)
+    end):toThrow('ran more than')
+  end
+end

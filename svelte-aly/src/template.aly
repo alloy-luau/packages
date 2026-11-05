@@ -1,0 +1,498 @@
+--[[
+  The factory that `.alx` tags call, the blocks of a template, and the
+  functions that show a component.
+
+  With `[alx.factory] backend = "table"` and `create = "create"`, the tag
+  `<Frame Size={size}>...</Frame>` lowers to
+  `create('Frame')({ Size = size, ... })`. A key sets a property; each
+  numbered entry is a child. A component is a function from props to its
+  nodes, and `<Counter />` calls it.
+
+  The ingot writes `{#if}` as `if_block` and `{#each}` as `each_block`.
+]]
+
+--- @class template
+--- The factory that `.alx` tags call, the blocks that `{#if}` and
+--- `{#each}` become, and [template.mount] and [template.unmount], which
+--- show a component and take it down.
+--- Import these from `@packages/svelte-aly`.
+
+import {
+  current_owner,
+  dispose,
+  effect,
+  is_state,
+  new_owner,
+  run_in,
+  state,
+  type Derived,
+  type Owner,
+  type State,
+} from './reactive'
+
+--- A child that runs against its parent: what `if_block` and
+--- `each_block` give.
+export type Block = { __svelte_block: (parent: Instance) -> () }
+
+--- What `mount` gives. Pass it to `unmount`.
+export type App = { __svelte_app: Owner }
+
+-- The key of a block.
+const BLOCK = '__svelte_block'
+
+-- Sets one property. A function or a state binds it, and a function on
+-- an event connects to it.
+@allow(explicit_any)
+local function apply(instance: Instance, key: string, value: unknown) -> ()
+  local target = instance :: any
+
+  if value is function and typeof(target[key]) == 'RBXScriptSignal' then
+    target[key]:Connect(value)
+  elseif value is function then
+    const getter = value :: () -> unknown
+
+    effect(function() target[key] = getter() end)
+  elseif is_state(value) then
+    const source = value :: Derived<unknown>
+
+    effect(function() target[key] = source.value end)
+  else
+    target[key] = value
+  end
+end
+
+-- Puts a child under its parent, and keeps each Instance that it puts
+-- there in `made`. A function or a state builds again when what it read
+-- changes. A table is a block or a list of children, as a fragment
+-- gives. Text and nil put nothing.
+local function place(parent: Instance, child: unknown, made: { Instance }) -> ()
+  if child is Instance then
+    child.Parent = parent
+    table.insert(made, child)
+  elseif child is function or is_state(child) then
+    effect(function()
+      const built: { Instance } = {}
+      const value = if child is function then child() else (child :: Derived<unknown>).value
+      place(parent, value, built)
+
+      return function()
+        for _, item in built do
+          item:Destroy()
+        end
+      end
+    end)
+  elseif child is table then
+    const block = child[BLOCK]
+
+    if block ~= nil then
+      (block :: (Instance) -> ())(parent)
+    else
+      for _, item in child do
+        place(parent, item, made)
+      end
+    end
+  end
+end
+
+--- The factory of `.alx` tags. `create('TextLabel')(props)` makes the
+--- Instance, sets and binds the properties, puts the children under it,
+--- and sets `Parent` last.
+--- @within template
+--- @param class_name -- The class of the Instance, such as `'TextLabel'`
+--- @return (props: { [unknown]: unknown }) -> Instance -- Takes the props and makes the Instance
+export function create(class_name: string) -> (props: { [unknown]: unknown }) -> Instance
+  return function(props)
+    local instance = new Instance(class_name)
+    local parent: Instance? = nil
+    const made: { Instance } = {}
+
+    for key, value in props do
+      if key == 'Parent' then
+        parent = value :: Instance
+      elseif key is string then
+        apply(instance, key, value)
+      end
+    end
+
+    for key, child in props do
+      if key is number then
+        place(instance, child, made)
+      end
+    end
+
+    if parent ~= nil then
+      instance.Parent = parent
+    end
+
+    return instance
+  end
+end
+
+-- Builds nodes under `parent`, in an owner of its own under `scope`.
+-- Disposing the owner destroys what it built.
+local function build(parent: Instance, scope: Owner?, fn: () -> unknown) -> (Owner, { Instance })
+  const owner = new_owner(scope)
+  const made: { Instance } = {}
+
+  run_in(owner, function() place(parent, fn(), made) end)
+  table.insert(owner.cleanups, function()
+    for _, item in made do
+      item:Destroy()
+    end
+  end)
+
+  return owner, made
+end
+
+--- Svelte's `{#if}`. The arguments come in pairs: a condition, then the
+--- function that builds the nodes while it is the first true condition.
+--- A condition is a function, or `true` for `{:else}`. The block builds
+--- again only when the branch changes.
+--- @within template
+--- @param ... -- The pairs: a condition, then a build function
+--- @return Block -- The child to put in a template
+-- The pairs have no one type, so the block takes them as `unknown` and
+-- casts each one on use.
+export function if_block(...: unknown) -> Block
+  const branches = table.pack(...)
+
+  return {
+    __svelte_block = function(parent: Instance) -> ()
+      const scope = current_owner()
+      local shown = 0
+      local shown_owner: Owner? = nil
+
+      effect(function()
+        local pick = 0
+
+        for i = 1, branches.n, 2 do
+          const condition = branches[i]
+
+          if (condition is boolean and condition) or (condition is function and condition()) then
+            pick = i + 1
+            break
+          end
+        end
+
+        if pick == shown then
+          return
+        end
+
+        shown = pick
+
+        if shown_owner ~= nil then
+          dispose(shown_owner)
+          shown_owner = nil
+        end
+
+        if pick > 0 then
+          shown_owner = build(parent, scope, branches[pick] :: () -> unknown)
+        end
+      end)
+    end,
+  }
+end
+
+-- One item of `each_block`: what it built, and its place in the list.
+type Row = { owner: Owner, made: { Instance }, index: State<number>, item: unknown }
+
+-- What one `each_block` keeps between runs.
+type List<T> = {
+  parent: Instance,
+  scope: Owner?,
+  rows: { [unknown]: Row },
+  keyed: boolean,
+  render: (item: T, index: Derived<number>) -> unknown,
+}
+
+-- Finds or builds the row of one item, and gives it place `i`. With no
+-- key, a new item at a place builds the row again.
+local function row_for<T>(list: List<T>, id: unknown, item: T, i: number) -> Row
+  local row = list.rows[id]
+
+  if row ~= nil and not list.keyed and row.item ~= item then
+    dispose(row.owner)
+    row = nil
+  end
+
+  if row ~= nil then
+    row.index.value = i
+    return row
+  end
+
+  const index = state(i)
+  const owner, made = build(list.parent, list.scope, function() return list.render(item, index) end)
+  const fresh: Row = { owner = owner, made = made, index = index, item = item }
+  list.rows[id] = fresh
+
+  return fresh
+end
+
+-- Gives each GuiObject of a row its place as `LayoutOrder`.
+local function order(row: Row, i: number) -> ()
+  for _, view in row.made do
+    if view:IsA('GuiObject') then
+      (view :: GuiObject).LayoutOrder = i
+    end
+  end
+end
+
+-- Disposes each row whose key is not in `seen`.
+local function drop_unseen(rows: { [unknown]: Row }, seen: { [unknown]: boolean }) -> ()
+  for id, row in table.clone(rows) do
+    if not seen[id] then
+      dispose(row.owner)
+      rows[id] = nil
+    end
+  end
+end
+
+--- Svelte's `{#each}`. It builds the nodes of each item. With `key`, a
+--- row stays while its key is in the list, and `index` follows its
+--- place. With no key, a row belongs to a place, and builds again when
+--- the item at that place changes. Each GuiObject of a row gets its
+--- place as `LayoutOrder`.
+--- @within template
+--- @param items -- Gives the list: an Alloy array or a plain table
+--- @param key -- Gives the key of an item, or nil to key by place
+--- @param render -- Builds the nodes of one item. It gets the item and its `index`
+--- @param fallback -- Builds the nodes while the list is empty, or nil for none
+--- @return Block -- The child to put in a template
+--- @error string -- When two items have one key
+export function each_block<T>(
+  items: (() -> { T }) | (() -> T[]),
+  key: ((item: T) -> unknown)?,
+  render: (item: T, index: Derived<number>) -> unknown,
+  fallback: (() -> unknown)?
+) -> Block
+  -- An optional function does not narrow inside a closure, so the key
+  -- function is resolved here.
+  local key_of = function(_item: T, i: number) -> unknown return i end
+
+  if key ~= nil then
+    const by_key = key
+    key_of = function(item: T, _i: number) -> unknown return by_key(item) end
+  end
+
+  -- An Alloy array and a plain table both list items, so `T` infers
+  -- from either; the call reads them through one type.
+  const list_of = items :: () -> { T }
+
+  return {
+    __svelte_block = function(parent: Instance) -> ()
+      const list: List<T> = {
+        parent = parent,
+        scope = current_owner(),
+        rows = {},
+        keyed = key ~= nil,
+        render = render,
+      }
+      local empty: Owner? = nil
+
+      effect(function()
+        local seen: { [unknown]: boolean } = {}
+        local count = 0
+
+        for i, item in list_of() do
+          count += 1
+
+          const id = key_of(item, i)
+
+          if seen[id] then
+            error(`svelte-aly: two items of an each block have the key {tostring(id)}`, 0)
+          end
+
+          seen[id] = true
+          order(row_for(list, id, item, i), i)
+        end
+
+        drop_unseen(list.rows, seen)
+
+        if count == 0 and fallback ~= nil and empty == nil then
+          empty = build(parent, list.scope, fallback)
+        elseif count > 0 and empty ~= nil then
+          dispose(empty)
+          empty = nil
+        end
+      end)
+    end,
+  }
+end
+
+--- Svelte's `mount`. It builds a component under `options.target`, with
+--- `options.props`, and gives the handle that `unmount` takes.
+--- @within template
+--- @param component -- The component: a function from props to its nodes
+--- @param options -- `target`, the Instance that holds the nodes, and `props`
+--- @return App -- The handle to pass to `unmount`
+-- With no props the component gets an empty table, whatever `P` is.
+@allow(explicit_any)
+export function mount<P>(
+  component: (props: P) -> unknown,
+  options: { read target: Instance, read props: P? }
+) -> App
+  const owner = new_owner(nil)
+  const made: { Instance } = {}
+  const props = options.props or ({} :: any)
+
+  run_in(owner, function() place(options.target, component(props), made) end)
+  table.insert(owner.cleanups, function()
+    for _, item in made do
+      item:Destroy()
+    end
+  end)
+
+  return { __svelte_app = owner }
+end
+
+--- Svelte's `unmount`. It stops each effect of the component and
+--- destroys its nodes.
+--- @within template
+--- @param app -- What `mount` gave
+export function unmount(app: App) -> ()
+  dispose(app.__svelte_app)
+end
+
+@test
+namespace TemplateTests
+  --- A plain value sets a property, and a state binds it.
+  public function create_sets_and_binds_properties() -> ()
+    local name = state('Ada')
+    const label = create('TextLabel')({ Name = 'Label', Text = name }) :: TextLabel
+
+    $assert_eq(label.Name, 'Label')
+    $assert_eq(label.Text, 'Ada')
+
+    name.value = 'Grace'
+    $assert_eq(label.Text, 'Grace')
+  end
+
+  --- A function binds a property, and a function on an event connects.
+  @allow(explicit_any)
+  public function create_binds_a_function_and_connects_an_event() -> ()
+    local count = state(1)
+    local clicks = 0
+    const button = create('TextButton')({
+      Text = function() return `n {count.value}` end,
+      Activated = function() clicks += 1 end,
+    }) :: TextButton
+
+    count.value = 2
+    (button.Activated :: any):Fire()
+
+    $assert_eq(button.Text, 'n 2')
+    $assert_eq(clicks, 1)
+  end
+
+  --- if_block shows the first true branch, and builds again only when
+  --- the branch changes.
+  public function if_block_builds_on_a_change_of_branch() -> ()
+    local count = state(0)
+    local builds = 0
+    const frame = create('Frame')({
+      if_block(function() return count.value > 5 end, function()
+        builds += 1
+        return { create('TextLabel')({ Name = 'Many' }), create('TextLabel')({ Name = 'Lots' }) }
+      end, true, function() return create('TextLabel')({ Name = 'Few' }) end),
+    })
+
+    $assert(frame->Few ~= nil)
+    count.value = 6
+    count.value = 7
+
+    $assert_eq(builds, 1)
+    $assert(frame->Few == nil)
+    $assert(frame->Many ~= nil and frame->Lots ~= nil)
+
+    count.value = 1
+    $assert(frame->Many == nil)
+    $assert(frame->Few ~= nil)
+  end
+
+  --- each_block with a key keeps a row for each key, and drops the rows
+  --- that go.
+  public function each_block_keeps_a_row_for_each_key() -> ()
+    local items = state({ 'a', 'b' })
+    const list = create('Frame')({
+      each_block(
+        function() return items.value end,
+        function(item) return item end,
+        function(item, index)
+          return create('TextLabel')({ Name = item, Text = function() return `{index.value}` end })
+        end
+      ),
+    })
+
+    const first = list->a
+    items.value = { 'b', 'a', 'c' }
+
+    $assert_eq(list->a, first)
+    $assert(list->c ~= nil)
+    $assert_eq((list->a :: TextLabel).LayoutOrder, 2)
+    $assert_eq((list->a :: TextLabel).Text, '2')
+
+    items.value = { 'c' }
+    $assert(list->a == nil)
+    $assert(list->b == nil)
+  end
+
+  --- each_block with no key builds a place again when its item changes,
+  --- and shows the fallback while the list is empty.
+  public function each_block_keys_by_place_and_falls_back() -> ()
+    local items = state({ 'a', 'a' } :: { string })
+    const list = create('Frame')({
+      each_block(function() return items.value end, nil, function(item)
+        return create('TextLabel')({ Name = item })
+      end, function() return create('TextLabel')({ Name = 'Empty' }) end),
+    })
+
+    $assert_eq(#list:GetChildren(), 2)
+
+    items.value = { 'a', 'b' }
+    $assert(list->b ~= nil)
+
+    items.value = {}
+    $assert_eq(#list:GetChildren(), 1)
+    $assert(list->Empty ~= nil)
+  end
+
+  --- Two items with one key stop with an error.
+  public function each_block_refuses_a_key_twice() -> ()
+    const items = state({ 'a', 'a' })
+
+    $expect(function()
+      create('Frame')({
+        each_block(function() return items.value end, function(item) return item end, function(item)
+          return create('TextLabel')({ Name = item })
+        end),
+      })
+    end):toThrow('two items')
+  end
+
+  --- mount puts the nodes of a component under the target, and unmount
+  --- stops its effects and destroys the nodes.
+  public function mount_and_unmount_a_component() -> ()
+    const target = new Instance('Folder')
+    local count = state(0)
+    local runs = 0
+
+    local function counter(props: { start: number })
+      count.value = props.start
+      effect(function()
+        const _ = count.value
+        runs += 1
+      end)
+
+      return { create('TextLabel')({ Name = 'A' }), create('TextLabel')({ Name = 'B' }) }
+    end
+
+    const app = mount(counter, { target = target, props = { start = 3 } })
+
+    $assert(target->A ~= nil and target->B ~= nil)
+    unmount(app)
+    count.value = 4
+
+    $assert_eq(#target:GetChildren(), 0)
+    $assert_eq(runs, 1)
+  end
+end

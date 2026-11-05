@@ -15,6 +15,7 @@ a version of its own.
 | [Gloss](gloss) | `alloy/gloss` | Localization from TOML, with keys that the type check holds to the base language. |
 | [Lattice](lattice) | `alloy/lattice` | A typed ECS over jecs: components, queries, systems in phases, and a scheduler. |
 | [Lever](lever) | `alloy/lever` | Input actions from a game enum, on the Input Action System: bindings, axes, contexts, rebinding, and prompts. |
+| [svelte-aly](svelte-aly) | `alloy/svelte-aly` | Svelte's runes, blocks, and motion: state, `{#if}`, `{#each}`, component files, and springs with Apple's parameters. |
 
 Each package folder holds:
 

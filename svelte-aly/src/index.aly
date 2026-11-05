@@ -1,0 +1,44 @@
+--[[
+  svelte-aly: Svelte's runes and blocks for Alloy. This module sends out
+  the public API; each part lives in its own module beside it.
+
+  - reactive: state, derived, effect, untrack, get, is_state, on_destroy
+  - template: create, if_block, each_block, mount, unmount
+  - motion: Spring, Tween, Springs, Easing, lerp
+  - frame: step, manual_frames
+
+  The svelte-aly ingot compiles `$state`, `$derived`, `$effect`,
+  `$props`, `<script>`, `{#if}`, and `{#each}` to these calls.
+]]
+
+export {
+  state,
+  derived,
+  effect,
+  untrack,
+  get,
+  is_state,
+  on_destroy,
+  type State,
+  type Derived,
+} from './reactive'
+export {
+  create,
+  if_block,
+  each_block,
+  mount,
+  unmount,
+  type Block,
+  type App,
+} from './template'
+export {
+  Spring,
+  Tween,
+  Springs,
+  Easing,
+  lerp,
+  type SpringOptions,
+  type TweenOptions,
+  type SetOptions,
+} from './motion'
+export { step, manual_frames } from './frame'

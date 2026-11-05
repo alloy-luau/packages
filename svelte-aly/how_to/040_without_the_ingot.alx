@@ -1,0 +1,52 @@
+--[[
+  svelte-aly works without its ingot. A component file still works,
+  because the compiler reads `<script>`. In place of the runes, call
+  the functions and use `.value`. In place of `{#if}` and `{#each}`,
+  call `if_block` and `each_block` in a hole.
+]]
+
+<script>
+  import { create, derived, each_block, effect, if_block, state } from '@packages/svelte-aly'
+
+  local count = state(0)
+  const doubled = derived(function() return count.value * 2 end)
+  local items = state([ 'Sword', 'Shield' ])
+
+  effect(function()
+    print('count changed:', count.value)
+  end)
+
+  local function add()
+    items.value = items.value:concat([ `Item {#items.value + 1}` ])
+  end
+</script>
+
+<ScreenGui ResetOnSpawn={false}>
+  <Frame Size={new UDim2(0, 320, 0, 300)}>
+    <UIListLayout SortOrder={Enum.SortOrder.LayoutOrder} />
+    <TextButton Size={new UDim2(1, 0, 0, 40)} Activated={function() count.value += 1 end}>
+      Clicked {count} times, doubled {doubled}
+    </TextButton>
+
+    {if_block(function() return count.value > 5 end, function()
+      return <TextLabel Size={new UDim2(1, 0, 0, 30)}>That's a lot of clicks</TextLabel>
+    end)}
+
+    {each_block(function() return items.value end, function(item) return item end, function(item)
+      return <TextLabel Size={new UDim2(1, 0, 0, 30)}>{item}</TextLabel>
+    end)}
+
+    <TextButton Size={new UDim2(1, 0, 0, 40)} LayoutOrder={1000} Activated={add}>Add</TextButton>
+  </Frame>
+</ScreenGui>
+
+<!--
+  The rules:
+
+  - A state or a derived value in a hole binds as it stands: `{count}`.
+  - A hole that reads `.value` in an expression needs a function:
+    `{function() return count.value + 1 end}`.
+  - `if_block` takes pairs: a condition function, then a build function.
+    `true` stands for `{:else}`.
+  - `each_block(items, key, render, fallback)`. A nil key keys by place.
+-->

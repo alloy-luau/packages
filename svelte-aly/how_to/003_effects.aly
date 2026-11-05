@@ -1,0 +1,47 @@
+--[[
+  `$effect` runs code now, and again each time a value that it reads
+  changes. A function that the effect gives back runs before the next
+  run, and when the effect stops.
+
+  Runes work in a `.aly` file too. A module like this one holds state
+  that many components share.
+]]
+
+import { untrack } from '@packages/svelte-aly'
+
+let coins = $state(0)
+let best = $state(0)
+
+$effect(function()
+  if coins > untrack(function() return best end) then
+    best = coins
+  end
+end)
+
+$effect(function()
+  const now = coins
+  print(`coins: {now}`)
+
+  return function() print(`coins left {now}`) end
+end)
+
+--- Adds coins.
+export function earn(amount: number) -> ()
+  coins += amount
+end
+
+--- The most coins at one time.
+export function record() -> number
+  return best
+end
+
+--[[
+  The rules:
+
+  - An effect runs at once, and again at the end of each write that
+    changes what it read.
+  - `untrack(fn)` reads with no link, so the effect above does not run
+    again when `best` changes.
+  - An effect that writes a value that it reads stops with an error
+    after 10000 runs.
+]]

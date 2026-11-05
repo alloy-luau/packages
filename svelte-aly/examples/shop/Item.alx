@@ -1,0 +1,23 @@
+<script>
+  import { Easing, Spring, Springs, Tween } from '@packages/svelte-aly'
+
+  let { name, price, coins, on_buy } = $props()
+  let hovered = $state(false)
+
+  const scale = Spring.of(function() return if hovered then 1.05 else 1 end, Springs.snappy(0.3))
+  const color = Tween.of(function()
+    return if coins >= price then Color3.fromRGB(70, 170, 100) else Color3.fromRGB(120, 120, 120)
+  end, { duration = 0.3, easing = Easing.cubic_out })
+</script>
+
+<TextButton
+  Size={new UDim2(1, 0, 0, 44)}
+  BackgroundColor3={color}
+  MouseEnter={function() hovered = true end}
+  MouseLeave={function() hovered = false end}
+  Activated={function() on_buy(name, price) end}
+>
+  <UIScale Scale={scale} />
+  <UICorner CornerRadius={new UDim(0, 10)} />
+  {name}: {price} coins
+</TextButton>

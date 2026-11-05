@@ -1,0 +1,30 @@
+--[[
+  Runes, with the svelte-aly ingot. `$state` makes a value that changes,
+  and `$derived` makes a value that other values give. Read and write
+  them as plain names; the ingot writes `.value` for each one.
+
+  A markup hole that reads a rune binds to it, so the property follows
+  each change.
+]]
+
+<script>
+  let count = $state(0)
+  let doubled = $derived(count * 2)
+</script>
+
+<ScreenGui ResetOnSpawn={false}>
+  <TextButton Size={new UDim2(0, 320, 0, 48)} Activated={function() count += 1 end}>
+    Clicked {count} times, doubled {doubled}
+  </TextButton>
+</ScreenGui>
+
+<!--
+  The rules:
+
+  - `let name = $state(value)` and `let name = $derived(expr)`. The ingot
+    writes each one as `local` or `const`.
+  - A `$derived` value runs again only after a value that it reads
+    changes. Code cannot write it.
+  - Write a state with `=` or `+=`. A change in place, such as
+    `items:push(x)`, runs nothing: assign the state again after it.
+-->

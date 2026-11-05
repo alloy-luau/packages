@@ -1,0 +1,34 @@
+<script>
+  let count = $state(0)
+  let doubled = $derived(count * 2)
+  let items = $state([ 'sword', 'shield' ])
+
+  $effect(function()
+    print('count changed:', count)
+  end)
+
+  function add()
+    items = items:concat([ `item {#items + 1}` ])
+  end
+</script>
+
+<ScreenGui ResetOnSpawn={false}>
+  <Frame Size={UDim2.fromScale(1, 1)} BackgroundTransparency={1}>
+    <UIListLayout SortOrder={Enum.SortOrder.LayoutOrder} Padding={new UDim(0, 8)} />
+    <TextButton Size={new UDim2(0, 260, 0, 40)} Activated={function() count += 1 end}>
+      Clicked {count} times (doubled: {doubled})
+    </TextButton>
+
+    {#if count > 5}
+      <TextLabel Size={new UDim2(0, 260, 0, 30)}>That's a lot of clicks</TextLabel>
+    {/if}
+
+    {#each items as item (item)}
+      <TextLabel Size={new UDim2(0, 260, 0, 30)}>{item}</TextLabel>
+    {/each}
+
+    <TextButton Size={new UDim2(0, 260, 0, 40)} LayoutOrder={1000} Activated={add}>
+      Add item
+    </TextButton>
+  </Frame>
+</ScreenGui>

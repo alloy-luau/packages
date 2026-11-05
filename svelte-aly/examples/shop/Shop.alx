@@ -1,0 +1,51 @@
+<script>
+  import { Spring, Springs } from '@packages/svelte-aly'
+  import Item from './Item'
+
+  type Offer = { name: string, price: number }
+
+  const offers: Offer[] = [
+    { name = 'Sword', price = 50 },
+    { name = 'Shield', price = 80 },
+    { name = 'Potion', price = 20 },
+  ]
+
+  let coins = $state(100)
+  let open = $state(false)
+  let bought: string[] = $state([])
+
+  const height = Spring.of(function() return if open then 260 else 0 end, Springs.bouncy(0.5))
+
+  function buy(name: string, price: number)
+    if coins < price then
+      return
+    end
+
+    coins -= price
+    bought = bought:concat([ name ])
+  end
+</script>
+
+<ScreenGui ResetOnSpawn={false}>
+  <TextButton Size={new UDim2(0, 280, 0, 44)} Activated={function() open = not open end}>
+    {if open then 'Close shop' else 'Open shop'} ({coins} coins)
+  </TextButton>
+
+  <Frame
+    Position={new UDim2(0, 0, 0, 52)}
+    Size={function() return new UDim2(0, 280, 0, height.current) end}
+    ClipsDescendants={true}
+  >
+    <UIListLayout SortOrder={Enum.SortOrder.LayoutOrder} Padding={new UDim(0, 6)} />
+
+    {#each offers as offer (offer.name)}
+      <Item name={offer.name} price={offer.price} coins={coins} on_buy={buy} />
+    {/each}
+
+    {#each bought as name, i}
+      <TextLabel Size={new UDim2(1, 0, 0, 24)} LayoutOrder={100 + i}>Bought {name}</TextLabel>
+    {:else}
+      <TextLabel Size={new UDim2(1, 0, 0, 24)} LayoutOrder={100}>Nothing bought yet</TextLabel>
+    {/each}
+  </Frame>
+</ScreenGui>

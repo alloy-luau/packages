@@ -1,0 +1,29 @@
+--[[
+  A component file is a `.alx` file that starts with `<script>`. The
+  script is the body of the component, and the markup after the script
+  is what the component shows. The compiler does this part, so it works
+  with the svelte-aly ingot or without it.
+
+  The component is a function of `props`. Import it from another file
+  and use it as a tag, or show it with `mount`.
+]]
+
+<script>
+  import { create } from '@packages/svelte-aly'
+
+  const greeting = 'Hello from svelte-aly'
+</script>
+
+<ScreenGui ResetOnSpawn={false}>
+  <TextLabel Size={new UDim2(0, 320, 0, 48)} Text={greeting} />
+</ScreenGui>
+
+<!--
+  The rules:
+
+  - The imports stay at the top of the script. The code after them runs
+    once for each copy of the component.
+  - Each tag after the script is one node that the component gives. A
+    file can give more than one.
+  - With the ingot, the script needs no import of `create`.
+-->

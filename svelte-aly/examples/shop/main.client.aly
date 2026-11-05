@@ -1,0 +1,11 @@
+--[[
+  A shop that springs open. Each item is a component with props: its
+  name and price, the coins, and a callback. An item springs on hover,
+  and its color tweens with what the player can buy.
+]]
+
+import Players from '@game/Players'
+import { mount } from '@packages/svelte-aly'
+import Shop from './Shop'
+
+mount(Shop, { target = Players.LocalPlayer->'PlayerGui'! })

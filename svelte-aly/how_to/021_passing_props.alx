@@ -1,0 +1,27 @@
+--[[
+  A parent passes props as attributes. An attribute that reads a rune
+  passes a live value: the child sees each change.
+]]
+
+<script>
+  import Badge from './020_props'
+
+  let coins = $state(0)
+</script>
+
+<ScreenGui ResetOnSpawn={false}>
+  <Frame Size={new UDim2(0, 320, 0, 80)}>
+    <UIListLayout SortOrder={Enum.SortOrder.LayoutOrder} />
+    <Badge label="Coins" count={coins} />
+    <TextButton Size={new UDim2(1, 0, 0, 40)} Activated={function() coins += 10 end}>
+      Earn
+    </TextButton>
+  </Frame>
+</ScreenGui>
+
+<!--
+  The rules:
+
+  - A tag whose name the file imports is a component.
+  - `count={coins}` passes a derived value; `label="Coins"` passes text.
+-->

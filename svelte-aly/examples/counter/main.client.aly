@@ -1,0 +1,10 @@
+--[[
+  The counter from Svelte's tutorial: a state, a derived value, an
+  effect, an `{#if}`, and an `{#each}`.
+]]
+
+import Players from '@game/Players'
+import { mount } from '@packages/svelte-aly'
+import Counter from './Counter'
+
+mount(Counter, { target = Players.LocalPlayer->'PlayerGui'! })

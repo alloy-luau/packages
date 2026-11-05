@@ -1,0 +1,35 @@
+--[[
+  A tween moves a value to its target along a curve, in a set time.
+  `Tween.of(fn)` follows what `fn` reads. The curves are in `Easing`:
+  Svelte's names, such as `Easing.cubic_out`, Roblox's styles through
+  `Easing.style('Quad', 'Out')`, and `Easing.cubic_bezier`.
+]]
+
+<script>
+  import { Easing, Tween } from '@packages/svelte-aly'
+
+  let danger = $state(false)
+
+  const color = Tween.of(function()
+    return if danger then Color3.fromRGB(220, 60, 60) else Color3.fromRGB(60, 160, 90)
+  end, { duration = 0.4, easing = Easing.cubic_out })
+</script>
+
+<ScreenGui ResetOnSpawn={false}>
+  <TextButton
+    Size={new UDim2(0, 320, 0, 48)}
+    BackgroundColor3={color}
+    Activated={function() danger = not danger end}
+  >
+    Toggle danger
+  </TextButton>
+</ScreenGui>
+
+<!--
+  The rules:
+
+  - `duration` is 0.25 seconds and `easing` is `Easing.ease_in_out` by
+    default. `delay` waits before the move.
+  - `tween:set(value, options)` moves once with other options, and
+    `{ instant = true }` jumps.
+-->

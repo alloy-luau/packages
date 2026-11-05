@@ -1,0 +1,21 @@
+--[[
+  `$props()` gives the props that the parent passes. Destructure the
+  names you need. Each name reads the value now, so a parent can pass a
+  state and the child follows it.
+
+  This step is a child component. The next step uses it.
+]]
+
+<script>
+  let { label, count } = $props()
+</script>
+
+<TextLabel Size={new UDim2(1, 0, 0, 30)}>{label}: {count}</TextLabel>
+
+<!--
+  The rules:
+
+  - `$props()` stands in the script of a component file only.
+  - A prop that the parent binds to a state reads as its value now.
+  - A function prop stays a function, so a callback works as written.
+-->

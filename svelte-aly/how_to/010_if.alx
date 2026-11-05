@@ -1,0 +1,38 @@
+--[[
+  `{#if}` shows nodes while a condition holds, with the ingot.
+  `{:else if}` and `{:else}` give the other branches. The block builds
+  its nodes again only when the branch changes.
+]]
+
+<script>
+  let health = $state(100)
+</script>
+
+<ScreenGui ResetOnSpawn={false}>
+  <Frame Size={new UDim2(0, 320, 0, 120)}>
+    <UIListLayout SortOrder={Enum.SortOrder.LayoutOrder} />
+    <TextButton Size={new UDim2(1, 0, 0, 40)} Activated={function() health -= 30 end}>
+      Take a hit
+    </TextButton>
+
+    {#if health > 60}
+      <TextLabel Size={new UDim2(1, 0, 0, 30)}>Healthy</TextLabel>
+    {:else if health > 0}
+      <TextLabel Size={new UDim2(1, 0, 0, 30)}>Hurt: {health}</TextLabel>
+    {:else}
+      <TextLabel Size={new UDim2(1, 0, 0, 30)}>Down</TextLabel>
+      <TextButton Size={new UDim2(1, 0, 0, 30)} Activated={function() health = 100 end}>
+        Respawn
+      </TextButton>
+    {/if}
+  </Frame>
+</ScreenGui>
+
+<!--
+  The rules:
+
+  - A branch holds any number of nodes.
+  - Each branch has an owner. When the branch goes, its effects stop and
+    its nodes go.
+  - The nodes of a branch go under the element that holds the block.
+-->

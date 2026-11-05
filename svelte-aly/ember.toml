@@ -1,0 +1,13 @@
+[package]
+name = "alloy/svelte-aly"
+version = "0.1.0"
+description = "Svelte's runes and blocks for Alloy: $state, $derived, $effect, {#if}, and {#each}"
+authors = ["savruun"]
+repository = "alloy-luau/packages"
+license = "MIT"
+
+[target]
+environment = "roblox"
+language = "alloy"
+main = "build/index.luau"
+includes = ["src", "build", ".config.aly", "README.md", "CHANGELOG.md", "LICENSE"]

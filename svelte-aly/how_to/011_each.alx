@@ -1,0 +1,41 @@
+--[[
+  `{#each}` builds the nodes of each item of a list, with the ingot.
+  `(key)` keeps the nodes of an item while its key stays in the list.
+  `, i` names the place of the item, which follows it when the list
+  moves. `{:else}` shows while the list is empty.
+]]
+
+<script>
+  type Item = { id: number, name: string }
+
+  let items: Item[] = $state([ { id = 1, name = 'Sword' }, { id = 2, name = 'Shield' } ])
+  let next_id = $state(3)
+
+  function add()
+    items = items:concat([ { id = next_id, name = `Potion {next_id}` } ])
+    next_id += 1
+  end
+</script>
+
+<ScreenGui ResetOnSpawn={false}>
+  <Frame Size={new UDim2(0, 320, 0, 300)}>
+    <UIListLayout SortOrder={Enum.SortOrder.LayoutOrder} />
+
+    {#each items as item, i (item.id)}
+      <TextLabel Size={new UDim2(1, 0, 0, 30)}>{i}. {item.name}</TextLabel>
+    {:else}
+      <TextLabel Size={new UDim2(1, 0, 0, 30)}>The bag is empty</TextLabel>
+    {/each}
+
+    <TextButton Size={new UDim2(1, 0, 0, 40)} LayoutOrder={1000} Activated={add}>Add</TextButton>
+  </Frame>
+</ScreenGui>
+
+<!--
+  The rules:
+
+  - The item is one name. Read its fields inside the block.
+  - With a key, two items with one key stop with an error. With no key,
+    the nodes belong to a place in the list.
+  - Each GuiObject of an item gets its place as `LayoutOrder`.
+-->
