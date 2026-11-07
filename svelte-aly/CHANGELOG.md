@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1
+
+- The Ember site colours the block tags of the ingot in the code blocks of
+  this README: `{#if}`, `{:else}`, `{:else if}`, `{/if}`, `{#each}`, and
+  `{/each}`. The colours are the colours of the ingot's semantic tokens in
+  the editor. `ember.toml` gives them as `[highlight]` rules, so the site
+  runs no code of the package.
+- The code does not change.
+
 ## 0.1.0
 
 The first release.

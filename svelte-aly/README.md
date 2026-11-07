@@ -318,6 +318,11 @@ the repository of the official Alloy packages, in the `svelte-aly` folder. Run
 the commands above from `svelte-aly`. `embr publish` from `svelte-aly`
 publishes it alone.
 
+`ember.toml` gives the colours of the block tags as `[highlight]` rules,
+for the code blocks of this README on the Ember site. Publish with embr
+1.0.0-rc.4 or later. An older embr drops the rules, and the site then
+shows the block tags with no colour of their own.
+
 The `how_to` and `examples` files import `@packages/svelte-aly`, and most of
 them use the ingot. To check them, copy them into a game that installs the
 package and the ingot, then run `alloy flux` there.

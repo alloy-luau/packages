@@ -1,6 +1,6 @@
 [package]
 name = "alloy/svelte-aly"
-version = "0.1.0"
+version = "0.1.1"
 description = "Svelte's runes and blocks for Alloy: $state, $derived, $effect, {#if}, and {#each}"
 authors = ["savruun"]
 repository = "alloy-luau/packages"
@@ -11,3 +11,13 @@ environment = "roblox"
 language = "alloy"
 main = "build/index.luau"
 includes = ["src", "build", ".config.aly", "README.md", "CHANGELOG.md", "LICENSE"]
+
+# The colours of the ingot's block tags, for the code blocks on the Ember
+# site. The ingot sends a keyword token over the sigil and the word of
+# each tag. The `{` stays plain, and the base grammar colours `if` in
+# `{:else if}` and the `as` of `{#each}`.
+[[highlight.rules]]
+languages = ["alx"]
+type = "keyword"
+before = '\{'
+words = ["#if", ":else", "/if", "#each", "/each"]
