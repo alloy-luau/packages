@@ -8,8 +8,8 @@
 <script>
   type Item = { id: number, name: string }
 
-  let items: Item[] = $state([ { id = 1, name = 'Sword' }, { id = 2, name = 'Shield' } ])
-  let next_id = $state(3)
+  local items: Item[] = $state([ { id = 1, name = 'Sword' }, { id = 2, name = 'Shield' } ])
+  local next_id = $state(3)
 
   function add()
     items = items:concat([ { id = next_id, name = `Potion {next_id}` } ])

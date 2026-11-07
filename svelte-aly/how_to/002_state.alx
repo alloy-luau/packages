@@ -8,8 +8,8 @@
 ]]
 
 <script>
-  let count = $state(0)
-  let doubled = $derived(count * 2)
+  local count = $state(0)
+  const doubled = $derived(count * 2)
 </script>
 
 <ScreenGui ResetOnSpawn={false}>
@@ -21,7 +21,7 @@
 <!--
   The rules:
 
-  - `let name = $state(value)` and `let name = $derived(expr)`. The ingot
+  - `local name = $state(value)` and `const name = $derived(expr)`. The ingot
     writes each one as `local` or `const`.
   - A `$derived` value runs again only after a value that it reads
     changes. Code cannot write it.

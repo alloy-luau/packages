@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2
+
+- The README, `how_to` and `examples` write `local` and `const`, not
+  `let`. Alloy has no `let`. The ingot still takes `let` in code copied
+  from Svelte, and writes it as `local` or `const`.
+
+The code is the same as 0.1.1.
+
 ## 0.1.1
 
 - The Ember site colours the block tags of the ingot in the code blocks of

@@ -8,7 +8,7 @@
 <script>
   import { Easing, Tween } from '@packages/svelte-aly'
 
-  let danger = $state(false)
+  local danger = $state(false)
 
   const color = Tween.of(function()
     return if danger then Color3.fromRGB(220, 60, 60) else Color3.fromRGB(60, 160, 90)

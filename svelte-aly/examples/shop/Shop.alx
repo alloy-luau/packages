@@ -10,9 +10,9 @@
     { name = 'Potion', price = 20 },
   ]
 
-  let coins = $state(100)
-  let open = $state(false)
-  let bought: string[] = $state([])
+  local coins = $state(100)
+  local open = $state(false)
+  local bought: string[] = $state([])
 
   const height = Spring.of(function() return if open then 260 else 0 end, Springs.bouncy(0.5))
 

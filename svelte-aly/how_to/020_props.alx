@@ -7,7 +7,7 @@
 ]]
 
 <script>
-  let { label, count } = $props()
+  const { label, count } = $props()
 </script>
 
 <TextLabel Size={new UDim2(1, 0, 0, 30)}>{label}: {count}</TextLabel>

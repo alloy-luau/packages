@@ -11,7 +11,7 @@
 <script>
   import { Spring, Springs } from '@packages/svelte-aly'
 
-  let open = $state(false)
+  local open = $state(false)
 
   const size = Spring.of(function()
     return if open then new UDim2(0, 320, 0, 200) else new UDim2(0, 160, 0, 48)

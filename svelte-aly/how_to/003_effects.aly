@@ -9,8 +9,8 @@
 
 import { untrack } from '@packages/svelte-aly'
 
-let coins = $state(0)
-let best = $state(0)
+local coins = $state(0)
+local best = $state(0)
 
 $effect(function()
   if coins > untrack(function() return best end) then

@@ -65,9 +65,9 @@ With the ingot, a component reads as it does in Svelte:
 
 ```alx
 <script>
-  let count = $state(0)
-  let doubled = $derived(count * 2)
-  let items = $state([ 'sword', 'shield' ])
+  local count = $state(0)
+  const doubled = $derived(count * 2)
+  local items = $state([ 'sword', 'shield' ])
 
   $effect(function()
     print('count changed:', count)
@@ -129,14 +129,16 @@ The runes need the ingot. Each one becomes a call of the package.
 
 | Rune | Becomes |
 | --- | --- |
-| `let n = $state(value)` | `local n = state(value)`; each read and write of `n` is `n.value` |
-| `let d = $derived(expr)` | `const d = derived(function() return expr end)` |
+| `local n = $state(value)` | `local n = state(value)`; each read and write of `n` is `n.value` |
+| `const d = $derived(expr)` | `const d = derived(function() return expr end)` |
 | `$derived.by(fn)` | `derived(fn)` |
 | `$effect(fn)` | `effect(fn)`; a function that `fn` gives back is its cleanup |
-| `let { a, b } = $props()` | the props of the component; each read is `get(a)` |
+| `const { a, b } = $props()` | the props of the component; each read is `get(a)` |
 
-- A state that code writes is `local`, any other is `const`. An annotation
-  names the state type: `let items: Item[] = $state([])`.
+- A state that code writes is `local`, any other is `const`. Alloy has no
+  `let`: the ingot also takes it, for code copied from Svelte, and writes
+  it as `local` or `const`. An annotation names the state type:
+  `local items: Item[] = $state([])`.
 - A markup hole that reads a rune becomes a function, so the factory binds
   it. On a component tag it becomes a derived value, so the child follows it.
 - A change in place, such as `items:push(x)` or `table.insert(items, x)`, runs
@@ -181,7 +183,7 @@ reads. A template binds a spring as it binds a state:
 <script>
   import { Spring, Springs } from '@packages/svelte-aly'
 
-  let open = $state(false)
+  local open = $state(false)
 
   const size = Spring.of(function()
     return if open then new UDim2(0, 320, 0, 200) else new UDim2(0, 160, 0, 48)

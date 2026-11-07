@@ -6,7 +6,7 @@
 <script>
   import Badge from './020_props'
 
-  let coins = $state(0)
+  local coins = $state(0)
 </script>
 
 <ScreenGui ResetOnSpawn={false}>

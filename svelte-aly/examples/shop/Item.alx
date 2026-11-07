@@ -1,8 +1,8 @@
 <script>
   import { Easing, Spring, Springs, Tween } from '@packages/svelte-aly'
 
-  let { name, price, coins, on_buy } = $props()
-  let hovered = $state(false)
+  const { name, price, coins, on_buy } = $props()
+  local hovered = $state(false)
 
   const scale = Spring.of(function() return if hovered then 1.05 else 1 end, Springs.snappy(0.3))
   const color = Tween.of(function()

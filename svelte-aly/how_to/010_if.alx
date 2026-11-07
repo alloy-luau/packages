@@ -5,7 +5,7 @@
 ]]
 
 <script>
-  let health = $state(100)
+  local health = $state(100)
 </script>
 
 <ScreenGui ResetOnSpawn={false}>
