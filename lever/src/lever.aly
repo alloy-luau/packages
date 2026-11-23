@@ -687,6 +687,7 @@ impl Lever<A, C>
   --- named Lever under `parent`, ReplicatedStorage when nil.
   ---
   --- - `actions` and `contexts` are the game's two unit enums themselves.
+  ---   The type check refuses a value that is no enum.
   --- - `action` gives the spec of each action. Write it as a match with
   ---   no default arm, so a new action with no spec fails the build.
   --- - `context` gives the spec of each context.
@@ -703,8 +704,8 @@ impl Lever<A, C>
   --- @error string -- When a spec names no context of this Lever.
   --- @error string -- When a default binding holds no key.
   function new(
-    actions: unknown,
-    contexts: unknown,
+    actions: enum,
+    contexts: enum,
     action: (action: A) -> ActionSpec<C>,
     context: (context: C) -> ContextSpec,
     parent: Instance?
