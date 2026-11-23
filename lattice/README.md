@@ -7,22 +7,28 @@ jecs keeps the entities and their components, and Lattice gives it the shape
 of Alloy. A component is a typed id that holds a struct or a plain value. A
 query names its components and yields their values with their types. A system
 is a named function in a phase. Lattice has a small scheduler of its own that
-runs each phase on its RunService event, so a game needs no Planck.
+runs each phase on its RunService event, so a game needs no Planck. A game adds
+phases of its own from an enum that it declares.
 
-A Lattice world is a jecs world. Each jecs method works on it, and replecs and
-jabby take it as it is.
+Lattice sends the server's world to each client. A game marks a table of
+components as shared, and the scheduler does the rest, over
+[replecs](https://github.com/PepeElToro41/replecs).
+
+A Lattice world is a jecs world. Each jecs method works on it, and jabby takes
+it as it is.
 
 Lattice needs Alloy 0.1.5 or later and embr 0.9.1 or later. It depends on jecs
-0.11, which Ember installs with it.
+0.11 and replecs 0.4, which Ember installs with it.
 
 ## Learn
 
 - [how_to](https://github.com/alloy-luau/packages/tree/main/lattice/how_to) is
   a tour of Lattice in numbered steps, from `001_hello_world.aly` to
-  `030_testing.aly`. Read them in order.
+  `040_replication.aly`. Read them in order.
 - [examples](https://github.com/alloy-luau/packages/tree/main/lattice/examples)
   holds small games: balls that fall and bounce, dummies that burn and heal,
-  and spawners whose coins have a lifetime.
+  spawners whose coins have a lifetime, and orbs that the server moves and
+  each client shows.
 
 ## Install
 
@@ -30,7 +36,7 @@ Add Lattice to the game's `ember.toml`, then run `embr install`:
 
 ```toml
 [dependencies]
-lattice = { name = "alloy/lattice", version = "^0.1.0" }
+lattice = { name = "alloy/lattice", version = "^0.2.0" }
 ```
 
 Mount the packages folder in `alloy.toml`:
@@ -40,9 +46,9 @@ Mount the packages folder in `alloy.toml`:
 packages = ["packages/roblox", "@game/ReplicatedStorage/Packages"]
 ```
 
-A game that also uses jecs itself, for jabby or replecs, lists it with the
-same version, `^0.11.0`. Ember then gives Lattice and the game one copy of
-jecs, and the ids of one are the ids of the other.
+A game that also uses jecs itself, for jabby, lists it with the same version,
+`^0.11.0`. Ember then gives Lattice and the game one copy of jecs, and the ids
+of one are the ids of the other.
 
 ## Quick start
 
@@ -102,7 +108,8 @@ holds no value. A wrong value is a type error:
 w:set(rock, ct.Position, 'up') -- error: Position holds a Vector3
 ```
 
-The name is the jecs `Name` of the id. jabby shows it, and replecs needs it.
+The name is the jecs `Name` of the id. jabby shows it, and replication matches
+the ids of the server and the client by it.
 
 Make each component and each tag before the first `world()`. jecs gives each
 world the ids that exist when it starts, so an id made later is not in that
@@ -170,7 +177,7 @@ end
 A system is a function `(world: World, dt: number) -> ()`. `system(fn, phase)`
 names its phase and gives the function back, so a system module ends with
 `export default system(movement, Phase.Simulation)`. A system that `system`
-does not name runs in Simulation.
+does not name runs in Simulation. `Phase` holds the built-in phases:
 
 | Phase | When it runs |
 | --- | --- |
@@ -220,6 +227,50 @@ new Scheduler(world()):add(table.unpack(systems)):start()
 - `step(dt)` runs one frame by hand: Startup on the first call, then
   PreSimulation, Simulation, PostSimulation, and Render. `run(phase, dt)` runs
   one phase. Both need no RunService, and an error goes to the caller.
+
+## Phases of the game
+
+A game adds its own phases to a scheduler. It declares them in a unit enum, and
+tells the scheduler where each one runs:
+
+```aly
+import RunService from '@game/RunService'
+import { Phase, Scheduler, system, world, type World } from '@packages/lattice'
+
+enum GamePhase
+  Input
+  Damage
+  Cleanup
+  Tick
+end
+
+--- Reads what the players did.
+function input(_world: World, _dt: number) -> ()
+  print('input')
+end
+
+const scheduler = new Scheduler(world())
+  :before(Phase.PreSimulation, GamePhase.Input)
+  :after(Phase.Simulation, GamePhase.Damage, GamePhase.Cleanup)
+  :on(RunService.Heartbeat, GamePhase.Tick)
+
+scheduler:add(system(input, GamePhase.Input)):start()
+```
+
+- `before(anchor, ...)` and `after(anchor, ...)` put phases beside a phase that
+  the scheduler has, in the order of the call. They run on the event of the
+  anchor. An anchor can be a phase of the game.
+- `on(event, ...)` gives phases an event of their own. A system there gets the
+  first argument of the event as `dt` when that is a number, and 0 when it is
+  not.
+- A phase beside `Startup` runs one time, when the scheduler starts. A phase
+  beside `Render` runs on a client only.
+- A phase is the name of its variant. Each phase of one scheduler has its own
+  name, so a game enum does not use a name of `Phase`.
+- Add each phase before `add` gets a system of that phase, and before `start`.
+  A system whose phase the scheduler does not have stops `add` with an error.
+- `step(dt)` runs the phases of the game in their places. The `on` phases come
+  last.
 
 ## Observers
 
@@ -290,20 +341,82 @@ module, not in a test: the first `world()` closes the list of ids.
 
 ## Replication
 
-Lattice sends nothing over the network.
-[replecs](https://github.com/pepeeltoro41/replecs) (`pepeeltoro41/replecs` on
-Wally) sends jecs entities from the server to each client, and it takes a
-Lattice world as it is:
+Lattice sends the server's world to each client. The game marks a table of
+components with `shared`, in a module that both sides import:
 
-- Require replecs before the components module. It makes ids of its own, and
-  those must come before the first world too.
-- Mark each component to send with replecs's trait:
-  `component<<Vector3>>('Position', replecs.shared)`. The name that Lattice
-  gives the component is the jecs `Name` that replecs needs.
-- In a Startup system, make the server with `replecs.create_server(world)` and
-  call `init()`. In a PostSimulation system, send `collect_updates()` over the
-  `remote` keyword or yetanothernet. The client does the same with
-  `create_client`.
+```aly
+import { component, shared, tag } from '@packages/lattice'
+
+export default shared({
+  Position = component<<Vector3>>('Position'),
+  Health = component<<number>>('Health'),
+  Burning = tag('Burning'),
+})
+```
+
+That is all the game writes. An entity that holds a shared id replicates, with
+that id. The main script of each side starts its scheduler as before:
+
+```aly
+import { Scheduler, world } from '@packages/lattice'
+import burn from './systems/burn'
+
+new Scheduler(world()):add(burn):start()
+```
+
+`start` sees the shared ids and replicates the world. The server makes two
+remotes in ReplicatedStorage, sends the full world to each client that joins,
+and sends the changes 20 times a second. A client asks for the world and
+applies what arrives. The game writes no system and no remote for this.
+
+- Call `shared` before the first `world()`. Each shared id needs a name: the
+  two sides match the ids by name.
+- An entity replicates from its first shared id. A `set`, a `remove`, and a
+  `delete` on the server reach each client.
+- The entity of a client has its own number. A pair of a shared relationship
+  arrives with the client's entity as its target, when the target replicates
+  too.
+- A client changes its own world only. Nothing goes back to the server.
+- One world replicates on each side.
+
+`shared(ids, share)` takes the channel as its second argument:
+
+| Share | How the ids replicate |
+| --- | --- |
+| `Share.Reliable` | Each change arrives, in order. The default. |
+| `Share.Unreliable` | The server sends the value at each interval, and a value can get lost. A tag and a pair replicate as Reliable. |
+| `Share.Manual` | Lattice replicates nothing by itself. The game gives each entity its replecs ids. |
+
+```aly
+import { Share, component, shared } from '@packages/lattice'
+
+export default shared({ Aim = component<<Vector3>>('Aim') }, Share.Unreliable)
+```
+
+`replicate(world, interval)` replicates a world by hand: for another interval,
+call it before `start`, and for a world with no scheduler, call it on each
+side. A second call for the same world does nothing.
+
+`replecs` is the replecs module, for the controls that Lattice does not wrap.
+An entity that the game gives `replecs.networked` keeps that filter, so its
+shared ids go to those players only:
+
+```aly
+import { replecs, type World } from '@packages/lattice'
+import ct from './components'
+
+--- Makes a chest that only its owner gets.
+export function chest(world: World, owner: Player) -> ()
+  const entity = world:entity()
+  world:set(entity, replecs.networked, owner)
+  world:set(entity, ct.Health, 100)
+end
+```
+
+Lattice uses replecs 0.4.0-rc.5, the first line of replecs that takes jecs
+0.11.
+
+## jabby
 
 To see the world in jabby, register it with the world applet:
 `jabby.register({ name = 'World', applet = jabby.applets.world, configuration = { world = w } })`.
@@ -324,8 +437,14 @@ To see the world in jabby, register it with the world applet:
 | `Phase` | `Startup`, `PreSimulation`, `Simulation`, `PostSimulation`, `Render`. |
 | `new Scheduler(world)` | A scheduler for one world. |
 | `scheduler:add(...)` | Adds systems, each to its phase. |
-| `scheduler:start()`, `scheduler:stop()` | Runs the phases on RunService, or stops them. |
+| `scheduler:before(anchor, ...)`, `scheduler:after(anchor, ...)` | Adds phases of the game beside a phase, on its event. |
+| `scheduler:on(event, ...)` | Adds phases of the game that run on an event of their own. |
+| `scheduler:start()`, `scheduler:stop()` | Runs the phases on their events, or stops them. `start` replicates the world when the game has shared ids. |
 | `scheduler:step(dt?)`, `scheduler:run(phase, dt?)` | Runs a frame, or one phase, by hand. |
+| `shared(ids, share?)` | Marks a table of components and tags as shared, and gives it back. |
+| `Share` | `Reliable`, `Unreliable`, `Manual`. |
+| `replicate(world, interval?)` | Replicates a world by hand. The default interval is 1/20 of a second. |
+| `replecs` | The replecs module. |
 | `ChildOf`, `Wildcard`, `Name` | jecs's built-in relationship, wildcard, and name component. |
 | `Exclusive`, `OnDelete`, `OnDeleteTarget`, `Delete`, `Remove` | jecs's traits. |
 | `World`, `Entity<T>`, `Query<T...>`, `System` | The types. |
@@ -333,7 +452,7 @@ To see the world in jabby, register it with the world applet:
 ## Development
 
 ```sh
-embr install         # jecs, into packages/
+embr install         # jecs and replecs, into packages/
 alloy check          # the compiler and the lints
 alloy flux           # the same, plus luau-lsp
 alloy test --run     # the tests, on lest
