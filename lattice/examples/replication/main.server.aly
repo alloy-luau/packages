@@ -1,0 +1,16 @@
+--[[
+  Replication: the server moves orbs on a circle, and each client shows
+  them. The server makes no part, and the client moves no orb.
+
+    Startup     spawn  makes the orbs
+    Simulation  orbit  moves each orb on its circle
+
+  The components module marks its table with `shared`, so `start`
+  replicates the world. This script writes nothing for the network.
+]]
+
+import { Scheduler, world } from '@packages/lattice'
+import orbit from './systems/orbit'
+import spawn from './systems/spawn'
+
+new Scheduler(world()):add(spawn, orbit):start()

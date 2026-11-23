@@ -1,0 +1,23 @@
+--[[
+  The components of the replication example. The server and the client
+  both import this module, so both sides know the same shared ids.
+]]
+
+import { component, shared } from '@packages/lattice'
+
+--- What stays on its own side: the game does not mark this table.
+export const here = {
+  --- The part that shows an orb, on a client.
+  Body = component<<BasePart>>('Body'),
+}
+
+--- What the server sends to each client. The systems import this table
+--- as `ct`.
+export default shared({
+  --- Where the orb is, in studs.
+  Position = component<<Vector3>>('Position'),
+  --- The colour of the orb.
+  Tint = component<<Color3>>('Tint'),
+  --- The angle of the orb on its circle, in radians.
+  Angle = component<<number>>('Angle'),
+})

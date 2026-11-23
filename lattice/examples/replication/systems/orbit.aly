@@ -1,0 +1,32 @@
+--[[
+  Moves each orb on a circle, on the server. Each `set` of a shared id
+  goes to the clients at the next send.
+]]
+
+import { Phase, query, system, type World } from '@packages/lattice'
+import ct from '../components'
+
+-- The radius of the circle, in studs, and its height.
+const RADIUS = 12
+const HEIGHT = 6
+
+-- How fast an orb turns, in radians a second.
+const SPEED = 1
+
+const orbs = query(ct.Angle)
+
+--- Turns each orb, and puts it at its new place on the circle.
+function orbit(world: World, dt: number) -> ()
+  for entity, angle in orbs:of(world) do
+    const turned = angle + SPEED * dt
+
+    world:set(entity, ct.Angle, turned)
+    world:set(
+      entity,
+      ct.Position,
+      new Vector3(math.cos(turned) * RADIUS, HEIGHT, math.sin(turned) * RADIUS)
+    )
+  end
+end
+
+export default system(orbit, Phase.Simulation)
