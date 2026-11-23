@@ -12,7 +12,7 @@
   it needs. This tour uses all four, so its game turns them all on in
   `ember.toml`:
 
-    forge = { name = "alloy/forge", version = "^0.2.0", features = ["lifecycles", "dependencies", "traits"] }
+    forge = { name = "alloy/forge", version = "^0.3.0", features = ["lifecycles", "dependencies", "traits"] }
 
   The `traits` feature turns on `bin`.
 ]]

@@ -6,6 +6,8 @@
   - `Forge.traits<<T>>(trait)`: every object that a trait has bound.
 
   The `<<T>>` gives the type of the object, so the result needs no cast.
+  `trait` is the trait struct. The type check refuses a value that is no
+  struct.
 
   Feature: `traits`.
 ]]
