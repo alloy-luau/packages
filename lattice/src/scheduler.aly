@@ -47,6 +47,7 @@
 --- Import these from `@packages/lattice`.
 
 import RunService from '@game/RunService'
+import { has_shared, replicate } from './replication'
 import type { World } from './world'
 
 --- @type Phase 'Startup' | 'PreSimulation' | 'Simulation' | 'PostSimulation' | 'Render'
@@ -238,12 +239,17 @@ impl Scheduler
 
   --- Runs the Startup phases, then each phase on its event. An error in
   --- a system shows as a warning with the system's name, and the next
-  --- system runs.
+  --- system runs. When the game has shared ids, the world replicates
+  --- from here on, as [replication.replicate] says.
   --- @method start
   --- @within Scheduler
   --- @error string -- When the scheduler runs already
   function start(self) -> ()
     assert(#self.connections == 0, 'lattice: this scheduler runs already')
+
+    if has_shared() then
+      replicate(self.world)
+    end
 
     self:startup()
 
