@@ -221,7 +221,7 @@ local function row_for<T>(list: List<T>, id: unknown, item: T, i: number) -> Row
   end
 
   const index = state(i)
-  const owner, made = build(list.parent, list.scope, function() return list.render(item, index) end)
+  const owner, made = build(list.parent, list.scope, || list.render(item, index))
   const fresh: Row = { owner = owner, made = made, index = index, item = item }
   list.rows[id] = fresh
 
@@ -267,11 +267,11 @@ export function each_block<T>(
 ) -> Block
   -- An optional function does not narrow inside a closure, so the key
   -- function is resolved here.
-  local key_of = function(_item: T, i: number) -> unknown return i end
+  local key_of = |_item: T, i: number| i
 
   if key ~= nil then
     const by_key = key
-    key_of = function(item: T, _i: number) -> unknown return by_key(item) end
+    key_of = |item: T, _i: number| by_key(item)
   end
 
   -- An Alloy array and a plain table both list items, so `T` infers
@@ -373,7 +373,7 @@ namespace TemplateTests
     local count = state(1)
     local clicks = 0
     const button = create('TextButton')({
-      Text = function() return `n {count.value}` end,
+      Text = || `n {count.value}`,
       Activated = function() clicks += 1 end,
     }) :: TextButton
 
@@ -390,10 +390,10 @@ namespace TemplateTests
     local count = state(0)
     local builds = 0
     const frame = create('Frame')({
-      if_block(function() return count.value > 5 end, function()
+      if_block(|| count.value > 5, function()
         builds += 1
         return { create('TextLabel')({ Name = 'Many' }), create('TextLabel')({ Name = 'Lots' }) }
-      end, true, function() return create('TextLabel')({ Name = 'Few' }) end),
+      end, true, || create('TextLabel')({ Name = 'Few' })),
     })
 
     $assert(frame->Few ~= nil)
@@ -414,13 +414,9 @@ namespace TemplateTests
   public function each_block_keeps_a_row_for_each_key() -> ()
     local items = state({ 'a', 'b' })
     const list = create('Frame')({
-      each_block(
-        function() return items.value end,
-        function(item) return item end,
-        function(item, index)
-          return create('TextLabel')({ Name = item, Text = function() return `{index.value}` end })
-        end
-      ),
+      each_block(|| items.value, |item| item, function(item, index)
+        return create('TextLabel')({ Name = item, Text = function() return `{index.value}` end })
+      end),
     })
 
     const first = list->a
@@ -441,9 +437,12 @@ namespace TemplateTests
   public function each_block_keys_by_place_and_falls_back() -> ()
     local items = state({ 'a', 'a' } :: { string })
     const list = create('Frame')({
-      each_block(function() return items.value end, nil, function(item)
-        return create('TextLabel')({ Name = item })
-      end, function() return create('TextLabel')({ Name = 'Empty' }) end),
+      each_block(
+        || items.value,
+        nil,
+        |item| create('TextLabel')({ Name = item }),
+        || create('TextLabel')({ Name = 'Empty' })
+      ),
     })
 
     $assert_eq(#list:GetChildren(), 2)
@@ -462,9 +461,7 @@ namespace TemplateTests
 
     $expect(function()
       create('Frame')({
-        each_block(function() return items.value end, function(item) return item end, function(item)
-          return create('TextLabel')({ Name = item })
-        end),
+        each_block(|| items.value, |item| item, |item| create('TextLabel')({ Name = item })),
       })
     end):toThrow('two items')
   end
