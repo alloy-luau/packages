@@ -250,8 +250,6 @@ namespace WorldTests
   public function an_id_after_the_first_world_stops() -> ()
     world()
 
-    $expect(function() -> ()
-      tag('Late')
-    end):toThrow('before the first world')
+    $expect(|| tag('Late')):toThrow('before the first world')
   end
 end

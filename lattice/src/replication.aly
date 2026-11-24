@@ -2087,17 +2087,15 @@ namespace ReplicationTests
   public function a_mark_after_the_first_world_stops() -> ()
     $assert(has_shared())
 
-    $expect(function() -> ()
-      shared({ ct.Health })
-    end):toThrow('before the first world')
+    $expect(|| shared({ ct.Health })):toThrow('before the first world')
 
-    $expect(function() -> ()
-      serdes(ct.Health, { serialize = |_value| buffer.create(0), deserialize = |_packed| 0 })
-    end):toThrow('before the first world')
+    $expect(
+      || serdes(ct.Health, { serialize = |_value| buffer.create(0), deserialize = |_packed| 0 })
+    ):toThrow('before the first world')
 
-    $expect(function() -> ()
-      preprocess(ct.Health, { serialize = |value| value, deserialize = |sent: number| sent })
-    end):toThrow('before the first world')
+    $expect(
+      || preprocess(ct.Health, { serialize = |value| value, deserialize = |sent: number| sent })
+    ):toThrow('before the first world')
   end
 
   --- `replicate` gives one replicator for a world, makes the remotes on
@@ -2110,9 +2108,7 @@ namespace ReplicationTests
     $assert(ReplicatedStorage->LatticeReliable ~= nil)
     $assert(ReplicatedStorage->LatticeUnreliable ~= nil)
 
-    $expect(function() -> ()
-      replicate(new_world())
-    end):toThrow('another world replicates already')
+    $expect(|| replicate(new_world())):toThrow('another world replicates already')
 
     const dummy = server:entity()
     server:set(dummy, ct.Health, 1)
@@ -2153,21 +2149,17 @@ namespace ReplicationTests
     const net, join = link()
     const mine = join()
 
-    $expect(function() -> ()
-      net:received(ct.Health, function() end)
-    end):toThrow('received() works on a client only')
+    $expect(|| net:received(ct.Health, function() end)):toThrow('received() works on a client only')
 
-    $expect(function() -> ()
-      mine:track(mine.world:entity())
-    end):toThrow('track() works on the server only')
+    $expect(|| mine:track(mine.world:entity())):toThrow('track() works on the server only')
 
-    $expect(function() -> ()
-      net:share(net.world:entity(), ct.Health, nil, Share.Manual)
-    end):toThrow('takes Reliable, Unreliable, or Once')
+    $expect(|| net:share(net.world:entity(), ct.Health, nil, Share.Manual)):toThrow(
+      'takes Reliable, Unreliable, or Once'
+    )
 
-    $expect(function() -> ()
-      net:share(net.world:entity(), pair(ct.Likes, net.world:entity()), nil, Share.Once)
-    end):toThrow('a pair has no Share.Once')
+    $expect(
+      || net:share(net.world:entity(), pair(ct.Likes, net.world:entity()), nil, Share.Once)
+    ):toThrow('a pair has no Share.Once')
   end
 
   --- A player that the entity's filter leaves out never gets the

@@ -209,8 +209,6 @@ namespace QueryTests
   --- A query with no component stops with an error.
   @allow(explicit_any)
   public function a_query_needs_a_component() -> ()
-    $expect(function() -> ()
-      (query :: any)()
-    end):toThrow('at least one component')
+    $expect(|| (query :: any)()):toThrow('at least one component')
   end
 end

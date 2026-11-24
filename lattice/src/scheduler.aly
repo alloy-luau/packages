@@ -416,9 +416,7 @@ namespace SchedulerTests
   public function system_names_one_phase() -> ()
     $assert_eq(system(input, Phase.PreSimulation), input)
 
-    $expect(function() -> ()
-      system(input, Phase.Render)
-    end):toThrow('runs in PreSimulation already')
+    $expect(|| system(input, Phase.Render)):toThrow('runs in PreSimulation already')
   end
 
   --- run runs one phase, and each system gets the world.
@@ -453,9 +451,7 @@ namespace SchedulerTests
     post:Fire(0.1)
     render:Fire(0.1)
 
-    $expect(function() -> ()
-      scheduler:start()
-    end):toThrow('runs already')
+    $expect(|| scheduler:start()):toThrow('runs already')
 
     scheduler:stop()
     post:Fire(0.1)
@@ -565,27 +561,19 @@ namespace SchedulerTests
   public function a_wrong_phase_stops() -> ()
     const scheduler = new Scheduler(new_world()):after(Phase.Simulation, GamePhase.Combat)
 
-    $expect(function() -> ()
-      scheduler:before(GamePhase.Input, GamePhase.Network)
-    end):toThrow('has no phase Input')
+    $expect(|| scheduler:before(GamePhase.Input, GamePhase.Network)):toThrow('has no phase Input')
 
-    $expect(function() -> ()
-      scheduler:after(Phase.Startup, GamePhase.Combat)
-    end):toThrow('has the phase Combat already')
+    $expect(|| scheduler:after(Phase.Startup, GamePhase.Combat)):toThrow(
+      'has the phase Combat already'
+    )
 
-    $expect(function() -> ()
-      scheduler:add(marks('input', GamePhase.Input))
-    end):toThrow('has no phase Input')
+    $expect(|| scheduler:add(marks('input', GamePhase.Input))):toThrow('has no phase Input')
 
-    $expect(function() -> ()
-      scheduler:run(GamePhase.Input)
-    end):toThrow('has no phase Input')
+    $expect(|| scheduler:run(GamePhase.Input)):toThrow('has no phase Input')
 
     scheduler:start()
 
-    $expect(function() -> ()
-      scheduler:before(Phase.Simulation, GamePhase.Input)
-    end):toThrow('before start()')
+    $expect(|| scheduler:before(Phase.Simulation, GamePhase.Input)):toThrow('before start()')
 
     scheduler:stop()
   end
@@ -596,8 +584,6 @@ namespace SchedulerTests
       error('boom')
     end)
 
-    $expect(function() -> ()
-      scheduler:step()
-    end):toThrow('boom')
+    $expect(|| scheduler:step()):toThrow('boom')
   end
 end
