@@ -258,11 +258,7 @@ impl Scheduler
     local groups: { [RBXScriptSignal]: { string } } = {}
 
     for _, phase in self.order do
-      const event = self.events[phase]
-
-      if event == nil then
-        continue
-      end
+      const event = self.events[phase] ?? continue
 
       local group = groups[event]
 
@@ -448,7 +444,7 @@ namespace SchedulerTests
     service.PreSimulation = pre.Event
     service.PostSimulation = post.Event
     service.PreRender = render.Event
-    service.IsClient = function() return true end
+    service.IsClient = || true
 
     make()
     const scheduler = new Scheduler(new_world()):add(spawn, broken, movement, cleanup, input, draw)
