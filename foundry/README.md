@@ -12,7 +12,8 @@ once, from a worker or from the fallback.
 
 Foundry depends on no other package.
 
-Foundry needs Alloy 0.1.5 or later and embr 0.8.1 or later.
+Foundry needs Alloy 0.2.0-rc.7 or later and embr 0.8.1 or later. Foundry turns on
+the Alloy flag it uses in its own configuration, so a game sets no flag.
 
 ## Learn
 

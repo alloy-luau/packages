@@ -1,6 +1,6 @@
 [package]
 name = "alloy/foundry"
-version = "0.1.0"
+version = "0.1.1"
 description = "Worker pools on Roblox actors for Alloy, with typed jobs and a serial fallback"
 authors = ["savruun"]
 repository = "alloy-luau/packages"
