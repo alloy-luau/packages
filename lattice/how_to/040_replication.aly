@@ -10,6 +10,9 @@
 
   This module runs on both sides. A real game keeps the shared table in
   a module that the server and the client both import.
+
+  `041_players.aly` gives an entity or one id to some players only, and
+  `042_custom_replication.aly` runs code of the game on each side.
 ]]
 
 import Players from '@game/Players'
@@ -19,9 +22,8 @@ import {
   Scheduler,
   Share,
   component,
-  pair,
   query,
-  replecs,
+  replicate,
   shared,
   system,
   tag,
@@ -42,8 +44,12 @@ const ct = shared({
 -- get lost. Use it for a value that changes each frame.
 const fast = shared({ Aim = component<<Vector3>>('Aim') }, Share.Unreliable)
 
--- A Manual id replicates only where the game says so, with the ids of
--- replecs. `guard` below shows one.
+-- A Once id arrives with its entity. A later value stays on the server
+-- until the game calls `resend`.
+const fixed = shared({ Title = component<<string>>('Title') }, Share.Once)
+
+-- A Manual id replicates only where the game says so. `guard` below
+-- shows one.
 const secret = shared({ Loot = component<<number>>('Loot') }, Share.Manual)
 
 -- An id that the game does not mark stays on its own side.
@@ -58,6 +64,7 @@ function spawn(w: World, _dt: number) -> ()
   w:set(dummy, ct.Position, new Vector3(0, 5, 0))
   w:set(dummy, ct.Health, 100)
   w:set(dummy, fast.Aim, Vector3.zAxis)
+  w:set(dummy, fixed.Title, 'Dummy')
   w:add(dummy, ct.Burning)
 end
 
@@ -69,13 +76,14 @@ function burn(w: World, dt: number) -> ()
 end
 
 --- Makes a chest whose loot only its owner knows. The entity has no
---- shared id that Lattice follows, so the game gives it the ids of
---- replecs: who gets the entity, and which id goes with it.
+--- shared id that Lattice follows, so the game names it: `track` says
+--- who gets the entity, and `share` says which id goes with it.
 function guard(w: World, owner: Player) -> ()
+  const net = replicate(w)
   const chest = w:entity()
   w:set(chest, secret.Loot, 250)
-  w:set(chest, replecs.networked, owner)
-  w:add(chest, pair(replecs.reliable, secret.Loot))
+  net:track(chest, owner)
+  net:share(chest, secret.Loot)
 end
 
 --- Gives each player that joins a chest, on the server.
@@ -105,8 +113,11 @@ function show(w: World, _dt: number) -> ()
 end
 
 -- Each side makes its own world and its own scheduler. `start` sees the
--- shared ids and replicates the world.
+-- shared ids and replicates the world. `replicate` gives the replicator
+-- of a world, at any time: a call before `start` also sets the seconds
+-- between two sends of the changes and of the Unreliable values.
 const scheduler = new Scheduler(world())
+replicate(scheduler.world, 1 / 20, 1 / 30)
 
 @cfg(server)
 scheduler:add(system(spawn, Phase.Startup), system(chests, Phase.Startup), burn)
@@ -128,14 +139,19 @@ scheduler:start()
   - The entity of a client has its own number. A pair of a shared
     relationship arrives with the client's entity as its target, when
     the target replicates too.
-  - The server sends 20 times a second. For another interval, call
-    `replicate(world, seconds)` before `start`. A game with no scheduler
-    calls `replicate(world)` on each side.
+  - The server sends 20 times a second. For other intervals, call
+    `replicate(world, seconds, unreliable_seconds)` before `start`. A
+    game with no scheduler calls `replicate(world)` on each side.
+  - `replicate(world)` gives the Replicator of the world, and a later
+    call gives the same one. `stop()` on it ends the replication.
+  - An entity replicates from its first followed id with one call of
+    replecs for the entity and one for the id. A later `set` of the id
+    runs no code of Lattice.
   - One world replicates on each side. Lattice makes two remotes in
     ReplicatedStorage, `LatticeReliable` and `LatticeUnreliable`.
   - A client changes its own world only. Nothing goes back to the
     server; use a remote for what a player does.
-  - `replecs` is the replecs module. An entity that the game gives
-    `replecs.networked` keeps that filter, so its shared ids go to those
-    players only.
+  - `replecs` is the replecs module. Its pair API works on the world as
+    it is: `world:set(entity, replecs.networked, player)` is
+    `track(entity, player)`.
 ]]

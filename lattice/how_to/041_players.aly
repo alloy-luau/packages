@@ -1,0 +1,150 @@
+--[[
+  By default, each player gets each entity that holds a shared id, with
+  each of its shared ids. The Replicator of the server changes that: it
+  says which players get an entity, and which players get one id of it.
+
+  `replicate(world)` gives the Replicator. `track(entity, to)` sets the
+  players of an entity, and `share(entity, id, to)` sets the players of
+  one id. `to` is one player, a set of players, a function, or a group
+  that `filter` makes.
+
+  This step runs on the server. A client gets what its player may see,
+  and nothing more.
+]]
+
+import Players from '@game/Players'
+import {
+  Phase,
+  Scheduler,
+  Share,
+  component,
+  filter,
+  replicate,
+  shared,
+  system,
+  tag,
+  world,
+  type Entity,
+  type World,
+} from '@packages/lattice'
+
+const ct = shared({
+  Position = component<<Vector3>>('Position'),
+  Health = component<<number>>('Health'),
+  Boss = tag('Boss'),
+})
+
+-- A Manual id replicates only where `share` names it.
+const secret = shared({ Loot = component<<number>>('Loot') }, Share.Manual)
+
+-- A group is a set of players that changes at run time. A module can
+-- make one before the world replicates.
+const admins = filter()
+
+--- Gives a player a chest, on the server.
+function chest(w: World, owner: Player) -> Entity
+  const net = replicate(w)
+  const entity = w:entity()
+
+  -- Only the owner gets this entity. A `track` before the first shared
+  -- id means that no other player gets it, not for one send.
+  net:track(entity, owner)
+  w:set(entity, ct.Position, Vector3.zero)
+
+  -- The loot goes to the owner, and to each admin. `extend` makes a
+  -- group that follows `admins`: a player that joins the admins gets
+  -- the loot at the next send.
+  w:set(entity, secret.Loot, 250)
+  net:share(entity, secret.Loot, admins:extend(owner))
+
+  return entity
+end
+
+--- Makes the entities that show each form of `to`, on the server.
+function setup(w: World, _dt: number) -> ()
+  const net = replicate(w)
+
+  -- A banner that each player gets, but for the players on its list.
+  const banner = w:entity()
+  w:set(banner, ct.Health, 1)
+  local banned: { [Player]: boolean } = {}
+
+  -- A function runs for each player at each send. Keep it small, and
+  -- do not yield in it.
+  const boss = w:entity()
+  w:add(boss, ct.Boss)
+  w:set(boss, ct.Health, 1000)
+  net:track(boss, function(player: Player) -> boolean
+    return player:GetAttribute('Level') == 10
+  end)
+
+  -- A filter of one id: each player gets the boss that it may see, and
+  -- only the admins get its position.
+  w:set(boss, ct.Position, Vector3.zero)
+  net:share(boss, ct.Position, admins)
+
+  Players.PlayerAdded:Connect(function(player: Player) -> ()
+    const mine = chest(w, player)
+
+    -- An alias lets an entity stand for its player in a filter.
+    net:alias(player, mine)
+
+    if player:GetAttribute('Admin') then
+      admins:add(player)
+    end
+
+    -- A set of `true` values names the players that get the entity. A
+    -- set of `false` values names the players that do not.
+    if player:GetAttribute('Banned') then
+      banned[player] = false
+      net:track(banner, banned)
+    end
+  end)
+
+  Players.PlayerRemoving:Connect(function(player: Player) -> ()
+    admins:remove(player)
+  end)
+end
+
+--- Hides the boss while it sleeps, and shows it again.
+function sleep(w: World, boss: Entity, asleep: boolean) -> ()
+  const net = replicate(w)
+
+  if asleep then
+    -- Each client deletes the boss. The server keeps it, with its ids.
+    net:untrack(boss)
+  else
+    -- Each player of the new filter gets the boss, with each id.
+    net:track(boss)
+  end
+end
+
+@cfg(server)
+new Scheduler(world()):add(system(setup, Phase.Startup)):start()
+
+print(sleep)
+
+--[[
+  The rules:
+
+  - `track(entity, to)` sets the players of an entity, and a second call
+    changes them. A player that leaves the filter deletes the entity,
+    and a player that comes in gets it, with each id that it may see.
+    `track(entity)` with no `to` is each player.
+  - `share(entity, id, to)` sets the players of one id. A player gets an
+    id only when it gets the entity.
+  - `untrack` and `unshare` stop the replication, and the server keeps
+    its data. `untrack` holds until the next `track`.
+  - A player that joins later gets only what its filters allow.
+  - A group from `filter` has `add`, `remove`, `set`, and `clear`.
+    `a:extend(b)` is the players of a or b, `a:filter(b)` is the players
+    of both, and `a:exclude(b)` is the players of a that are not in b.
+    `members()` and `contains(player)` read it. `net:everyone()` is each
+    player, and `net:predicate(test)` is a group from a function.
+  - A change of a group costs one mark. The server works the players out
+    again at the next send, one time for each group.
+  - A function as `to`, and a predicate group, run for each player at
+    each send. Use a group where the players change now and then.
+  - Lattice adds no filter of its own. An entity with no `track` goes to
+    each player, as in replecs.
+]]

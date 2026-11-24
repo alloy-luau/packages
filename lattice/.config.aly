@@ -6,6 +6,10 @@
 ]]
 
 export default {
+  fflags = {
+    AlloyExperimentalBailSyntax = true,
+    AlloyExperimentalLambdaSyntax = true,
+  },
   build = {
     ['in'] = 'src',
     out = 'build',

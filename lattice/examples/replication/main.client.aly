@@ -1,12 +1,15 @@
 --[[
   The client of the replication example. Its world starts empty, and the
   orbs of the server arrive in it. One system gives each orb a part and
-  keeps the part at the orb's position.
+  keeps the part at the orb's position. One more marks the orb of the
+  client's own player.
 
-    Render  draw  shows each orb
+    Startup  mine  sets the hooks of the replicator
+    Render   draw  shows each orb
 ]]
 
 import { Scheduler, world } from '@packages/lattice'
 import draw from './systems/draw'
+import mine from './systems/mine'
 
-new Scheduler(world()):add(draw):start()
+new Scheduler(world()):add(mine, draw):start()

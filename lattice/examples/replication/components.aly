@@ -3,21 +3,48 @@
   both import this module, so both sides know the same shared ids.
 ]]
 
-import { component, shared } from '@packages/lattice'
+import { Share, component, serdes, shared, tag } from '@packages/lattice'
 
 --- What stays on its own side: the game does not mark this table.
 export const here = {
   --- The part that shows an orb, on a client.
   Body = component<<BasePart>>('Body'),
+  --- The orb of this client's own player.
+  Mine = tag('Mine'),
 }
+
+--- What only some players get. The server names each entity and each
+--- player with `share`.
+export const secret = shared({
+  --- How many times the owner of an orb clicked it.
+  Clicks = component<<number>>('Clicks'),
+}, Share.Manual)
 
 --- What the server sends to each client. The systems import this table
 --- as `ct`.
 export default shared({
-  --- Where the orb is, in studs.
-  Position = component<<Vector3>>('Position'),
+  --- Where the orb is, in studs. It crosses as 12 bytes in the packet.
+  Position = serdes(component<<Vector3>>('Position'), {
+    bytespan = 12,
+    serialize = function(position: Vector3) -> buffer
+      const packed = buffer.create(12)
+      buffer.writef32(packed, 0, position.X)
+      buffer.writef32(packed, 4, position.Y)
+      buffer.writef32(packed, 8, position.Z)
+      return packed
+    end,
+    deserialize = function(packed: buffer) -> Vector3
+      return new Vector3(
+        buffer.readf32(packed, 0),
+        buffer.readf32(packed, 4),
+        buffer.readf32(packed, 8)
+      )
+    end,
+  }),
   --- The colour of the orb.
   Tint = component<<Color3>>('Tint'),
   --- The angle of the orb on its circle, in radians.
   Angle = component<<number>>('Angle'),
+  --- The player that an orb belongs to.
+  Owner = component<<Player>>('Owner'),
 })

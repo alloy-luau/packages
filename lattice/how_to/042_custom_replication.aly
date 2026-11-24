@@ -1,0 +1,196 @@
+--[[
+  Some components need code of the game when they replicate. A struct
+  with methods cannot cross as it is. A position costs fewer bytes in a
+  buffer. And a client wants to run code when a value arrives: to keep
+  a table of the entity of each player, or to put the server's data on
+  an entity that it made itself.
+
+  Lattice has three places for this code:
+
+  - `serdes` and `preprocess` wrap a component in the shared table.
+    They change the value on its way out and on its way in.
+  - The hooks of the client's Replicator run when a value arrives.
+  - `identify` and `resolve` let a client pick its own entity for an
+    entity of the server.
+
+  This module runs on both sides.
+]]
+
+import Players from '@game/Players'
+import {
+  Phase,
+  Scheduler,
+  component,
+  preprocess,
+  replicate,
+  serdes,
+  shared,
+  system,
+  world,
+  type Entity,
+  type World,
+} from '@packages/lattice'
+
+--- What a player carries. A struct loses its methods on a remote.
+struct Purse
+  coins: number
+end
+
+impl Purse
+  --- Whether the purse pays for a price.
+  function affords(self, price: number) -> boolean
+    return self.coins >= price
+  end
+end
+
+const ct = shared({
+  -- A Player crosses as it is: Roblox sends the reference, and the
+  -- client gets its own Player object.
+  Owner = component<<Player>>('Owner'),
+  Health = component<<number>>('Health'),
+
+  -- `preprocess` changes the value before it crosses, and back after.
+  -- The server sends the number, and each client makes a Purse again.
+  -- The functions get the type of the component.
+  Wallet = preprocess(component<<Purse>>('Wallet'), {
+    serialize = function(purse: Purse) -> number
+      return purse.coins
+    end,
+    deserialize = function(coins: number) -> Purse
+      return new Purse { coins = coins }
+    end,
+  }),
+
+  -- `serdes` writes the value into the packet itself. Three 32-bit
+  -- floats cost 12 bytes; with `bytespan`, replecs sends no size.
+  Position = serdes(component<<Vector3>>('Position'), {
+    bytespan = 12,
+    serialize = function(position: Vector3) -> buffer
+      const packed = buffer.create(12)
+      buffer.writef32(packed, 0, position.X)
+      buffer.writef32(packed, 4, position.Y)
+      buffer.writef32(packed, 8, position.Z)
+      return packed
+    end,
+    deserialize = function(packed: buffer) -> Vector3
+      return new Vector3(
+        buffer.readf32(packed, 0),
+        buffer.readf32(packed, 4),
+        buffer.readf32(packed, 8)
+      )
+    end,
+  }),
+})
+
+--- Gives each player an entity, on the server.
+function avatars(w: World, _dt: number) -> ()
+  const net = replicate(w)
+
+  Players.PlayerAdded:Connect(function(player: Player) -> ()
+    const avatar = w:entity()
+    w:set(avatar, ct.Owner, player)
+    w:set(avatar, ct.Health, 100)
+    w:set(avatar, ct.Wallet, new Purse { coins = 5 })
+    w:set(avatar, ct.Position, Vector3.zero)
+
+    -- Each client picks its own entity for this one, by the Owner.
+    net:identify(avatar, ct.Owner)
+  end)
+end
+
+-- The entity of each player, on this client.
+local refs: { [Player]: Entity } = {}
+
+--- Sets the hooks, on a client. A Startup system runs before the first
+--- packet, so no value comes too early.
+function hooks(w: World, _dt: number) -> ()
+  const net = replicate(w)
+
+  -- This client made the entity of its own player before the server
+  -- sent one.
+  const me = w:entity()
+  refs[Players.LocalPlayer] = me
+
+  -- `resolve` gets the Owner of an entity that arrives, and gives the
+  -- client's entity for it. For the local player that is `me`, and the
+  -- ids of the server go on it. Another player gets a new entity. A
+  -- nil in its place drops the entity of the server.
+  net:resolve(ct.Owner, function(player) -> Entity?
+    return refs[player] ?? w:entity()
+  end)
+
+  -- `received` runs each time a value arrives, after the world has it.
+  -- The value has the type of the component.
+  net:received(ct.Owner, function(entity, _id, player) -> ()
+    refs[player] = entity
+
+    -- The other ids of the entity come in the same packet. `after`
+    -- runs when the packet is done.
+    net:after(function() -> ()
+      print(player.Name, 'has', w:get(entity, ct.Health), 'health')
+    end)
+  end)
+
+  -- For a struct, write the type of the value.
+  net:received(ct.Wallet, function(_entity, _id, purse: Purse) -> ()
+    print('can buy a sword:', purse:affords(10))
+  end)
+
+  -- `removed` runs before the id goes, so `get` still reads it.
+  net:removed(ct.Owner, function(entity) -> ()
+    const player = w:get(entity, ct.Owner)
+
+    if player ~= nil then
+      refs[player] = nil
+    end
+  end)
+
+  -- An override takes the place of the write. This one keeps the
+  -- health of the server as a whole number.
+  net:override_received(ct.Health, function(entity, id, health) -> ()
+    w:set(entity, id, math.floor(health))
+  end)
+end
+
+const scheduler = new Scheduler(world())
+
+@cfg(server)
+scheduler:add(system(avatars, Phase.Startup))
+
+@cfg(client)
+scheduler:add(system(hooks, Phase.Startup))
+
+scheduler:start()
+
+--[[
+  The rules:
+
+  - Wrap the component where the shared table makes it, before the
+    first `world()`. Both sides then have the same code.
+  - `preprocess` runs first on the server and last on a client. With
+    `serdes` on the same component, the serdes sees the value that the
+    preprocessor made.
+  - A `deserialize` that raises shows a warning. The entity keeps the
+    value that it had, and each other id of the packet arrives. The
+    hooks of that id do not run for that value.
+  - A hook that raises shows a warning. The value is in the world, the
+    next hook runs, and the rest of the packet applies.
+  - A `serialize` that raises stops that send of the server. Fix the
+    function: the server has all the data that it needs.
+  - A Player, or another Instance, crosses as a reference. It arrives
+    as nil on a client that does not have the Instance.
+  - An entity in a value crosses as a number of the server. Use a pair
+    for it: `pair(Targets, enemy)` arrives with the client's entity.
+    For a number that must cross, `net:client_entity(number)` maps it
+    after the entity arrived.
+  - Each hook gives a function that stops it. `received` and `removed`
+    take a relationship too, and get each pair.
+  - `created(run)` runs for each new entity from the server, and
+    `deleted(entity, run)` runs before one goes. `override_removed` and
+    `override_deleted` take the place of the removal and of the delete.
+  - `identify(entity, by)` on the server needs `by` to be a shared
+    component that replicates reliably on that entity. `custom_id`
+    makes an id whose handler reads all that arrives with the entity.
+  - `global(entity, number)` sends an entity as one byte, and
+    `globals(find)` maps the number on a client.
+]]

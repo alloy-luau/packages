@@ -5,7 +5,8 @@
   - world: world, component, tag, pair, targets, and jecs's built-in ids
   - query: query, with, without, of
   - scheduler: Phase, system, Scheduler
-  - replication: shared, replicate, Share, replecs
+  - replication: shared, replicate, Replicator, Share, serdes, preprocess,
+    filter, custom_id, replecs
 ]]
 
 export {
@@ -27,4 +28,20 @@ export {
 } from './world'
 export { query, type Query } from './query'
 export { Phase, system, Scheduler, type System } from './scheduler'
-export { shared, replicate, Share, replecs } from './replication'
+export {
+  shared,
+  replicate,
+  Replicator,
+  Share,
+  serdes,
+  preprocess,
+  filter,
+  custom_id,
+  replecs,
+  type Filter,
+  type To,
+  type Serdes,
+  type Preprocessor,
+  type CustomId,
+  type Context,
+} from './replication'

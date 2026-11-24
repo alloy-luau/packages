@@ -1,0 +1,47 @@
+--[[
+  Gives each player an orb of its own, on the server. Each client gets
+  the orb, and only its owner gets the clicks on it.
+]]
+
+import Players from '@game/Players'
+import { Phase, replicate, system, type Entity, type World } from '@packages/lattice'
+import ct, { secret } from '../components'
+
+-- The orb of each player.
+local orbs: { [Player]: Entity } = {}
+
+--- Makes the orb of each player that joins, and deletes it when the
+--- player leaves.
+function owners(world: World, _dt: number) -> ()
+  const net = replicate(world)
+
+  local function give(player: Player) -> ()
+    const orb = world:entity()
+    orbs[player] = orb
+
+    world:set(orb, ct.Owner, player)
+    world:set(orb, ct.Angle, 0)
+    world:set(orb, ct.Position, Vector3.zero)
+    world:set(orb, ct.Tint, new Color3(1, 1, 1))
+
+    -- The clicks are a Manual id: only `share` makes them replicate,
+    -- and here only to the owner.
+    world:set(orb, secret.Clicks, 0)
+    net:share(orb, secret.Clicks, player)
+  end
+
+  for _, player in Players:GetPlayers() do
+    give(player)
+  end
+
+  Players.PlayerAdded:Connect(give)
+
+  Players.PlayerRemoving:Connect(function(player: Player) -> ()
+    if const orb = orbs[player] then
+      orbs[player] = nil
+      world:delete(orb)
+    end
+  end)
+end
+
+export default system(owners, Phase.Startup)
