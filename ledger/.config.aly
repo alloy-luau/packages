@@ -6,6 +6,12 @@
 ]]
 
 export default {
+  -- The syntax of Alloy 0.2 that Ledger uses. Ledger builds with its own
+  -- flags, so a game sets none of them.
+  fflags = {
+    AlloyExperimentalLambdaSyntax = true,
+    AlloyExperimentalBailSyntax = true,
+  },
   build = {
     ['in'] = 'src',
     out = 'build',

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.3
+
+- The source writes each callback of one expression as a lambda:
+  `|| count.value > 5`.
+- svelte-aly needs Alloy 0.2.0-rc.7 or later. The lambda is behind the
+  flag `AlloyExperimentalLambdaSyntax`. svelte-aly sets the flag in its
+  own `.config.aly`, so a game sets no flag.
+
+The API and the code that runs are the same as 0.1.2.
+
 ## 0.1.2
 
 - The README, `how_to` and `examples` write `local` and `const`, not

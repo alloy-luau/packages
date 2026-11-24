@@ -18,8 +18,9 @@ svelte-aly has two parts:
   compiles Svelte's syntax to the package: `$state`, `$derived`, `$effect`,
   `$props`, `{#if}`, and `{#each}`.
 
-svelte-aly needs Alloy 0.1.7 or later, which reads `<script>` in a `.alx`
-file, and embr 0.8.1 or later.
+svelte-aly needs Alloy 0.2.0-rc.7 or later and embr 0.8.1 or later. svelte-aly
+turns on the Alloy flag it uses in its own configuration, so a game sets no
+flag.
 
 ## Learn
 

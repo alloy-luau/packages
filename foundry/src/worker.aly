@@ -88,7 +88,7 @@ namespace WorkerTests
   --- A job that runs answers with its job number and its result.
   public function serve_answers_with_the_result() -> ()
     const answers: { Answer } = {}
-    const handler = serve(function(n: number) -> number return n * 2 end)
+    const handler = serve(|n: number| n * 2)
 
     handler(7, 21, recorder(answers))
 
@@ -116,9 +116,7 @@ namespace WorkerTests
   --- `ready` sets the attribute on the Actor of the script.
   public function ready_marks_the_actor() -> ()
     const actor = new Instance('Actor')
-    const from = (
-      { GetActor = function(_self: unknown) -> Actor return actor end } :: unknown
-    ) :: Instance
+    const from = ({ GetActor = |_self: unknown| actor } :: unknown) :: Instance
 
     ready(from)
 
@@ -127,9 +125,7 @@ namespace WorkerTests
 
   --- A script under no Actor cannot be a worker.
   public function ready_refuses_a_script_under_no_actor() -> ()
-    const from = (
-      { GetActor = function(_self: unknown) -> Actor? return nil end } :: unknown
-    ) :: Instance
+    const from = ({ GetActor = |_self: unknown| nil } :: unknown) :: Instance
 
     $expect(function() -> ()
       ready(from)

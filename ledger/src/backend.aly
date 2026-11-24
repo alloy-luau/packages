@@ -149,9 +149,9 @@ end
 
 impl DataStoreBackend
   --- The backend of the DataStore `name`, in `scope` if one is given.
---- @param name -- The name of the DataStore
---- @param scope -- The scope of the DataStore, or nil for the default scope
---- @return DataStoreBackend -- The new backend
+  --- @param name -- The name of the DataStore
+  --- @param scope -- The scope of the DataStore, or nil for the default scope
+  --- @return DataStoreBackend -- The new backend
   function new(name: string, scope: string?) -> DataStoreBackend
     return new DataStoreBackend { store = DataStoreService:GetDataStore(name, scope) }
   end
@@ -163,11 +163,7 @@ impl Backend for DataStoreBackend
 
     const result = Result.pcall(function() -> nil
       self.store:UpdateAsync(key, function(old: unknown, info: DataStoreKeyInfo?)
-        const value = transform(old)
-
-        if value == nil then
-          return nil
-        end
+        const value = transform(old) ?? return nil
 
         -- The metadata goes back as it came: a write without it clears
         -- it.
@@ -218,14 +214,14 @@ namespace BackendTests
     const backend = new MemoryBackend {}
 
     backend:write('k', 1)
-    $assert_eq(backend:update('k', function(_old) return nil end, nil), nil)
+    $assert_eq(backend:update('k', |_old| nil, nil), nil)
     $assert_eq(backend:read('k'), 1)
   end
 
   --- A planned failure fails that many calls, then the backend works.
   public function memory_fails_when_told() -> ()
     const backend = new MemoryBackend {}
-    const write = function(_old: unknown) -> unknown return 5 end
+    const write = |_old: unknown| 5
 
     backend:fail(2)
     $assert(backend:update('k', write, nil) ~= nil)

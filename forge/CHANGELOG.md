@@ -9,9 +9,12 @@ change for a call that passes another value.
   `Forge.traits<<T>>(trait)` has the type `struct<T>`. The old type was
   `unknown`. The type check now refuses a value that is no struct, such as
   a string, an enum, or the table of a module.
-- Forge needs Alloy 0.2.0-rc.6 or later. `struct<T>` is behind the flag
-  `AlloyExperimentalSupertypes`. Forge sets the flag in its own
-  `.config.aly`, so a game sets no flag.
+- The source writes each callback of one expression as a lambda, and one
+  guard on nil as `?? return`.
+- Forge needs Alloy 0.2.0-rc.7 or later. `struct<T>` is behind the flag
+  `AlloyExperimentalSupertypes`, and the syntax is behind
+  `AlloyExperimentalLambdaSyntax` and `AlloyExperimentalBailSyntax`.
+  Forge sets the flags in its own `.config.aly`, so a game sets no flag.
 
 The code that runs is the same as 0.2.0.
 

@@ -30,7 +30,7 @@ Add it to the `ember.toml` of an Alloy game, then run `embr install`:
 
 ```toml
 [dependencies]
-forge = { name = "alloy/forge", version = "^0.1.1" }
+forge = { name = "alloy/forge", version = "^0.3.0" }
 ```
 
 The README of each package says how to mount it and import it.

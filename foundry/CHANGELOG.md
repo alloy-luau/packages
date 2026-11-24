@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.1
+
+- The tests write each callback of one expression as a lambda:
+  `|n: number| n * 2`.
+- Foundry needs Alloy 0.2.0-rc.7 or later. The lambda is behind the flag
+  `AlloyExperimentalLambdaSyntax`. Foundry sets the flag in its own
+  `.config.aly`, so a game sets no flag.
+
+The API and the code that runs are the same as 0.1.0.
+
 ## 0.1.0
 
 The first release.

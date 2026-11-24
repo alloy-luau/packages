@@ -211,11 +211,7 @@ export function words(line: string) -> { Token }
   local at = 1
 
   while true do
-    const from = string.find(line, '%S', at)
-
-    if from == nil then
-      break
-    end
+    const from = string.find(line, '%S', at) ?? break
 
     if string.sub(line, from, from) == '"' then
       const close = string.find(line, '"', from + 1, true) ?? #line + 1
@@ -291,8 +287,8 @@ end
 local function named(word: string, players: { Player }) -> { Player }
   const lower = string.lower(word)
   const tests = {
-    function(player: Player) -> boolean return string.lower(player.Name) == lower end,
-    function(player: Player) -> boolean return string.lower(player.DisplayName) == lower end,
+    |player: Player| string.lower(player.Name) == lower,
+    |player: Player| string.lower(player.DisplayName) == lower,
     function(player: Player) -> boolean
       return string.sub(string.lower(player.Name), 1, #lower) == lower
         or string.sub(string.lower(player.DisplayName), 1, #lower) == lower

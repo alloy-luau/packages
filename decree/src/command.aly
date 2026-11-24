@@ -77,9 +77,7 @@ const commands: HashMap<string, Command> = new HashMap()
 --- level 0.
 --- @within command
 --- @private
-local resolver: (Player) -> number = function(_: Player) -> number
-  return 0
-end
+local resolver: (Player) -> number = |_: Player| 0
 
 --[[
   Makes each read of the remote past its `spec` raise. A remote makes
@@ -190,7 +188,7 @@ export function entries(player: Player) -> { Entry }
     table.insert(list, { name = name, usage = usage(name, found.params), help = found.help })
   end
 
-  table.sort(list, function(a: Entry, b: Entry) -> boolean return a.name < b.name end)
+  table.sort(list, |a: Entry, b: Entry| a.name < b.name)
 
   return list
 end
@@ -293,7 +291,7 @@ end
 namespace CommandTests
   --- Greets a player.
   @command(0, 'Greets a player.')
-  remote function Greet(target: Player, @u8 times: number = 1) -> string from client
+  remote function Greet(target: Player, times: u8 = 1) -> string from client
 
   --- A command for moderators.
   @command(252, 'Warns a player.')
@@ -318,15 +316,13 @@ namespace CommandTests
   --- Gives Builderman level 254 and anyone else 0, and adds the
   --- commands once.
   private function ready() -> ()
-    levels(function(player: Player) -> number
-      return player == builderman ? 254 : 0
-    end)
+    levels(|player: Player| player == builderman ? 254 : 0)
 
     if commands:has('greet') then
       return
     end
 
-    on(Greet)(function(_, target, times) return `Hello, {target.Name}, {times} times.` end)
+    on(Greet)(|_, target, times| `Hello, {target.Name}, {times} times.`)
     on(Warn)(function(caller, target, reason)
       if target == caller then
         return fail('You cannot warn yourself.')
@@ -450,10 +446,10 @@ namespace CommandTests
     ready()
 
     $expect(function() -> ()
-      on(Plain)(function(_, target) return target.Name end)
+      on(Plain)(|_, target| target.Name)
     end):toThrow('has no @command')
     $expect(function() -> ()
-      on(Greet)(function(_, target) return target.Name end)
+      on(Greet)(|_, target| target.Name)
     end):toThrow('a command called greet already')
   end
 

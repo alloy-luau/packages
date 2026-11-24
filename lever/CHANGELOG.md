@@ -8,8 +8,10 @@ change for a call that passes another value.
 - The `actions` and `contexts` parameters of `new Lever` have the type
   `enum`. The old type was `unknown`. The type check now refuses a value
   that is no enum, such as a struct or a string.
-- Lever needs Alloy 0.2.0-rc.6 or later. The type `enum` is behind the flag
-  `AlloyExperimentalSupertypes`. Lever sets the flag in its own
+- The source writes two guards on nil as `?? return` and `?? continue`.
+- Lever needs Alloy 0.2.0-rc.7 or later. The type `enum` is behind the flag
+  `AlloyExperimentalSupertypes`, and the guards are behind
+  `AlloyExperimentalBailSyntax`. Lever sets the flags in its own
   `.config.aly`, so a game sets no flag.
 
 The code that runs is the same as 0.1.1.

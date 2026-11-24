@@ -14,7 +14,8 @@ Bevel has its own reactive core, its own `.alx` factory, and its own
 animation: springs with Apple's parameters, tweens, and easing curves. It
 depends on no other package.
 
-Bevel needs Alloy 0.1.5 or later and embr 0.8.1 or later.
+Bevel needs Alloy 0.2.0-rc.7 or later and embr 0.8.1 or later. Bevel turns on
+the Alloy flag it uses in its own configuration, so a game sets no flag.
 
 ## Learn
 

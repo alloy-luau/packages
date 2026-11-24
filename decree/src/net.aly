@@ -74,7 +74,7 @@ end
 namespace NetTests
   --- serve answers both remotes.
   public function serve_answers_both_remotes() -> ()
-    serve(function(_: Player) -> number return 0 end)
+    serve(|_: Player| 0)
 
     $assert_eq(#DecreeLine.calls, 1)
     $assert_eq(DecreeLine.calls[1].name, 'on')

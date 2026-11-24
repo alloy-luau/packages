@@ -133,11 +133,7 @@ local function retry(attempts: number, call: () -> string?) -> Result<nil, strin
   local last = 'no attempt ran'
 
   for attempt = 1, attempts do
-    const failed = call()
-
-    if failed == nil then
-      return Ok(nil)
-    end
+    const failed = call() ?? return Ok(nil)
 
     last = failed
 
@@ -374,9 +370,9 @@ impl Session<T>
       Session.finish(self, 'closed')
     end
 
-    return result:map_err(function(message: string) -> string
-      return `{settings.name}: the save of {self.key} failed: {message}`
-    end)
+    return result:map_err(
+      |message: string| `{settings.name}: the save of {self.key} failed: {message}`
+    )
   end
 
   --- Ends the session, and takes it out of the store's open sessions.
@@ -479,9 +475,9 @@ local function start<T>(
     settings.version,
     settings.migrations
   )
-  const decoded = migrated:and_then(function(data: { [string]: unknown }) -> Result<T, string>
-    return Result.pcall(settings.template.from_table, data)
-  end)
+  const decoded = migrated:and_then(
+    |data: { [string]: unknown }| Result.pcall(settings.template.from_table, data)
+  )
 
   if local Err(message) = decoded then
     release(settings, key, id)

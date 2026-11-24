@@ -378,7 +378,7 @@ impl Node
   --- @within Node
   --- @return unknown -- A computed value that reads this signal
   function readonly(self) -> unknown
-    return computed_of(function() return self:__call() end)
+    return computed_of(|| self:__call())
   end
 end
 
@@ -419,7 +419,7 @@ end
 --- @return Signal<T> -- A signal that holds what `fn` gives
 @allow(explicit_any)
 export function computed<T>(fn: () -> T) -> Signal<T>
-  const node = new Node { compute = function(_cleanup) return fn() end, dirty = true }
+  const node = new Node { compute = |_cleanup| fn(), dirty = true }
 
   if current ~= nil then
     table.insert(current.cleanups, function() stop_node(node) end)
@@ -579,7 +579,7 @@ namespace ReactiveTests
   public function a_signal_reads_its_last_write() -> ()
     const count = signal(1)
     count:set(4)
-    count:update(function(n) return n + 1 end)
+    count:update(|n| n + 1)
 
     $assert_eq(count(), 5)
     $assert_eq(count:readonly()(), 5)
@@ -635,7 +635,7 @@ namespace ReactiveTests
   --- An effect reads a computed value that is up to date.
   public function an_effect_sees_no_stale_value() -> ()
     const count = signal(1)
-    const double = computed(function() return count() * 2 end)
+    const double = computed(|| count() * 2)
     const seen: { string } = {}
 
     effect(function() table.insert(seen, `{count()}:{double()}`) end)
@@ -653,7 +653,7 @@ namespace ReactiveTests
     effect(function()
       runs += 1
       a()
-      untracked(function() return b() end)
+      untracked(|| b())
     end)
     b:set(2)
 

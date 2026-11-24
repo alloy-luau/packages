@@ -1159,7 +1159,7 @@ namespace MotionTests
   public function spring_of_follows_a_state() -> ()
     manual_frames()
     local open = state(false)
-    const width = Spring.of(function() return if open.value then 200 else 0 end, Springs.snappy())
+    const width = Spring.of(|| if open.value then 200 else 0, Springs.snappy())
 
     open.value = true
     run_for(3, 1 / 60)

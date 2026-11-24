@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2
+
+- The source writes each callback of one expression as a lambda:
+  `|n| n + 1`.
+- Bevel needs Alloy 0.2.0-rc.7 or later. The lambda is behind the flag
+  `AlloyExperimentalLambdaSyntax`. Bevel sets the flag in its own
+  `.config.aly`, so a game sets no flag.
+
+The API and the code that runs are the same as 0.1.1.
+
 ## 0.1.1
 
 - The doc comments use the Moonwave format. The API tab on Ember shows

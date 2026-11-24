@@ -562,7 +562,7 @@ namespace PoolTests
     local now = 0
     const pool = new Pool {
       workers = [ worker('a', true) ],
-      clock = function() -> number return now end,
+      clock = || now,
     }
     const fake = new FakeMessage {}
     const jobs = pool:channel(fake:message(), double)
@@ -618,7 +618,7 @@ namespace PoolTests
     local now = 0
     const pool = new Pool {
       workers = [ worker('a', false) ],
-      clock = function() -> number return now end,
+      clock = || now,
     }
     const fake = new FakeMessage {}
     const jobs = pool:channel(fake:message(), double)

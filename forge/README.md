@@ -14,10 +14,10 @@ default: providers, the Init and Start barrier, and extensions.
 Lifecycles, dependencies, traits, and Bin are opt-in features. A game
 turns on the features it uses, and the others stay out of its install.
 
-Forge needs Alloy 0.2.0-rc.6 or later. Installed with
+Forge needs Alloy 0.2.0-rc.7 or later. Installed with
 [Ember](https://emberpm.dev), it needs embr 1.0.0-rc.3 or later. An older
 embr installs every file but links the core only, so each feature stays
-off. Forge turns on the Alloy flag it uses in its own configuration, so a
+off. Forge turns on the Alloy flags it uses in its own configuration, so a
 game sets no flag.
 
 ## Learn

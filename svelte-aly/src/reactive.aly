@@ -582,7 +582,7 @@ namespace ReactiveTests
     effect(function()
       runs += 1
       const _ = a.value
-      untrack(function() return b.value end)
+      untrack(|| b.value)
     end)
     b.value = 2
 
@@ -591,8 +591,8 @@ namespace ReactiveTests
 
   --- get reads a state, and gives back any other value.
   public function get_reads_a_state_and_passes_the_rest() -> ()
-    const live = derived(function() return 3 end)
-    const callback = function() return 1 end
+    const live = derived(|| 3)
+    const callback = || 1
 
     $assert_eq(get(live), 3)
     $assert_eq(get(7), 7)
@@ -631,13 +631,13 @@ namespace ReactiveTests
   --- A derived value cannot be written, and a state has only `value`.
   @allow(explicit_any)
   public function a_handle_takes_only_value() -> ()
-    const fixed = derived(function() return 1 end)
+    const fixed = derived(|| 1)
 
     $expect(function()
       local handle = fixed :: any
       handle.value = 2
     end):toThrow('cannot be written')
-    $expect(function() return (fixed :: any).other end):toThrow('no key')
+    $expect(|| (fixed :: any).other):toThrow('no key')
   end
 
   --- An effect that writes what it reads stops with an error.

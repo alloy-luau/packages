@@ -146,11 +146,7 @@ export function decode(raw: unknown, device: Device) -> Binding?
   local found = false
 
   for _, part in PARTS do
-    const name = raw[part]
-
-    if name == nil then
-      continue
-    end
+    const name = raw[part] ?? continue
 
     const key = name is string ? key_named(name) : nil
 

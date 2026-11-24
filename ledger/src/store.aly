@@ -262,11 +262,7 @@ impl Store<T>
         return later
       end
 
-      const session = Store.wait_for(self, player_key(user_id), user_id)
-
-      if session == nil then
-        return later
-      end
+      const session = Store.wait_for(self, player_key(user_id), user_id) ?? return later
 
       match session:purchase(purchase, grant) with
         case Ok(_) then
@@ -375,9 +371,7 @@ namespace StoreTests
       name = 'Test',
       version = 2,
       migrations = {
-        function(old: SaveV1) -> SaveV2
-          return { coins = old.gold }
-        end,
+        |old: SaveV1| { coins = old.gold },
       },
       backend = backend,
       autosave = 0,

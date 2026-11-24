@@ -15,8 +15,8 @@ context, one `InputAction` for each action, and one `InputBinding` for each
 binding. The engine reads the hardware and applies the priority and the sink of
 each context. Lever depends on no other package.
 
-Lever needs Alloy 0.2.0-rc.6 or later and embr 0.8.1 or later. Lever turns on
-the Alloy flag it uses in its own configuration, so a game sets no flag.
+Lever needs Alloy 0.2.0-rc.7 or later and embr 0.8.1 or later. Lever turns on
+the Alloy flags it uses in its own configuration, so a game sets no flag.
 
 ## Learn
 
