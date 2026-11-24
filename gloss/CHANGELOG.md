@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2
+
+- The plural rules write each `pick` callback of one expression as a
+  lambda.
+- Gloss needs Alloy 0.2.0-rc.8 or later. The syntax is behind the flag
+  `AlloyExperimentalLambdaSyntax`. Gloss sets it in its own
+  `.config.aly`, so a game sets no flag.
+
+The API and the code that runs are the same as 0.1.1.
+
 ## 0.1.1
 
 - The doc comments use the Moonwave format. The API tab on Ember shows

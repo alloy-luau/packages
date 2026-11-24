@@ -33,24 +33,24 @@ type Rule = { forms: { Form }, pick: (n: number, i: number, v: number) -> Form }
 
 -- Japanese, Korean, Chinese, Thai, Vietnamese, Indonesian, and Malay
 -- give each count the same form.
-const OTHER: Rule = { forms = { 'other' }, pick = function(_n, _i, _v) return 'other' end }
+const OTHER: Rule = { forms = { 'other' }, pick = |_n, _i, _v| 'other' }
 
 -- English, German, Dutch, Swedish, Italian: "1 kill", but "1.5 kills".
 const ONE: Rule = {
   forms = { 'one', 'other' },
-  pick = function(_n, i, v) return (i == 1 and v == 0) ? 'one' : 'other' end,
+  pick = |_n, i, v| (i == 1 and v == 0) ? 'one' : 'other',
 }
 
 -- Spanish, Turkish, Greek, Hungarian: the count 1 alone.
 const EXACT_ONE: Rule = {
   forms = { 'one', 'other' },
-  pick = function(n, _i, _v) return n == 1 ? 'one' : 'other' end,
+  pick = |n, _i, _v| n == 1 ? 'one' : 'other',
 }
 
 -- French and Brazilian Portuguese: 0 and 1 are singular, and so is 1.5.
 const ZERO_AND_ONE: Rule = {
   forms = { 'one', 'other' },
-  pick = function(_n, i, _v) return (i == 0 or i == 1) ? 'one' : 'other' end,
+  pick = |_n, i, _v| (i == 0 or i == 1) ? 'one' : 'other',
 }
 
 -- Whether the last two digits of a whole number fall in 12 to 14.
