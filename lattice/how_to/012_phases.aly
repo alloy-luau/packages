@@ -1,0 +1,111 @@
+--[[
+  A game adds phases of its own to a scheduler. The game declares them
+  in a unit enum, and tells the scheduler where each one runs:
+
+  - `before(anchor, ...)` and `after(anchor, ...)` put phases beside a
+    phase that the scheduler has. They run on the event of the anchor.
+  - `on(event, ...)` gives phases an event of their own.
+
+  A system names a phase of the game the way it names a built-in one.
+]]
+
+import {
+  Phase,
+  Scheduler,
+  component,
+  system,
+  world,
+  type Entity,
+  type World,
+} from '@packages/lattice'
+
+--- The phases of this game. A variant of a unit enum is its name, and
+--- the scheduler keeps a phase by that name.
+enum GamePhase
+  Input
+  Damage
+  Cleanup
+  Autosave
+end
+
+const ct = {
+  Health = component<<number>>('Health'),
+  Hit = component<<number>>('Hit'),
+}
+
+--- Reads what the players did, before the built-in PreSimulation.
+function input(_w: World, _dt: number) -> ()
+  print('input')
+end
+
+--- Takes each hit from the health of its entity.
+function damage(w: World, _dt: number) -> ()
+  for entity, health, hit in w:query(ct.Health, ct.Hit) do
+    w:set(entity, ct.Health, health - hit)
+  end
+end
+
+--- Deletes each entity with no health left, after the damage.
+function cleanup(w: World, _dt: number) -> ()
+  const dead: { Entity } = {}
+
+  for entity, health in w:query(ct.Health) do
+    if health <= 0 then
+      table.insert(dead, entity)
+    end
+  end
+
+  for _, entity in dead do
+    w:delete(entity)
+  end
+end
+
+--- Saves the game. `dt` is the seconds since the last save.
+function autosave(_w: World, dt: number) -> ()
+  print(`saved after {dt} seconds`)
+end
+
+-- A timer for Autosave: an event that fires each minute, with the
+-- seconds that passed. Any RBXScriptSignal works.
+const minute = new Instance('BindableEvent')
+
+task.spawn(function() -> ()
+  while true do
+    minute:Fire(task.wait(60))
+  end
+end)
+
+-- Input runs on RunService.PreSimulation, before the built-in phase.
+-- Damage and Cleanup run on PostSimulation, after Simulation, in that
+-- order. Autosave runs on the timer.
+const scheduler = new Scheduler(world())
+  :before(Phase.PreSimulation, GamePhase.Input)
+  :after(Phase.Simulation, GamePhase.Damage, GamePhase.Cleanup)
+  :on(minute.Event, GamePhase.Autosave)
+
+scheduler:add(
+  system(input, GamePhase.Input),
+  system(damage, GamePhase.Damage),
+  system(cleanup, GamePhase.Cleanup),
+  system(autosave, GamePhase.Autosave)
+)
+
+scheduler:start()
+
+--[[
+  The rules:
+
+  - Add each phase before `add` gets a system of that phase, and before
+    `start`. A system whose phase the scheduler does not have stops
+    `add` with an error.
+  - A phase is its name. Each phase of one scheduler has its own name,
+    so a game enum does not use a name of `Phase`, such as `Simulation`.
+  - An anchor can be a phase of the game: `before(GamePhase.Damage, ...)`.
+  - A phase beside `Phase.Startup` runs one time, when the scheduler
+    starts. A phase beside `Phase.Render` runs on a client only.
+  - A system of an `on` phase gets the first argument of the event as
+    `dt` when that is a number, as with `RunService.Heartbeat`, and 0
+    when it is not.
+  - `step(dt)` runs each phase in order, with the phases of the game in
+    their places. The `on` phases come last. `run(phase, dt)` runs one.
+]]

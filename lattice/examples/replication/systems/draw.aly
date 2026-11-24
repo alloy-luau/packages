@@ -1,0 +1,43 @@
+--[[
+  Shows each orb, on a client. An orb that just arrived has no part, so
+  the system makes one. After that, the part follows the position that
+  the server sends.
+]]
+
+import Workspace from '@game/Workspace'
+import { Phase, query, system, type Entity, type World } from '@packages/lattice'
+import ct, { here } from '../components'
+
+const arrived = query(ct.Tint):without(here.Body)
+const shown = query(here.Body, ct.Position)
+
+--- Gives each new orb a part, then moves each part to its orb.
+function draw(world: World, _dt: number) -> ()
+  -- A `set` of a new id moves the entity, so it waits for the end of
+  -- the walk.
+  local fresh: { [Entity]: Color3 } = {}
+
+  for entity, tint in arrived:of(world) do
+    fresh[entity] = tint
+  end
+
+  for entity, tint in fresh do
+    world:set(
+      entity,
+      here.Body,
+      new Instance('Part') {
+        Shape = Enum.PartType.Ball,
+        Size = new Vector3(2, 2, 2),
+        Anchored = true,
+        Color = tint,
+        Parent = Workspace,
+      }
+    )
+  end
+
+  for _, body, position in shown:of(world) do
+    body.Position = position
+  end
+end
+
+export default system(draw, Phase.Render)

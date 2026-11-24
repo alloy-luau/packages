@@ -17,10 +17,25 @@
     PostSimulation  RunService.PostSimulation, after Simulation
     Render          RunService.PreRender, on a client only
 
+  A game adds phases of its own, from an enum that it declares:
+
+    enum GamePhase
+      Input
+      Autosave
+    end
+
+    scheduler:before(Phase.PreSimulation, GamePhase.Input)
+    scheduler:on(autosave_timer.Event, GamePhase.Autosave)
+
+  `before` and `after` put a phase beside one that the scheduler has, on
+  the same event. `on` gives a phase an event of its own. A unit variant
+  of an enum is its name, so a phase is a string, and each phase of one
+  scheduler has its own name.
+
   Inside a phase, the systems run in the order the scheduler got them.
   `step` runs one frame by hand, so a test needs no RunService.
 
-  An attribute, `@system(Phase.Simulation)`, would read better. Alloy 0.1
+  An attribute, `@system(Phase.Simulation)`, would read better. Alloy
   keeps a function's attributes in the runtime copy of the module that
   declares the function, and a package has a runtime copy of its own,
   so Lattice could not read them. `system` keeps the phase here instead.
@@ -32,19 +47,24 @@
 --- Import these from `@packages/lattice`.
 
 import RunService from '@game/RunService'
+import { has_shared, replicate } from './replication'
 import type { World } from './world'
 
 --- @type Phase 'Startup' | 'PreSimulation' | 'Simulation' | 'PostSimulation' | 'Render'
 --- @within scheduler
---- The phases of a frame. A system that [scheduler.system] does not name
---- runs in Simulation. A [Scheduler] runs each phase on its RunService
---- event:
+--- The built-in phases of a frame. A system that [scheduler.system] does
+--- not name runs in Simulation. A [Scheduler] runs each phase on its
+--- RunService event:
 ---
 --- - `Phase.Startup`: once, before the first frame
 --- - `Phase.PreSimulation`: on `RunService.PreSimulation`, before the physics
 --- - `Phase.Simulation`: on `RunService.PostSimulation`, after the physics
 --- - `Phase.PostSimulation`: on `RunService.PostSimulation`, after Simulation
 --- - `Phase.Render`: on `RunService.PreRender`, on a client only
+---
+--- A game adds its own phases with [Scheduler:before], [Scheduler:after],
+--- and [Scheduler:on]. A phase is the name of an enum variant, so a
+--- variant of the game's own unit enum is a phase too.
 export enum Phase
   Startup
   PreSimulation
@@ -60,20 +80,18 @@ export type System = (world: World, dt: number) -> ()
 
 -- The phase that `system` named for each system. Weak keys: a system
 -- that goes takes its phase with it.
-local named: { [System]: Phase } = setmetatable({}, { __mode = 'k' })
-
--- The frame's phases after Startup, in the order `step` runs them.
-const FRAME = [ Phase.PreSimulation, Phase.Simulation, Phase.PostSimulation, Phase.Render ]
+local named: { [System]: string } = setmetatable({}, { __mode = 'k' })
 
 --- Names the phase of a system, and gives the system back, so a system
 --- module ends with `export default system(movement, Phase.Simulation)`.
---- A second call with another phase stops with an error.
+--- The phase is a variant of [Phase], or of an enum of the game. A
+--- second call with another phase stops with an error.
 --- @within scheduler
 --- @param run -- The system
 --- @param phase -- The phase that the system runs in
 --- @return System -- The same system
 --- @error string -- When an earlier call gave the system another phase
-export function system(run: System, phase: Phase) -> System
+export function system(run: System, phase: string) -> System
   const had = named[run]
   assert(had == nil or had == phase, `lattice: this system runs in {had} already`)
   named[run] = phase
@@ -94,29 +112,83 @@ export struct Scheduler
   --- @readonly
   --- The world that each system gets.
   read world: World
+  -- Each phase, in the order that `step` runs them.
+  private order: { string } = {}
   -- The systems of each phase, in the order they run.
-  private phases: { [Phase]: { System } } = {}
+  private systems: { [string]: { System } } = {}
+  -- The phases that run one time, when the scheduler starts.
+  private once: { [string]: boolean } = {}
+  -- The event of each phase that runs each frame. A phase with none
+  -- runs by hand only, as Render does on the server.
+  private events: { [string]: RBXScriptSignal } = {}
   -- Each system that the scheduler holds, so a second add keeps its place.
   private known: { [System]: boolean } = {}
-  -- Whether Startup ran.
+  -- Whether the Startup phases ran.
   private started: boolean = false
   private connections: { RBXScriptConnection } = {}
 end
 
 impl Scheduler
-  --- A scheduler for `world`, with no systems.
+  --- A scheduler for `world`, with the built-in phases and no systems.
   --- @param world -- The world that each system gets
   --- @return Scheduler -- The new scheduler
   function new(world: World) -> Scheduler
     const scheduler = new Scheduler { world = world }
 
-    scheduler.phases[Phase.Startup] = {}
+    scheduler:insert(Phase.Startup, 1)
+    scheduler.once[Phase.Startup] = true
+    scheduler:on(RunService.PreSimulation, Phase.PreSimulation)
+    scheduler:on(RunService.PostSimulation, Phase.Simulation, Phase.PostSimulation)
+    scheduler:insert(Phase.Render, #scheduler.order + 1)
 
-    for _, phase in FRAME do
-      scheduler.phases[phase] = {}
-    end
+    @cfg(client)
+    scheduler.events[Phase.Render] = RunService.PreRender
 
     return scheduler
+  end
+
+  --- Adds phases that run before `anchor`, on the same event, in the
+  --- order the call gives them. A phase before Startup runs one time.
+  --- @method before
+  --- @within Scheduler
+  --- @param anchor -- A phase that the scheduler has
+  --- @param ... -- The new phases, such as the variants of an enum of the game
+  --- @return Scheduler -- The same scheduler, so the calls can chain
+  --- @error string -- When the scheduler has no `anchor`, has a new phase already, or runs
+  function before(self, anchor: string, ...: string) -> Scheduler
+    return self:beside(anchor, false, { ... })
+  end
+
+  --- Adds phases that run after `anchor`, on the same event, in the
+  --- order the call gives them. A phase after Startup runs one time.
+  --- @method after
+  --- @within Scheduler
+  --- @param anchor -- A phase that the scheduler has
+  --- @param ... -- The new phases, such as the variants of an enum of the game
+  --- @return Scheduler -- The same scheduler, so the calls can chain
+  --- @error string -- When the scheduler has no `anchor`, has a new phase already, or runs
+  function after(self, anchor: string, ...: string) -> Scheduler
+    return self:beside(anchor, true, { ... })
+  end
+
+  --- Adds phases that run each time `event` fires, in the order the
+  --- call gives them. Each system gets the first argument of the event
+  --- as `dt` when that is a number, as with `RunService.Heartbeat`, and
+  --- 0 when it is not. `step` runs these phases after the phases that
+  --- the scheduler has.
+  --- @method on
+  --- @within Scheduler
+  --- @param event -- The event that runs the phases
+  --- @param ... -- The new phases, such as the variants of an enum of the game
+  --- @return Scheduler -- The same scheduler, so the calls can chain
+  --- @error string -- When the scheduler has a new phase already, or runs
+  function on(self, event: RBXScriptSignal, ...: string) -> Scheduler
+    for _, phase in { ... } do
+      self:insert(phase, #self.order + 1)
+      self.events[phase] = event
+    end
+
+    return self
   end
 
   --- Adds systems. Each one goes to the phase that `system` named for
@@ -126,11 +198,12 @@ impl Scheduler
   --- @within Scheduler
   --- @param ... -- The systems to add
   --- @return Scheduler -- The same scheduler, so the calls can chain
+  --- @error string -- When the scheduler does not have the phase of a system
   function add(self, ...: System) -> Scheduler
     for _, run in { ... } do
       if not self.known[run] then
         self.known[run] = true
-        table.insert(self.phases[named[run] ?? Phase.Simulation], run)
+        table.insert(self:systems_of(named[run] ?? Phase.Simulation), run)
       end
     end
 
@@ -143,52 +216,73 @@ impl Scheduler
   --- @within Scheduler
   --- @param phase -- The phase to run
   --- @param dt -- The seconds that each system gets. The default is 0
-  function run(self, phase: Phase, dt: number = 0) -> ()
-    for _, run in self.phases[phase] do
+  --- @error string -- When the scheduler does not have the phase
+  function run(self, phase: string, dt: number = 0) -> ()
+    for _, run in self:systems_of(phase) do
       run(self.world, dt)
     end
   end
 
-  --- Runs one frame by hand: Startup on the first call, then
-  --- PreSimulation, Simulation, PostSimulation, and Render.
+  --- Runs one frame by hand: the Startup phases on the first call, then
+  --- each other phase in order, with the phases of the game in their
+  --- places.
   --- @method step
   --- @within Scheduler
   --- @param dt -- The seconds that each system gets. The default is 1/60
   function step(self, dt: number = 1 / 60) -> ()
     self:startup()
 
-    for _, phase in FRAME do
+    for _, phase in self.order where not self.once[phase] do
       self:run(phase, dt)
     end
   end
 
-  --- Runs Startup, then each phase on its RunService event. An error in
+  --- Runs the Startup phases, then each phase on its event. An error in
   --- a system shows as a warning with the system's name, and the next
-  --- system runs.
+  --- system runs. When the game has shared ids, the world replicates
+  --- from here on, as [replication.replicate] says.
   --- @method start
   --- @within Scheduler
   --- @error string -- When the scheduler runs already
   function start(self) -> ()
     assert(#self.connections == 0, 'lattice: this scheduler runs already')
+
+    if has_shared() then
+      replicate(self.world)
+    end
+
     self:startup()
 
-    table.insert(
-      self.connections,
-      RunService.PreSimulation:Connect(function(dt) self:guarded(Phase.PreSimulation, dt) end)
-    )
-    table.insert(self.connections, RunService.PostSimulation:Connect(function(dt)
-      self:guarded(Phase.Simulation, dt)
-      self:guarded(Phase.PostSimulation, dt)
-    end))
+    -- One connection for each event, so the phases of an event run in
+    -- their order.
+    local groups: { [RBXScriptSignal]: { string } } = {}
 
-    @cfg(client)
-    table.insert(
-      self.connections,
-      RunService.PreRender:Connect(function(dt) self:guarded(Phase.Render, dt) end)
-    )
+    for _, phase in self.order do
+      const event = self.events[phase]
+
+      if event == nil then
+        continue
+      end
+
+      local group = groups[event]
+
+      if group == nil then
+        const made: { string } = {}
+        group = made
+        groups[event] = made
+
+        table.insert(self.connections, event:Connect(function(dt: unknown) -> ()
+          for _, each in made do
+            self:guarded(each, dt is number ? dt : 0)
+          end
+        end))
+      end
+
+      table.insert(group, phase)
+    end
   end
 
-  --- Stops the RunService events. `start` runs them again, with no
+  --- Stops the events of the phases. `start` runs them again, with no
   --- second Startup.
   --- @method stop
   --- @within Scheduler
@@ -200,17 +294,50 @@ impl Scheduler
     table.clear(self.connections)
   end
 
-  -- Runs Startup once.
+  -- Puts a new phase at `index` of the order, with no systems.
+  private function insert(self, phase: string, index: number) -> ()
+    assert(#self.connections == 0, 'lattice: add each phase before start()')
+    assert(self.systems[phase] == nil, `lattice: this scheduler has the phase {phase} already`)
+    table.insert(self.order, index, phase)
+    self.systems[phase] = {}
+  end
+
+  -- Puts each new phase beside `anchor`, with the event of `anchor`.
+  private function beside(self, anchor: string, after: boolean, phases: { string }) -> Scheduler
+    self:systems_of(anchor)
+
+    for place, phase in phases do
+      -- A phase before the anchor moves the anchor one place on, so the
+      -- anchor's own index is the place of the next one.
+      self:insert(phase, (table.find(self.order, anchor) :: number) + (after ? place : 0))
+      self.once[phase] = self.once[anchor]
+      self.events[phase] = self.events[anchor]
+    end
+
+    return self
+  end
+
+  -- The systems of a phase. A phase that the scheduler does not have
+  -- stops with an error.
+  private function systems_of(self, phase: string) -> { System }
+    return self.systems[phase]
+      ?? error(`lattice: this scheduler has no phase {phase}; add it with before, after, or on`, 3)
+  end
+
+  -- Runs each phase that runs one time, on the first call.
   private function startup(self) -> ()
     if not self.started then
       self.started = true
-      self:run(Phase.Startup)
+
+      for _, phase in self.order where self.once[phase] do
+        self:run(phase)
+      end
     end
   end
 
   -- Runs one phase. A system that fails cannot stop the systems after it.
-  private function guarded(self, phase: Phase, dt: number) -> ()
-    for _, run in self.phases[phase] do
+  private function guarded(self, phase: string, dt: number) -> ()
+    for _, run in self.systems[phase] do
       const result = Result.pcall(run, self.world, dt)
 
       if local Err(message) = result then
@@ -223,6 +350,16 @@ end
 @test
 namespace SchedulerTests
   import { world as new_world } from './world'
+
+  -- The phases of a game: a unit enum of its own.
+  enum GamePhase
+    Setup
+    Network
+    Input
+    Combat
+    Cleanup
+    Autosave
+  end
 
   -- The order the systems below ran in, by name.
   const ran: { string } = {}
@@ -342,6 +479,119 @@ namespace SchedulerTests
     scheduler:run(Phase.PreSimulation)
 
     $assert_eq(#ran, 1)
+  end
+
+  -- A system that writes its name, in `phase`.
+  private function marks(name: string, phase: string) -> System
+    return system(function(_world: World, _dt: number) -> ()
+      table.insert(ran, name)
+    end, phase)
+  end
+
+  --- A phase of the game runs beside its anchor, in the order of the call.
+  public function a_game_phase_runs_beside_its_anchor() -> ()
+    table.clear(ran)
+
+    const scheduler = new Scheduler(new_world())
+      :before(Phase.PreSimulation, GamePhase.Input)
+      :after(Phase.Simulation, GamePhase.Combat, GamePhase.Cleanup)
+      :before(GamePhase.Input, GamePhase.Network)
+      :after(Phase.Startup, GamePhase.Setup)
+      :add(
+        marks('cleanup', GamePhase.Cleanup),
+        marks('late', Phase.PostSimulation),
+        marks('combat', GamePhase.Combat),
+        marks('move', Phase.Simulation),
+        marks('early', Phase.PreSimulation),
+        marks('input', GamePhase.Input),
+        marks('network', GamePhase.Network),
+        marks('setup', GamePhase.Setup),
+        marks('spawn', Phase.Startup)
+      )
+
+    scheduler:step()
+    scheduler:step()
+
+    $assert_eq(
+      table.concat(ran, ', '),
+      'spawn, setup, network, input, early, move, combat, cleanup, late, '
+        .. 'network, input, early, move, combat, cleanup, late'
+    )
+  end
+
+  --- A phase beside an anchor runs on the event of the anchor, and a
+  --- phase that `on` adds runs on its own event.
+  @allow(explicit_any)
+  public function a_game_phase_runs_on_its_event() -> ()
+    -- The test shim has no frame events, so the test gives RunService
+    -- its own. A write to a service goes through `any`.
+    const pre = new Instance('BindableEvent')
+    const post = new Instance('BindableEvent')
+    const timer = new Instance('BindableEvent')
+    local service: any = RunService
+    service.PreSimulation = pre.Event
+    service.PostSimulation = post.Event
+    table.clear(ran)
+
+    const scheduler = new Scheduler(new_world())
+      :before(Phase.PreSimulation, GamePhase.Input)
+      :after(Phase.PostSimulation, GamePhase.Cleanup)
+      :on(timer.Event, GamePhase.Autosave)
+      :add(
+        marks('early', Phase.PreSimulation),
+        marks('input', GamePhase.Input),
+        marks('cleanup', GamePhase.Cleanup),
+        system(function(_world: World, dt: number) -> ()
+        table.insert(ran, `autosave {dt}`)
+      end, GamePhase.Autosave)
+      )
+
+    scheduler:start()
+    pre:Fire(0.1)
+    $assert_eq(table.concat(ran, ', '), 'input, early')
+
+    post:Fire(0.1)
+    timer:Fire(60)
+    timer:Fire('not a number')
+    scheduler:stop()
+    timer:Fire(60)
+
+    $assert_eq(table.concat(ran, ', '), 'input, early, cleanup, autosave 60, autosave 0')
+
+    -- `step` runs a phase with its own event too, after the others.
+    table.clear(ran)
+    scheduler:step(0.5)
+    $assert_eq(table.concat(ran, ', '), 'input, early, cleanup, autosave 0.5')
+  end
+
+  --- A phase needs an anchor that the scheduler has, a new name, and a
+  --- scheduler that does not run. A system needs a phase that it has.
+  public function a_wrong_phase_stops() -> ()
+    const scheduler = new Scheduler(new_world()):after(Phase.Simulation, GamePhase.Combat)
+
+    $expect(function() -> ()
+      scheduler:before(GamePhase.Input, GamePhase.Network)
+    end):toThrow('has no phase Input')
+
+    $expect(function() -> ()
+      scheduler:after(Phase.Startup, GamePhase.Combat)
+    end):toThrow('has the phase Combat already')
+
+    $expect(function() -> ()
+      scheduler:add(marks('input', GamePhase.Input))
+    end):toThrow('has no phase Input')
+
+    $expect(function() -> ()
+      scheduler:run(GamePhase.Input)
+    end):toThrow('has no phase Input')
+
+    scheduler:start()
+
+    $expect(function() -> ()
+      scheduler:before(Phase.Simulation, GamePhase.Input)
+    end):toThrow('before start()')
+
+    scheduler:stop()
   end
 
   --- In a run by hand, an error goes to the caller.

@@ -113,13 +113,13 @@ local function register<T>(id: Entity<T>, name: string?, traits: { Id }) -> Enti
   return id
 end
 
--- Stops an id that comes after the first world, which would not know it.
-local function check_open(name: string?) -> ()
+--- @within world
+--- @private
+--- Stops a call that comes after the first world, which would not know
+--- its result. `what` names the call in the error, such as `make 'Late'`.
+export function check_open(what: string) -> ()
   if closed then
-    error(
-      `lattice: make '{name ?? 'this id'}' before the first world(); that world does not know it`,
-      3
-    )
+    error(`lattice: {what} before the first world(); that world does not know it`, 3)
   end
 end
 
@@ -133,7 +133,7 @@ end
 --- @return Entity<T> -- The id of the component
 --- @error string -- When a world exists already. Make each id before the first [world.world] call
 export function component<T>(name: string?, ...: Id) -> Entity<T>
-  check_open(name)
+  check_open(`make '{name ?? 'this id'}'`)
   return register(jecs.component<<T>>(), name, { ... })
 end
 
@@ -145,7 +145,7 @@ end
 --- @return Entity -- The id of the tag
 --- @error string -- When a world exists already. Make each id before the first [world.world] call
 export function tag(name: string?, ...: Id) -> Entity
-  check_open(name)
+  check_open(`make '{name ?? 'this id'}'`)
   return register(jecs.tag(), name, { ... })
 end
 

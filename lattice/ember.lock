@@ -2,6 +2,16 @@
 version = 2
 
 [[package]]
+name = "pepeeltoro41/replecs"
+version = "0.4.0-rc.5"
+environment = "roblox"
+link = "replecs"
+index = "https://github.com/UpliftGames/wally-index"
+type = "zip"
+url = "https://api.wally.run/v1/package-contents/pepeeltoro41/replecs/0.4.0-rc.5"
+sha256 = "e4c57aaa29d541b1502bf7d25f56e4f72ba50c988e19d6b2b8fcc272a15661a5"
+
+[[package]]
 name = "ukendio/jecs"
 version = "0.11.0"
 environment = "roblox"
@@ -9,3 +19,4 @@ link = "jecs"
 index = "https://github.com/UpliftGames/wally-index"
 type = "zip"
 url = "https://api.wally.run/v1/package-contents/ukendio/jecs/0.11.0"
+sha256 = "f1e6348df16265bfd159848cd766544ebeba53818a66bf6a243aad53c214bf9e"

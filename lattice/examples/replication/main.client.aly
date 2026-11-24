@@ -1,0 +1,12 @@
+--[[
+  The client of the replication example. Its world starts empty, and the
+  orbs of the server arrive in it. One system gives each orb a part and
+  keeps the part at the orb's position.
+
+    Render  draw  shows each orb
+]]
+
+import { Scheduler, world } from '@packages/lattice'
+import draw from './systems/draw'
+
+new Scheduler(world()):add(draw):start()

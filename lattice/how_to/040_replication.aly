@@ -1,0 +1,141 @@
+--[[
+  Replication sends the server's world to each client. A game marks a
+  table of components with `shared`, and that is all it writes: an
+  entity that holds a shared id replicates, with that id.
+
+  A scheduler that starts does the rest. On the server, it makes the
+  remotes, sends the full world to each client that joins, and sends
+  the changes after that. On a client, it asks for the world and applies
+  what arrives. Lattice uses replecs for this.
+
+  This module runs on both sides. A real game keeps the shared table in
+  a module that the server and the client both import.
+]]
+
+import Players from '@game/Players'
+import Workspace from '@game/Workspace'
+import {
+  Phase,
+  Scheduler,
+  Share,
+  component,
+  pair,
+  query,
+  replecs,
+  shared,
+  system,
+  tag,
+  world,
+  type Entity,
+  type World,
+} from '@packages/lattice'
+
+-- Each id in this table replicates. `shared` gives the table back, so a
+-- components module ends with `export default shared({ ... })`.
+const ct = shared({
+  Position = component<<Vector3>>('Position'),
+  Health = component<<number>>('Health'),
+  Burning = tag('Burning'),
+})
+
+-- An unreliable id sends its value at each interval, and a value can
+-- get lost. Use it for a value that changes each frame.
+const fast = shared({ Aim = component<<Vector3>>('Aim') }, Share.Unreliable)
+
+-- A Manual id replicates only where the game says so, with the ids of
+-- replecs. `guard` below shows one.
+const secret = shared({ Loot = component<<number>>('Loot') }, Share.Manual)
+
+-- An id that the game does not mark stays on its own side.
+const here = {
+  Body = component<<BasePart>>('Body'),
+}
+
+--- Makes a dummy, on the server. It holds shared ids, so each client
+--- gets it.
+function spawn(w: World, _dt: number) -> ()
+  const dummy = w:entity()
+  w:set(dummy, ct.Position, new Vector3(0, 5, 0))
+  w:set(dummy, ct.Health, 100)
+  w:set(dummy, fast.Aim, Vector3.zAxis)
+  w:add(dummy, ct.Burning)
+end
+
+--- Burns each dummy, on the server. Each new health goes to the clients.
+function burn(w: World, dt: number) -> ()
+  for entity, health in w:query(ct.Health):with(ct.Burning) do
+    w:set(entity, ct.Health, health - 5 * dt)
+  end
+end
+
+--- Makes a chest whose loot only its owner knows. The entity has no
+--- shared id that Lattice follows, so the game gives it the ids of
+--- replecs: who gets the entity, and which id goes with it.
+function guard(w: World, owner: Player) -> ()
+  const chest = w:entity()
+  w:set(chest, secret.Loot, 250)
+  w:set(chest, replecs.networked, owner)
+  w:add(chest, pair(replecs.reliable, secret.Loot))
+end
+
+--- Gives each player that joins a chest, on the server.
+function chests(w: World, _dt: number) -> ()
+  Players.PlayerAdded:Connect(function(owner: Player) -> ()
+    guard(w, owner)
+  end)
+end
+
+const unseen = query(ct.Position):without(here.Body)
+
+--- Gives each entity that came from the server a part, on a client.
+function show(w: World, _dt: number) -> ()
+  local fresh: { [Entity]: Vector3 } = {}
+
+  for entity, position in unseen:of(w) do
+    fresh[entity] = position
+  end
+
+  for entity, position in fresh do
+    w:set(
+      entity,
+      here.Body,
+      new Instance('Part') { Anchored = true, Position = position, Parent = Workspace }
+    )
+  end
+end
+
+-- Each side makes its own world and its own scheduler. `start` sees the
+-- shared ids and replicates the world.
+const scheduler = new Scheduler(world())
+
+@cfg(server)
+scheduler:add(system(spawn, Phase.Startup), system(chests, Phase.Startup), burn)
+
+@cfg(client)
+scheduler:add(system(show, Phase.Render))
+
+scheduler:start()
+
+--[[
+  The rules:
+
+  - Call `shared` before the first `world()`, as for `component`.
+  - Each shared id needs a name. The two sides match the ids by name,
+    so the numbers of the ids can differ.
+  - An entity replicates from its first shared id. An entity with none
+    stays on the server. A delete on the server deletes the entity on
+    each client.
+  - The entity of a client has its own number. A pair of a shared
+    relationship arrives with the client's entity as its target, when
+    the target replicates too.
+  - The server sends 20 times a second. For another interval, call
+    `replicate(world, seconds)` before `start`. A game with no scheduler
+    calls `replicate(world)` on each side.
+  - One world replicates on each side. Lattice makes two remotes in
+    ReplicatedStorage, `LatticeReliable` and `LatticeUnreliable`.
+  - A client changes its own world only. Nothing goes back to the
+    server; use a remote for what a player does.
+  - `replecs` is the replecs module. An entity that the game gives
+    `replecs.networked` keeps that filter, so its shared ids go to those
+    players only.
+]]

@@ -1,0 +1,22 @@
+--[[
+  Makes the orbs, once, on the server. Each one holds shared ids only,
+  so each client gets all of it.
+]]
+
+import { Phase, system, type World } from '@packages/lattice'
+import ct from '../components'
+
+const ORBS = 8
+
+--- Makes each orb at its own angle, with its own colour.
+function spawn(world: World, _dt: number) -> ()
+  for index = 1, ORBS do
+    const orb = world:entity()
+
+    world:set(orb, ct.Angle, index / ORBS * math.pi * 2)
+    world:set(orb, ct.Position, Vector3.zero)
+    world:set(orb, ct.Tint, Color3.fromHSV(index / ORBS, 0.8, 1))
+  end
+end
+
+export default system(spawn, Phase.Startup)

@@ -1,0 +1,604 @@
+--[[
+  Replication: the server's world goes to each client, over replecs.
+
+  A game marks a table of components as shared, in the module that
+  makes them:
+
+    export default shared({
+      Position = component<<Vector3>>('Position'),
+      Health = component<<number>>('Health'),
+    })
+
+  A scheduler that starts then replicates its world. The server makes
+  two remotes in ReplicatedStorage. A client asks for the world one
+  time, and the server answers with the full state at its next send.
+  After that, the server sends the changes on Heartbeat. An entity replicates while it
+  holds a shared id, so a game writes no system for any of this.
+
+  replecs does the work: it packs the values, maps the entity ids, and
+  keeps a filter for each player. `replecs` is its module, for the
+  controls that Lattice does not wrap.
+]]
+
+--- @class replication
+--- The replication of a world from the server to each client.
+--- [replication.shared] marks the ids that replicate, and a [Scheduler]
+--- that starts runs the rest. Import these from `@packages/lattice`.
+
+import ReplicatedStorage from '@game/ReplicatedStorage'
+import RunService from '@game/RunService'
+import jecs from '../packages/roblox/jecs'
+import replecs from '../packages/roblox/replecs'
+import { check_open, targets, type Entity, type World } from './world'
+
+--- @prop replecs ReplecsLib
+--- @within replication
+--- @readonly
+--- The replecs module that Lattice replicates with. Its ids, such as
+--- `replecs.networked` and `replecs.reliable`, give one entity or one
+--- player a rule of its own.
+export { replecs }
+
+--- @type Share 'Reliable' | 'Unreliable' | 'Manual'
+--- @within replication
+--- How a shared id replicates:
+---
+--- - `Share.Reliable`: each change arrives, in order
+--- - `Share.Unreliable`: the server sends the value at each interval, and
+---   a value can get lost. A tag and a pair replicate as Reliable
+--- - `Share.Manual`: Lattice replicates nothing by itself. The game gives
+---   each entity its replecs ids
+export enum Share
+  Reliable
+  Unreliable
+  Manual
+end
+
+-- The names of the two remotes, in ReplicatedStorage.
+const RELIABLE = 'LatticeReliable'
+const UNRELIABLE = 'LatticeUnreliable'
+
+-- How each id replicates, for the ids that Lattice follows by itself.
+local followed: { [Entity]: Share } = {}
+
+-- Whether `shared` marked an id, so a scheduler knows to replicate.
+local marked = false
+
+-- The world that replicates. The remotes serve one world.
+local replicated: World? = nil
+
+--- Marks each id in `ids` as shared, and gives `ids` back, so a module
+--- of components ends with `export default shared({ ... })`. An entity
+--- that holds a shared id replicates to each client, with that id. Each
+--- shared id needs a name, since the two sides match the ids by name.
+--- @within replication
+--- @param ids -- A table of components and tags
+--- @param share -- How the ids replicate. The default is `Share.Reliable`
+--- @return T -- The same table
+--- @error string -- When a world exists already, or when a value of `ids` is not an id
+export function shared<T>(ids: T, share: Share = Share.Reliable) -> T
+  check_open('call shared()')
+
+  for _, id in (ids :: unknown) :: { [unknown]: Entity } do
+    assert(id is number, 'lattice: shared() takes a table of components and tags')
+
+    -- replecs shares ChildOf by itself, and a second mark is an error there.
+    if id ~= jecs.ChildOf then
+      jecs.meta(id, replecs.shared)
+    end
+
+    if share ~= Share.Manual then
+      followed[id] = share
+    end
+  end
+
+  marked = true
+  return ids
+end
+
+--- @within replication
+--- @private
+--- Whether [replication.shared] marked an id.
+export function has_shared() -> boolean
+  return marked
+end
+
+-- Makes the server follow each entity that holds a followed id, now and
+-- from now on.
+local function follow(world: World, server: replecs.Server) -> ()
+  for id, share in followed do
+    -- replecs sends a value on the unreliable channel, and a tag has none.
+    const unreliable = share == Share.Unreliable and world:has(id, jecs.Component)
+
+    local function start(entity: Entity, held: Entity) -> ()
+      -- An entity that the game gave `replecs.networked` keeps its filter.
+      if not world:has(entity, replecs.networked) then
+        server:set_networked(entity)
+      end
+
+      if jecs.IS_PAIR(held) then
+        server:set_pair(entity, held)
+      elseif unreliable then
+        server:set_unreliable(entity, held)
+      else
+        server:set_reliable(entity, held)
+      end
+    end
+
+    -- `set_networked` changes the entity, so the walk ends before it.
+    const holders: { Entity } = {}
+    const paired: { Entity } = {}
+
+    for entity in world:query(id) do
+      table.insert(holders, entity)
+    end
+
+    for entity in world:query(jecs.pair(id, jecs.Wildcard)) do
+      table.insert(paired, entity)
+    end
+
+    for _, entity in holders do
+      start(entity, id)
+    end
+
+    for _, entity in paired do
+      for _, target in targets(world, entity, id) do
+        start(entity, jecs.pair(id, target))
+      end
+    end
+
+    world:added(id, start)
+  end
+end
+
+-- The server's side: sends the changes each `interval` seconds, and the
+-- full state to each client that asked for it since the last send.
+local function serve(
+  world: World,
+  reliable: RemoteEvent,
+  unreliable: UnreliableRemoteEvent,
+  interval: number
+) -> ()
+  const server = replecs.create_server(world)
+  server:init()
+  follow(world, server)
+
+  -- The players that asked for the world and wait for the next send.
+  local joining: { [Player]: boolean } = {}
+
+  reliable.OnServerEvent:Connect(function(player: Player) -> ()
+    -- A client gets the full state one time. A second request gets no
+    -- answer, so a client cannot make the server pack the world again.
+    if not server:is_player_ready(player) then
+      joining[player] = true
+    end
+  end)
+
+  local waited = 0
+
+  RunService.Heartbeat:Connect(function(dt: number) -> ()
+    waited += dt
+
+    if waited < interval then
+      return
+    end
+
+    waited = 0
+
+    -- A player that left since its request has no parent. replecs
+    -- dropped it, and a mark would register it again.
+    for player in joining do
+      if player.Parent == nil then
+        joining[player] = nil
+      else
+        server:mark_player_ready(player)
+      end
+    end
+
+    -- replecs sends a player no change in the collect that follows its
+    -- mark, so the full state must come from the same moment. A full
+    -- state from an earlier moment loses each change between the two.
+    for player, changes, variants in server:collect_updates() do
+      if not joining[player] then
+        reliable:FireClient(player, changes, variants)
+      end
+    end
+
+    for player in joining do
+      const state, variants = server:get_full(player)
+      reliable:FireClient(player, state, variants, server:generate_handshake())
+    end
+
+    table.clear(joining)
+
+    for player, values, variants in server:collect_unreliable() do
+      unreliable:FireClient(player, values, variants)
+    end
+  end)
+end
+
+-- The client's side: asks for the world, then applies what arrives.
+-- replecs types the values beside a buffer as `any`.
+@allow(explicit_any)
+local function receive(world: World, reliable: RemoteEvent, unreliable: UnreliableRemoteEvent) -> ()
+  const client = replecs.create_client(world)
+  client:init()
+
+  -- Whether the full state arrived. It is the first reliable message.
+  local synced = false
+
+  reliable.OnClientEvent:Connect(
+    function(state: buffer, variants: any, handshake: replecs.HandshakeInfo?) -> ()
+      if synced then
+        client:apply_updates(state, variants)
+        return
+      end
+
+      if handshake ~= nil then
+        const fits, why = client:verify_handshake(handshake)
+
+        if not fits then
+          warn(`lattice: the shared ids of the client and the server differ: {why}`)
+        end
+      end
+
+      synced = true
+      client:apply_full(state, variants)
+    end
+  )
+
+  unreliable.OnClientEvent:Connect(function(values: buffer, variants: any) -> ()
+    -- A value that comes before the full state names entities that the
+    -- client does not know.
+    if synced then
+      client:apply_unreliable(values, variants)
+    end
+  end)
+
+  reliable:FireServer()
+end
+
+--- Replicates `world`. On the server, it makes the remotes and sends
+--- the world to each client. On a client, it asks for the world and
+--- applies each change. [Scheduler:start] calls it when the game has
+--- shared ids, so call it only for another interval, or for a world
+--- with no scheduler. A second call for the same world does nothing.
+--- @within replication
+--- @param world -- The world to replicate
+--- @param interval -- The seconds between two sends of the server. The default is 1/20
+--- @error string -- When another world replicates already
+export function replicate(world: World, interval: number = 1 / 20) -> ()
+  if replicated == world then
+    return
+  end
+
+  assert(replicated == nil, 'lattice: another world replicates already')
+  replicated = world
+
+  if RunService:IsServer() then
+    serve(
+      world,
+      new Instance('RemoteEvent') { Name = RELIABLE, Parent = ReplicatedStorage },
+      new Instance('UnreliableRemoteEvent') { Name = UNRELIABLE, Parent = ReplicatedStorage },
+      interval
+    )
+  else
+    -- The wait for the server's remotes must not hold the caller.
+    task.spawn(function() -> ()
+      receive(
+        world,
+        ReplicatedStorage:WaitForChild(RELIABLE) :: RemoteEvent,
+        ReplicatedStorage:WaitForChild(UNRELIABLE) :: UnreliableRemoteEvent
+      )
+    end)
+  end
+end
+
+@test
+namespace ReplicationTests
+  import Players from '@game/Players'
+  import { component, pair, tag, world as new_world } from './world'
+
+  const ct = shared({
+    Position = component<<Vector3>>('Position'),
+    Health = component<<number>>('Health'),
+    Burning = tag('Burning'),
+    Likes = tag('Likes'),
+  })
+
+  const fast = shared({ Aim = component<<Vector3>>('Aim') }, Share.Unreliable)
+  const manual = shared({ Secret = component<<number>>('Secret') }, Share.Manual)
+
+  -- The one player of the fake transport. A test writes its parent.
+  local visitor = new Instance('Player')
+
+  -- How many messages went down the fake remotes of the last link.
+  local sent = 0
+
+  -- The number of the last link. A server of an earlier link stays on
+  -- Heartbeat, and its messages do not count.
+  local links = 0
+
+  -- A remote of the fake transport: a fire on one side runs the handlers
+  -- of the other side at once. The table stands for a RemoteEvent, so it
+  -- goes through `any`.
+  @allow(explicit_any)
+  private function remote() -> any
+    const up = new Instance('BindableEvent')
+    const down = new Instance('BindableEvent')
+    const link = links
+
+    return {
+      OnServerEvent = up.Event,
+      OnClientEvent = down.Event,
+      FireServer = function(_self: unknown, ...: unknown) -> ()
+        up:Fire(visitor, ...)
+      end,
+      FireClient = function(_self: unknown, _player: unknown, ...: unknown) -> ()
+        if link == links then
+          sent += 1
+        end
+
+        down:Fire(...)
+      end,
+    }
+  end
+
+  -- A server world and a client world with the fake transport between
+  -- them. `join` makes the client ask for the world, and the server
+  -- answers at its next send. `ask` sends the request one more time.
+  @allow(explicit_any)
+  private function link(interval: number?) -> (World, World, () -> (), () -> ())
+    -- replecs connects to PlayerRemoving, which the test shim does not
+    -- have. A write to a service goes through `any`.
+    local players: any = Players
+    players.PlayerRemoving = new Instance('BindableEvent').Event
+
+    -- A player that did not leave has a parent.
+    visitor.Parent = Players
+
+    links += 1
+    sent = 0
+
+    const server = new_world()
+    const client = new_world()
+    const reliable = remote()
+    const unreliable = remote()
+    serve(server, reliable, unreliable, interval ?? 0)
+
+    return server, client, function() -> ()
+      receive(client, reliable, unreliable)
+    end, function() -> ()
+      reliable:FireServer()
+    end
+  end
+
+  -- One interval of the server passes. The test shim keeps Heartbeat as
+  -- a signal with a `Fire`, which the type does not have.
+  @allow(explicit_any)
+  private function send(dt: number?) -> ()
+    (RunService.Heartbeat :: any):Fire(dt ?? 1)
+  end
+
+  -- The entities of a world that hold `id`.
+  private function holders<T>(world: World, id: Entity<T>) -> { Entity }
+    const found: { Entity } = {}
+
+    for entity in world:query(id) do
+      table.insert(found, entity)
+    end
+
+    return found
+  end
+
+  --- A client that joins gets each entity that holds a shared id.
+  public function a_client_that_joins_gets_the_world() -> ()
+    const server, client, join = link()
+    const dummy = server:entity()
+    server:set(dummy, ct.Position, new Vector3(1, 2, 3))
+    server:set(dummy, ct.Health, 100)
+    server:add(dummy, ct.Burning)
+    server:entity()
+
+    join()
+    send()
+
+    const found = holders(client, ct.Health)
+    $assert_eq(#found, 1)
+    $assert_eq(client:get(found[1], ct.Position), new Vector3(1, 2, 3))
+    $assert_eq(client:get(found[1], ct.Health), 100)
+    $assert(client:has(found[1], ct.Burning))
+  end
+
+  --- After the full state, each change arrives at the next interval: a
+  --- new value, a removed id, a new entity, and a deleted entity.
+  public function a_change_reaches_the_client() -> ()
+    const server, client, join = link()
+    const dummy = server:entity()
+    server:set(dummy, ct.Health, 100)
+    server:add(dummy, ct.Burning)
+    join()
+    send()
+
+    server:set(dummy, ct.Health, 40)
+    server:remove(dummy, ct.Burning)
+    const second = server:entity()
+    server:set(second, ct.Position, Vector3.zero)
+    $assert_eq(#holders(client, ct.Position), 0)
+    send()
+
+    const found = holders(client, ct.Health)
+    $assert_eq(client:get(found[1], ct.Health), 40)
+    $assert(not client:has(found[1], ct.Burning))
+    $assert_eq(#holders(client, ct.Position), 1)
+
+    server:delete(dummy)
+    send()
+    $assert_eq(#holders(client, ct.Health), 0)
+  end
+
+  --- An entity that gets its first shared id after the client joined
+  --- replicates from then on.
+  public function an_entity_replicates_from_its_first_shared_id() -> ()
+    const server, client, join = link()
+    const plain = server:entity()
+    join()
+    send()
+    send()
+    $assert_eq(#holders(client, ct.Health), 0)
+
+    server:set(plain, ct.Health, 5)
+    send()
+    $assert_eq(#holders(client, ct.Health), 1)
+  end
+
+  --- An unreliable id sends its value at each interval.
+  public function an_unreliable_id_sends_its_value() -> ()
+    const server, client, join = link()
+    const turret = server:entity()
+    server:set(turret, ct.Health, 1)
+    server:set(turret, fast.Aim, Vector3.xAxis)
+    join()
+    send()
+
+    server:set(turret, fast.Aim, Vector3.yAxis)
+    send()
+
+    $assert_eq(client:get(holders(client, ct.Health)[1], fast.Aim), Vector3.yAxis)
+  end
+
+  --- A pair of a shared relationship replicates, and its target is the
+  --- client's own entity.
+  public function a_pair_reaches_the_client() -> ()
+    const server, client, join = link()
+    const alice = server:entity()
+    const bob = server:entity()
+    server:set(alice, ct.Health, 1)
+    server:set(bob, ct.Health, 2)
+    server:add(alice, pair(ct.Likes, bob))
+    join()
+    send()
+
+    local fan: Entity? = nil
+    local star: Entity? = nil
+
+    for entity, health in client:query(ct.Health) do
+      if health == 1 then
+        fan = entity
+      else
+        star = entity
+      end
+    end
+
+    $assert(fan ~= nil and star ~= nil)
+    $assert(client:has(fan :: Entity, pair(ct.Likes, star :: Entity)))
+
+    server:remove(alice, pair(ct.Likes, bob))
+    server:add(bob, pair(ct.Likes, alice))
+    send()
+
+    $assert(not client:has(fan :: Entity, pair(ct.Likes, star :: Entity)))
+    $assert(client:has(star :: Entity, pair(ct.Likes, fan :: Entity)))
+  end
+
+  --- A Manual id replicates only where the game gives an entity the
+  --- replecs ids for it.
+  public function a_manual_id_waits_for_the_game() -> ()
+    const server, client, join = link()
+    const vault = server:entity()
+    server:set(vault, ct.Health, 1)
+    server:set(vault, manual.Secret, 42)
+    join()
+    send()
+
+    const found = holders(client, ct.Health)[1]
+    $assert_eq(client:get(found, manual.Secret), nil)
+
+    server:add(vault, pair(replecs.reliable, manual.Secret))
+    send()
+    $assert_eq(client:get(found, manual.Secret), 42)
+  end
+
+  --- An entity with a filter of its own keeps it: the game gave it
+  --- `replecs.networked` for no player, so its shared ids stay.
+  public function a_filter_of_the_game_stays() -> ()
+    const server, client, join = link()
+    const hidden = server:entity()
+    server:set(hidden, replecs.networked, {})
+    server:set(hidden, ct.Health, 1)
+    join()
+    send()
+    send()
+
+    $assert_eq(#holders(client, ct.Health), 0)
+  end
+
+  --- A change between the request and the answer is in the answer, and
+  --- a change after the answer arrives too.
+  public function no_change_gets_lost_while_a_client_joins() -> ()
+    const server, client, join = link()
+    const dummy = server:entity()
+    server:set(dummy, ct.Health, 100)
+    send()
+
+    join()
+    server:set(dummy, ct.Health, 90)
+    send()
+    $assert_eq(client:get(holders(client, ct.Health)[1], ct.Health), 90)
+
+    server:set(dummy, ct.Health, 80)
+    send()
+    $assert_eq(client:get(holders(client, ct.Health)[1], ct.Health), 80)
+  end
+
+  --- The server sends nothing before a client asks, and one full state
+  --- to a client that asks two times.
+  public function the_server_answers_one_request() -> ()
+    const server, _client, join, ask = link()
+    server:set(server:entity(), ct.Health, 1)
+    send()
+    $assert_eq(sent, 0)
+
+    join()
+    $assert_eq(sent, 0)
+    send()
+    $assert_eq(sent, 1)
+
+    ask()
+    send()
+    $assert_eq(sent, 1)
+  end
+
+  --- A player that left before the answer gets none.
+  public function a_player_that_left_gets_no_answer() -> ()
+    const _server, _client, join = link()
+    join()
+    visitor.Parent = nil
+    send()
+
+    $assert_eq(sent, 0)
+  end
+
+  --- The server sends at each interval, not at each frame.
+  public function the_server_waits_for_the_interval() -> ()
+    const server, client, join = link(1)
+    join()
+    send(1)
+    server:set(server:entity(), ct.Health, 1)
+
+    send(0.5)
+    $assert_eq(#holders(client, ct.Health), 0)
+
+    send(0.5)
+    $assert_eq(#holders(client, ct.Health), 1)
+  end
+
+  --- A mark after the first world stops with an error.
+  public function a_mark_after_the_first_world_stops() -> ()
+    $assert(has_shared())
+
+    $expect(function() -> ()
+      shared({ ct.Health })
+    end):toThrow('before the first world')
+  end
+end
