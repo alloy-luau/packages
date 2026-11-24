@@ -2211,6 +2211,12 @@ namespace ReplicationTests
     $assert_eq(#holders(client, ct.Health), 1)
     $assert_eq(#holders(other, ct.Health), 0)
 
+    -- An empty set is no player.
+    net:track(chest, {})
+    send()
+    $assert_eq(#holders(client, ct.Health), 0)
+    $assert_eq(#holders(other, ct.Health), 0)
+
     -- No filter is each player.
     net:track(chest)
     send()
@@ -3110,6 +3116,23 @@ namespace ReplicationTests
     send()
     $assert(mine:is_synced())
     $assert_eq(#holders(mine.world, ct.Health), 1)
+  end
+
+  --- A custom id that the game makes while the world replicates goes to
+  --- the replicator of each side.
+  public function a_late_custom_id_registers() -> ()
+    const net, join = link()
+    const server = net.world
+    const mine = join()
+    const client = mine.world
+    const home = client:entity()
+    const door = custom_id('door', || home)
+
+    const house = server:entity()
+    server:set(house, ct.Health, 3)
+    net:identify(house, door)
+    send()
+    $assert_eq(client:get(home, ct.Health), 3)
   end
 
   --- `after` runs at once on the server, and at once on a client that

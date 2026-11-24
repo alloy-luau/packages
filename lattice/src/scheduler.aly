@@ -345,7 +345,41 @@ end
 
 @test
 namespace SchedulerTests
-  import { world as new_world } from './world'
+  import Players from '@game/Players'
+  import ReplicatedStorage from '@game/ReplicatedStorage'
+  import { shared } from './replication'
+  import { tag, world as new_world } from './world'
+
+  -- A shared id, so `start` replicates the world of its scheduler.
+  const net = shared({ Marked = tag('Marked') })
+
+  -- Whether the test shim has what a server of the replication needs.
+  local prepared = false
+
+  -- Gives the test shim PlayerRemoving, and gives each remote that
+  -- `replicate` makes its event of the server. A write to a service or
+  -- to an Instance goes through `any`.
+  @allow(explicit_any)
+  private function prepare() -> ()
+    if prepared then
+      return
+    end
+
+    prepared = true
+    local players: any = Players
+    players.PlayerRemoving = new Instance('BindableEvent').Event
+
+    ReplicatedStorage.ChildAdded:Connect(function(child: any) -> ()
+      child.OnServerEvent = new Instance('BindableEvent').Event
+    end)
+  end
+
+  -- Stops a scheduler and the replication that its `start` began, so
+  -- the next test can start another world.
+  private function rest(scheduler: Scheduler) -> ()
+    scheduler:stop()
+    replicate(scheduler.world):stop()
+  end
 
   -- The phases of a game: a unit enum of its own.
   enum GamePhase
@@ -446,6 +480,7 @@ namespace SchedulerTests
 
     make()
     const scheduler = new Scheduler(new_world()):add(spawn, broken, movement, cleanup, input, draw)
+    prepare()
     scheduler:start()
     pre:Fire(0.1)
     post:Fire(0.1)
@@ -457,12 +492,29 @@ namespace SchedulerTests
     post:Fire(0.1)
     scheduler:start()
     post:Fire(0.1)
-    scheduler:stop()
+    rest(scheduler)
 
     $assert_eq(
       table.concat(ran, ', '),
       'spawn 0, input, movement, cleanup, draw 0.1, movement, cleanup'
     )
+  end
+
+  --- start replicates the world when the game has shared ids, and a
+  --- second world cannot start while the first one replicates.
+  public function start_replicates_the_world() -> ()
+    prepare()
+    const scheduler = new Scheduler(new_world())
+    scheduler:start()
+    $assert(net.Marked ~= nil)
+    $assert(ReplicatedStorage->LatticeReliable ~= nil)
+    $assert_eq(replicate(scheduler.world).world, scheduler.world)
+
+    const second = new Scheduler(new_world())
+    $expect(|| second:start()):toThrow('another world replicates already')
+
+    rest(scheduler)
+    $assert(ReplicatedStorage->LatticeReliable == nil)
   end
 
   --- A second add of a system keeps its first place.
@@ -538,6 +590,7 @@ namespace SchedulerTests
       end, GamePhase.Autosave)
       )
 
+    prepare()
     scheduler:start()
     pre:Fire(0.1)
     $assert_eq(table.concat(ran, ', '), 'input, early')
@@ -546,6 +599,7 @@ namespace SchedulerTests
     timer:Fire(60)
     timer:Fire('not a number')
     scheduler:stop()
+    replicate(scheduler.world):stop()
     timer:Fire(60)
 
     $assert_eq(table.concat(ran, ', '), 'input, early, cleanup, autosave 60, autosave 0')
@@ -571,11 +625,12 @@ namespace SchedulerTests
 
     $expect(|| scheduler:run(GamePhase.Input)):toThrow('has no phase Input')
 
+    prepare()
     scheduler:start()
 
     $expect(|| scheduler:before(Phase.Simulation, GamePhase.Input)):toThrow('before start()')
 
-    scheduler:stop()
+    rest(scheduler)
   end
 
   --- In a run by hand, an error goes to the caller.
