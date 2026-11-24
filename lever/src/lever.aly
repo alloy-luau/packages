@@ -598,11 +598,7 @@ local function take<A, C>(
   part: Part,
   key: Enum.KeyCode
 ) -> A?
-  const found = holder(self, context, device, key, binding, part)
-
-  if found == nil then
-    return nil
-  end
+  const found = holder(self, context, device, key, binding, part) ?? return nil
 
   local holding = found.binding
   holding[found.part] = binding[part]
