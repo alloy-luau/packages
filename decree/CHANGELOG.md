@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.2
+
+- The source writes each callback of one expression as a lambda, and one
+  guard on nil as `?? break`.
+- A test covers a parameter with a width type, `times: u8`. Decree reads
+  it as it reads `@u8 times: number`.
+- Decree needs Alloy 0.2.0-rc.7 or later. The syntax is behind the flags
+  `AlloyExperimentalLambdaSyntax`, `AlloyExperimentalBailSyntax`, and
+  `AlloyExperimentalWidthTypes`. Decree sets them in its own
+  `.config.aly`, so a game sets no flag.
+
+The API and the code that runs are the same as 0.1.1.
+
 ## 0.1.1
 
 - The doc comments use the Moonwave format. The API tab on Ember shows

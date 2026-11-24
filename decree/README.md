@@ -15,7 +15,8 @@ ships no UI: a console of your own, or one such as Conch, sends the lines.
 
 Decree depends on no other package.
 
-Decree needs Alloy 0.1.5 or later and embr 0.8.1 or later.
+Decree needs Alloy 0.2.0-rc.7 or later and embr 0.8.1 or later. Decree turns on
+the Alloy flags it uses in its own configuration, so a game sets no flag.
 
 ## Learn
 

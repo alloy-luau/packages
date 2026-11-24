@@ -6,6 +6,13 @@
 ]]
 
 export default {
+  -- The syntax of Alloy 0.2 that Decree uses. Decree builds with its own
+  -- flags, so a game sets none of them.
+  fflags = {
+    AlloyExperimentalLambdaSyntax = true,
+    AlloyExperimentalBailSyntax = true,
+    AlloyExperimentalWidthTypes = true,
+  },
   build = {
     ['in'] = 'src',
     out = 'build',
