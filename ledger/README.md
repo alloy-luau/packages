@@ -11,7 +11,8 @@ as a `Result`.
 
 Ledger depends on no other package.
 
-Ledger needs Alloy 0.1.5 or later and embr 0.8.1 or later.
+Ledger needs Alloy 0.2.0-rc.7 or later and embr 0.8.1 or later. Ledger turns on
+the Alloy flags it uses in its own configuration, so a game sets no flag.
 
 ## Learn
 

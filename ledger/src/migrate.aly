@@ -77,12 +77,8 @@ namespace MigrateTests
 
   private function chain() -> { Migration }
     return {
-      function(old: SaveV1) -> SaveV2
-        return { coins = old.gold }
-      end,
-      function(old: SaveV2) -> SaveV3
-        return { coins = old.coins, gems = 0 }
-      end,
+      |old: SaveV1| { coins = old.gold },
+      |old: SaveV2| { coins = old.coins, gems = 0 },
     }
   end
 
