@@ -404,7 +404,7 @@ end
 export function spring<T>(target: Readable<T>, options: SpringOptions?) -> Spring<T>
   const tuned: SpringOptions = options ?? {}
   const omega, zeta = tuning(tuned)
-  const first = untracked(function() return read(target) end)
+  const first = untracked(|| read(target))
   const kind, parts = pack(first)
   local start_velocity: { number } = table.create(#parts, 0)
 
@@ -596,12 +596,12 @@ export function tween<T>(target: Readable<T>, options: TweenOptions?) -> Signal<
   const tuned: TweenOptions = options ?? {}
   const duration = math.max(tuned.duration ?? 0.25, 1e-6)
   const delay = tuned.delay ?? 0
-  const output = signal(untracked(function() return read(target) end))
+  const output = signal(untracked(|| read(target)))
   local job: ((dt: number) -> boolean)? = nil
 
   effect(function()
     const goal = read(target)
-    const from = untracked(function() return output() end)
+    const from = untracked(|| output())
     local elapsed = -delay
 
     if job ~= nil then

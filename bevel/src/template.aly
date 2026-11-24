@@ -177,7 +177,7 @@ export function each<T>(
   return {
     __bevel_directive = function(parent: Instance) -> ()
       const scope = current_owner()
-      const key_of: (item: T) -> unknown = track or function(item: T) -> unknown return item end
+      const key_of: (item: T) -> unknown = track or |item: T| item
       local rows: { [unknown]: Row } = {}
 
       effect(function()
@@ -191,7 +191,7 @@ export function each<T>(
 
           if row == nil then
             const index = signal(i)
-            local view, owner = build_in(scope, function() return render(item, index :: any) end)
+            local view, owner = build_in(scope, || render(item, index :: any))
 
             view.Parent = parent
             row = { view = view, owner = owner, index = index }
@@ -311,7 +311,7 @@ namespace TemplateTests
   public function a_child_function_builds_again() -> ()
     const open = signal(false)
     const frame = create('Frame')({
-      function() return if open() then create('TextLabel')({ Name = 'Menu' }) else nil end,
+      || if open() then create('TextLabel')({ Name = 'Menu' }) else nil,
     })
 
     $assert(frame->Menu == nil)
@@ -325,7 +325,7 @@ namespace TemplateTests
   public function each_keeps_a_view_for_each_key() -> ()
     const items = signal([ 'a', 'b' ])
     const list = create('Frame')({
-      each(items, function(item) return create('TextLabel')({ Name = item }) end),
+      each(items, |item| create('TextLabel')({ Name = item })),
     })
 
     const first = list->a
@@ -348,7 +348,7 @@ namespace TemplateTests
       when(count, function()
         builds += 1
         return create('TextLabel')({ Name = 'Yes' })
-      end, function() return create('TextLabel')({ Name = 'No' }) end),
+      end, || create('TextLabel')({ Name = 'No' })),
     })
 
     count:set(2)

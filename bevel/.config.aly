@@ -6,6 +6,11 @@
 ]]
 
 export default {
+  -- The syntax of Alloy 0.2 that Bevel uses. Bevel builds with its own
+  -- flags, so a game sets none of them.
+  fflags = {
+    AlloyExperimentalLambdaSyntax = true,
+  },
   build = {
     ['in'] = 'src',
     out = 'build',

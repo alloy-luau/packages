@@ -147,7 +147,7 @@ namespace InjectTests
 
   --- A class with no @injectable has no injector.
   public function inject_refuses_a_class_that_is_not_injectable() -> ()
-    const plain = { new = function() return {} end }
+    const plain = { new = || {} }
 
     $expect(function() -> ()
       inject(plain)
@@ -164,7 +164,7 @@ namespace InjectTests
   --- A provide holds its own instance, and the root keeps its own.
   public function provide_gives_its_own_instance_inside() -> ()
     const outer = inject(Counter)
-    const inner = provide([ Counter ], function() return inject(Counter) end)
+    const inner = provide([ Counter ], || inject(Counter))
 
     $assert(inner ~= outer)
     $assert_eq(inject(Counter), outer)
@@ -174,7 +174,7 @@ namespace InjectTests
   public function a_nested_provide_reads_the_services_above_it() -> ()
     const same = provide([ Draft ], function()
       const draft = inject(Draft)
-      return provide([ Counter ], function() return rawequal(inject(Draft), draft) :: boolean end)
+      return provide([ Counter ], || rawequal(inject(Draft), draft) :: boolean)
     end)
 
     $assert(same)

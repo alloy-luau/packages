@@ -123,7 +123,7 @@ namespace ComponentTests
     table.clear(log)
     const target = new Instance('Folder')
     const app = mount(Probe)
-    const stop = bootstrap(function(_props) return app({ name = 'app' }) end, target)
+    const stop = bootstrap(|_props| app({ name = 'app' }), target)
 
     $assert(target->app ~= nil)
     stop()

@@ -123,7 +123,7 @@ export function resource<T>(loader: (set: (value: T) -> ()) -> T?) -> Resource<T
     error = (failure :: any) :: Signal<string?>,
     is_loading = function() return status() == 'loading' end :: any,
     reload = function() -> ()
-      trigger:update(function(n) return n + 1 end)
+      trigger:update(|n| n + 1)
     end,
   }
 end
@@ -163,7 +163,7 @@ end
 namespace AsyncTests
   --- A loader that gives a value at once makes the resource ready.
   public function a_resource_loads_its_value() -> ()
-    const loaded = resource(function(_set) return 42 end)
+    const loaded = resource(|_set| 42)
 
     $assert_eq(loaded.value(), 42)
     $assert_eq(loaded.status(), 'ready')
