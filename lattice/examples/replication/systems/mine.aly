@@ -1,0 +1,27 @@
+--[[
+  Marks the orb of this client's own player, on a client. The Owner
+  component holds a Player, and it arrives as that Player. A hook of the
+  replicator runs when it arrives.
+]]
+
+import Players from '@game/Players'
+import { Phase, replicate, system, type World } from '@packages/lattice'
+import ct, { here, secret } from '../components'
+
+--- Sets the hooks. A Startup system runs before the first packet.
+function mine(world: World, _dt: number) -> ()
+  const net = replicate(world)
+
+  net:received(ct.Owner, function(entity, _id, player) -> ()
+    if player == Players.LocalPlayer then
+      world:add(entity, here.Mine)
+    end
+  end)
+
+  -- Only the owner of an orb gets its clicks.
+  net:received(secret.Clicks, function(_entity, _id, clicks) -> ()
+    print(`my orb has {clicks} clicks`)
+  end)
+end
+
+export default system(mine, Phase.Startup)

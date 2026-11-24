@@ -35,8 +35,13 @@ function draw(world: World, _dt: number) -> ()
     )
   end
 
-  for _, body, position in shown:of(world) do
+  for entity, body, position in shown:of(world) do
     body.Position = position
+
+    -- The orb of this client's own player is the big one.
+    if world:has(entity, here.Mine) then
+      body.Size = new Vector3(4, 4, 4)
+    end
   end
 end
 
