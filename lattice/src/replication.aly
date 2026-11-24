@@ -12,51 +12,126 @@
   A scheduler that starts then replicates its world. The server makes
   two remotes in ReplicatedStorage. A client asks for the world one
   time, and the server answers with the full state at its next send.
-  After that, the server sends the changes on Heartbeat. An entity replicates while it
-  holds a shared id, so a game writes no system for any of this.
+  After that, the server sends the changes on Heartbeat. An entity
+  replicates while it holds a shared id, so a game writes no system for
+  any of this.
 
   replecs does the work: it packs the values, maps the entity ids, and
-  keeps a filter for each player. `replecs` is its module, for the
-  controls that Lattice does not wrap.
+  keeps a filter for each player. `replicate` gives the `Replicator` of
+  a world, which has each control of replecs: who gets an entity or one
+  of its ids, the hooks of a client, and the ids that map an entity of
+  the server to one that the client has. `serdes` and `preprocess` give
+  an id its own code for the wire.
 ]]
 
 --- @class replication
 --- The replication of a world from the server to each client.
 --- [replication.shared] marks the ids that replicate, and a [Scheduler]
---- that starts runs the rest. Import these from `@packages/lattice`.
+--- that starts runs the rest. [replication.replicate] gives the
+--- [Replicator] of a world. Import these from `@packages/lattice`.
 
+import Players from '@game/Players'
 import ReplicatedStorage from '@game/ReplicatedStorage'
 import RunService from '@game/RunService'
 import jecs from '../packages/roblox/jecs'
 import replecs from '../packages/roblox/replecs'
-import { check_open, targets, type Entity, type World } from './world'
+import { check_open, type Entity, type Id, type World } from './world'
 
 --- @prop replecs ReplecsLib
 --- @within replication
 --- @readonly
 --- The replecs module that Lattice replicates with. Its ids, such as
---- `replecs.networked` and `replecs.reliable`, give one entity or one
---- player a rule of its own.
+--- `replecs.networked` and `replecs.reliable`, are the pair API of
+--- replecs, which works on a Lattice world as it is.
 export { replecs }
 
---- @type Share 'Reliable' | 'Unreliable' | 'Manual'
+--- @type Share 'Reliable' | 'Unreliable' | 'Once' | 'Manual'
 --- @within replication
 --- How a shared id replicates:
 ---
 --- - `Share.Reliable`: each change arrives, in order
 --- - `Share.Unreliable`: the server sends the value at each interval, and
 ---   a value can get lost. A tag and a pair replicate as Reliable
---- - `Share.Manual`: Lattice replicates nothing by itself. The game gives
----   each entity its replecs ids
+--- - `Share.Once`: the id arrives when an entity gets it and goes when
+---   the entity loses it. A later value stays on the server until
+---   [Replicator:resend]
+--- - `Share.Manual`: Lattice replicates nothing by itself. The game
+---   names each entity and each id with [Replicator:share]
 export enum Share
   Reliable
   Unreliable
+  Once
   Manual
 end
+
+--- @within replication
+--- A group of players that changes at run time, from [replication.filter].
+--- `add`, `remove`, `set`, and `clear` change its players. `filter`,
+--- `extend`, and `exclude` make a new group that follows this one.
+--- `members` and `contains` read it.
+export type Filter = replecs.FilterNode
+
+-- The plain forms of `To`: a player, an alias, or a set of them.
+type Members = Player | Entity | { [Player]: boolean } | { [Entity]: boolean }
+
+--- @within replication
+--- The players that get an entity or an id: one player, a set of
+--- players, a function that the server calls for each player at each
+--- send, or a [Filter]. A set of `true` values names the players that
+--- get it, and a set of `false` values names the players that do not.
+--- An entity that [Replicator:alias] gave a player stands for the player.
+export type To = Members | ((player: Player) -> boolean) | Filter
+
+--- @interface Serdes
+--- @within replication
+--- The code that writes a value of type `T` to a buffer and reads it
+--- back, for [replication.serdes].
+--- .serialize (value: T) -> (buffer, ...{ unknown }) -- Writes the value, on the server. With `includes_variants`, it also gives a list of the values that a buffer cannot hold.
+--- .deserialize (packed: buffer, variants: { unknown }?) -> T -- Reads the value, on a client.
+--- .bytespan number? -- The size of each buffer, when all have one size. replecs then sends no size.
+--- .includes_variants boolean? -- Whether `serialize` gives a list after the buffer.
+export type Serdes<T> = {
+  serialize: (value: T) -> (buffer, ... { unknown }),
+  deserialize: (packed: buffer, variants: { unknown }?) -> T,
+  bytespan: number?,
+  includes_variants: boolean?,
+}
+
+--- @interface Preprocessor
+--- @within replication
+--- The code that changes a value of type `T` to the value `A` that
+--- crosses, and back, for [replication.preprocess].
+--- .serialize (value: T) -> A -- Makes the value that crosses, on the server.
+--- .deserialize (sent: A) -> T -- Makes the value of the component, on a client.
+export type Preprocessor<T, A> = {
+  serialize: (value: T) -> A,
+  deserialize: (sent: A) -> T,
+}
+
+--- @within replication
+--- An id of [replication.custom_id]. [Replicator:identify] gives it to an
+--- entity of the server.
+export type CustomId = replecs.CustomId
+
+--- @within replication
+--- What the handler of a [CustomId] reads about the entity that arrives:
+--- `component(id)`, `has(tag)`, `target(relation, index?)`,
+--- `pair_value(relation, target)`, `has_pair(relation, target)`, the
+--- number `entity_id` of the server, and `entity(number)` for the client's
+--- entity of another entity of the server.
+export type Context = replecs.HandleContext
 
 -- The names of the two remotes, in ReplicatedStorage.
 const RELIABLE = 'LatticeReliable'
 const UNRELIABLE = 'LatticeUnreliable'
+
+-- What a `deserialize` that failed gives. The client's write skips it,
+-- so the entity keeps the value that it had.
+const FAILED = table.freeze({})
+
+-- The mark of an entity that `untrack` stopped. A followed id does not
+-- start it again; jecs drops the mark with the entity.
+const untracked = jecs.tag()
 
 -- How each id replicates, for the ids that Lattice follows by itself.
 local followed: { [Entity]: Share } = {}
@@ -64,8 +139,45 @@ local followed: { [Entity]: Share } = {}
 -- Whether `shared` marked an id, so a scheduler knows to replicate.
 local marked = false
 
--- The world that replicates. The remotes serve one world.
-local replicated: World? = nil
+-- A preprocessor as replecs takes it. The ids hold mixed values, so it
+-- holds `unknown`.
+type AnyPreprocessor = {
+  serialize: (value: unknown) -> unknown,
+  deserialize: (sent: unknown) -> unknown,
+}
+
+-- The preprocessor of each id that `preprocess` named.
+local preprocessors: { [Entity]: AnyPreprocessor } = {}
+
+-- Each id whose `deserialize` can give FAILED.
+local guarded: { [Entity]: boolean } = {}
+
+-- Each custom id, for the replicator of each side.
+const custom_ids: { CustomId } = {}
+
+-- The world of the client, for the name of an id in a warning.
+local named_by: World? = nil
+
+-- The name of an id for a warning.
+local function name_of(id: Entity) -> string
+  return named_by?:get(id, jecs.Name) ?? tostring(id)
+end
+
+-- Runs code of the game. An error shows as a warning and gives FAILED,
+-- so one id that fails stops no other id. `Result.pcall` makes a table
+-- for each call, and this runs for each value that arrives.
+@allow(raw_pcall, explicit_any)
+local function attempt(what: string, run: (...any) -> ...any, ...: any) -> any
+  -- `xpcall` gives the value of `run` or the traceback.
+  const ok: boolean, result: any = (xpcall :: any)(run, debug.traceback, ...)
+
+  if ok then
+    return result
+  end
+
+  warn(`lattice: {what} failed: {result}`)
+  return FAILED
+end
 
 --- Marks each id in `ids` as shared, and gives `ids` back, so a module
 --- of components ends with `export default shared({ ... })`. An entity
@@ -103,90 +215,1026 @@ export function has_shared() -> boolean
   return marked
 end
 
--- Makes the server follow each entity that holds a followed id, now and
--- from now on.
-local function follow(world: World, server: replecs.Server) -> ()
-  for id, share in followed do
-    -- replecs sends a value on the unreliable channel, and a tag has none.
-    const unreliable = share == Share.Unreliable and world:has(id, jecs.Component)
+--- Gives a component its own code for the buffer, and gives the
+--- component back, so the call stands in the table of [replication.shared].
+--- replecs then writes the value into the packet, which costs fewer
+--- bytes than the plain value. Give one to each Unreliable id whose
+--- packets must stay below the limit of Roblox. On a client, a
+--- `deserialize` that raises shows a warning, and the entity keeps the
+--- value that it had.
+--- @within replication
+--- @param id -- The component
+--- @param codec -- The functions that write and read the value
+--- @return Entity<T> -- The same component
+--- @error string -- When a world exists already
+export function serdes<T>(id: Entity<T>, codec: Serdes<T>) -> Entity<T>
+  check_open('call serdes()')
+  const read = codec.deserialize
 
-    local function start(entity: Entity, held: Entity) -> ()
-      -- An entity that the game gave `replecs.networked` keeps its filter.
-      if not world:has(entity, replecs.networked) then
-        server:set_networked(entity)
+  jecs.meta(id, replecs.serdes, {
+    bytespan = codec.bytespan,
+    includes_variants = codec.includes_variants,
+    serialize = codec.serialize,
+    deserialize = function(packed: buffer, variants: { unknown }?) -> unknown
+      return attempt(`the deserialize of {name_of(id)}`, read, packed, variants)
+    end,
+  })
+
+  guarded[id] = true
+  return id
+end
+
+--- Gives a component code that changes its value before it crosses and
+--- back after, and gives the component back, so the call stands in the
+--- table of [replication.shared]. Use it for a value that cannot cross
+--- as it is: a struct with methods, or a value that holds more than a
+--- client needs. With [replication.serdes] too, the preprocessor runs
+--- first on the server and last on a client. On a client, a
+--- `deserialize` that raises shows a warning, and the entity keeps the
+--- value that it had. A relationship that holds values takes the code
+--- of its first id. A pair that [Replicator:share] names takes the code
+--- of `preprocess(pair(Owes, Wildcard), ...)`.
+--- @within replication
+--- @param id -- The component, or a pair
+--- @param preprocessor -- The functions that change the value
+--- @return Entity<T> -- The same component
+--- @error string -- When a world exists already
+@allow(explicit_any)
+export function preprocess<T, A>(id: Entity<T>, preprocessor: Preprocessor<T, A>) -> Entity<T>
+  check_open('call preprocess()')
+  -- replecs types a preprocessor of mixed ids with `any`.
+  const read: (sent: any) -> any = preprocessor.deserialize
+
+  preprocessors[id] = {
+    serialize = preprocessor.serialize :: any,
+    deserialize = function(sent: unknown) -> unknown
+      -- The serdes before this one failed.
+      if sent == FAILED then
+        return FAILED
       end
 
-      if jecs.IS_PAIR(held) then
-        server:set_pair(entity, held)
-      elseif unreliable then
-        server:set_unreliable(entity, held)
+      return attempt(`the deserialize of {name_of(id)}`, read, sent)
+    end,
+  }
+
+  guarded[id] = true
+  return id
+end
+
+--- A group of players for [Replicator:track] and [Replicator:share]. A
+--- change of the group changes who gets each entity and each id that
+--- uses it, at the next send. A module can make the group before the
+--- world replicates.
+--- @within replication
+--- @param initial -- The first players: one player, or a set of players
+--- @return Filter -- The group
+export function filter(initial: Members?) -> Filter
+  return replecs.filter(initial)
+end
+
+-- The filter that replecs gets for a `To`. replecs 0.4.0-rc.5 reads a
+-- plain set as the players that get the id, whatever its values hold.
+-- A group reads a set of `false` values as the players that do not get
+-- it, so such a set goes through a group.
+@allow(explicit_any)
+local function players_of(to: To?) -> any
+  if to is table and getmetatable(to :: any) == nil then
+    -- An empty set names no player, so only a value that is there counts.
+    const _, allowed = next(to :: any)
+
+    if allowed ~= nil and not allowed then
+      return replecs.filter(to :: any)
+    end
+  end
+
+  return to
+end
+
+-- A hook that does nothing. Its `hook` call clears the override flag of
+-- replecs for a key.
+local function nothing() -> ()
+end
+
+-- The keys of replecs's hooks for an id: one for each way it can cross.
+local function keys_of(world: World, id: Entity, action: string) -> { Entity }
+  if jecs.IS_PAIR(id) then
+    return { jecs.pair(replecs.relation, jecs.pair_first(world, id)) }
+  end
+
+  if action == 'removed' then
+    return { jecs.pair(replecs.reliable, id), jecs.pair(replecs.relation, id) }
+  end
+
+  return {
+    jecs.pair(replecs.reliable, id),
+    jecs.pair(replecs.unreliable, id),
+    jecs.pair(replecs.relation, id),
+  }
+end
+
+-- nil for the values of a full state when it has none, so an empty list
+-- costs no byte.
+@allow(explicit_any)
+local function lean(variants: { any }) -> { any }?
+  return #variants > 0 ? variants : nil
+end
+
+-- nil for the values of an update when each of its groups has none.
+@allow(explicit_any)
+local function lean_groups(variants: { { any } }) -> { { any } }?
+  for _, group in variants do
+    if #group > 0 then
+      return variants
+    end
+  end
+
+  return nil
+end
+
+-- What `replicate` keeps for a replicator.
+type State = {
+  -- Whether the full state arrived, on a client.
+  synced: boolean,
+  -- What `stop` runs.
+  stops: { () -> () },
+  -- The reliable remote, on the server.
+  remote: RemoteEvent?,
+}
+
+--- @class Replicator
+--- The replication of one world, from [replication.replicate]. On the
+--- server, it says who gets each entity and each id. On a client, it
+--- runs code of the game when a value arrives, and maps the entities of
+--- the server to the entities of the client. A method of the other side
+--- stops with an error.
+export struct Replicator
+  --- @prop world World
+  --- @within Replicator
+  --- @readonly
+  --- The world that replicates.
+  read world: World
+  --- @prop server replecs.Server?
+  --- @within Replicator
+  --- @readonly
+  --- The server of replecs, on the server. Lattice calls its `collect_*`
+  --- and `get_full`; leave those to it.
+  read server: replecs.Server? = nil
+  --- @prop client replecs.Client?
+  --- @within Replicator
+  --- @readonly
+  --- The client of replecs, on a client. Lattice calls its `apply_*`;
+  --- leave those to it.
+  read client: replecs.Client? = nil
+  -- What `replicate` keeps for the replicator.
+  private state: State
+  -- For each action, how many callbacks replace the write of a key.
+  private replaced: { [string]: { [Entity]: number } } = {
+    changed = {},
+    removed = {},
+    deleted = {},
+  }
+  -- Each key whose write Lattice does, to skip a value that failed.
+  private written: { [Entity]: boolean } = {}
+end
+
+-- The replicator of each side. A game has one side; a test has both.
+local running: { server: Replicator?, client: Replicator? } = {}
+
+impl Replicator
+  --- @private
+  --- [replication.replicate] makes each replicator.
+  function new(
+    world: World,
+    server: replecs.Server?,
+    client: replecs.Client?,
+    state: State
+  ) -> Replicator
+    const net = new Replicator { world = world, server = server, client = client, state = state }
+
+    if client ~= nil then
+      net:guard(client)
+    end
+
+    return net
+  end
+
+  --- Makes `entity` replicate, to the players of `to`. With no `to`,
+  --- each player gets it. A second call changes the players: a player
+  --- that leaves the group loses the entity, and a new one gets it. An
+  --- entity that holds a followed id replicates to each player with no
+  --- call; a `track` before its first shared id, or after, sets its
+  --- players. The same as `set_networked` of replecs.
+  --- @method track
+  --- @within Replicator
+  --- @server
+  --- @param entity -- The entity
+  --- @param to -- The players that get it. The default is each player
+  function track(self, entity: Entity, to: To?) -> ()
+    const server = self:serving('track')
+
+    if self.world:has(entity, untracked) then
+      self.world:remove(entity, untracked)
+    end
+
+    server:set_networked(entity, players_of(to))
+  end
+
+  --- Stops the replication of `entity`: each client deletes it, and the
+  --- server keeps it with its ids. It holds until a later `track`, which
+  --- sends the entity again with each id that it holds then. The same
+  --- as `stop_networked` of replecs.
+  --- @method untrack
+  --- @within Replicator
+  --- @server
+  --- @param entity -- The entity
+  function untrack(self, entity: Entity) -> ()
+    self:serving('untrack'):stop_networked(entity)
+    self.world:add(entity, untracked)
+  end
+
+  --- Makes `id` of `entity` replicate, to the players of `to`. With no
+  --- `to`, each player that gets the entity gets the id. A player gets
+  --- the id only when it gets the entity. A second call changes the
+  --- players. `id` can be one pair. Use it for a `Share.Manual` id, or
+  --- to give a followed id its own players. The same as `set_reliable`,
+  --- `set_unreliable`, `set_once`, `set_pair`, and `set_unreliable_pair`
+  --- of replecs.
+  --- @method share
+  --- @within Replicator
+  --- @server
+  --- @param entity -- The entity that holds the id
+  --- @param id -- A shared component, tag, or pair
+  --- @param to -- The players that get it. The default is each player of the entity
+  --- @param how -- `Share.Reliable`, the default, `Share.Unreliable`, or `Share.Once`
+  --- @error string -- When `how` is `Share.Manual`, or `Share.Once` for a pair
+  function share<T>(
+    self,
+    entity: Entity,
+    id: jecs.Id<T>,
+    to: To?,
+    how: Share = Share.Reliable
+  ) -> ()
+    const server = self:serving('share')
+    const held = (id :: unknown) :: Entity
+    const players = players_of(to)
+    assert(how ~= Share.Manual, 'lattice: share() takes Reliable, Unreliable, or Once')
+
+    if jecs.IS_PAIR(held) then
+      assert(how ~= Share.Once, 'lattice: a pair has no Share.Once')
+
+      if how == Share.Unreliable then
+        server:set_unreliable_pair(entity, held, players)
       else
-        server:set_reliable(entity, held)
+        server:set_pair(entity, held, players)
+      end
+    elseif how == Share.Unreliable then
+      server:set_unreliable(entity, held, players)
+    elseif how == Share.Once then
+      server:set_once(entity, held, players)
+    else
+      server:set_reliable(entity, held, players)
+    end
+  end
+
+  --- Stops the replication of `id` of `entity`: each client removes the
+  --- id, and the server keeps it. It holds until a later `share`, or
+  --- until the entity gets a followed id again. The same as the
+  --- `stop_*` calls of replecs.
+  --- @method unshare
+  --- @within Replicator
+  --- @server
+  --- @param entity -- The entity that holds the id
+  --- @param id -- The component, tag, or pair
+  function unshare<T>(self, entity: Entity, id: jecs.Id<T>) -> ()
+    const server = self:serving('unshare')
+    const held = (id :: unknown) :: Entity
+
+    if jecs.IS_PAIR(held) then
+      server:stop_pair(entity, held)
+      server:stop_unreliable_pair(entity, held)
+    else
+      server:stop_reliable(entity, held)
+      server:stop_unreliable(entity, held)
+    end
+  end
+
+  --- Makes each pair of `relation` on `entity` replicate, to the players
+  --- of `to`. A target that is an entity must replicate too. The same as
+  --- `set_relation` of replecs.
+  --- @method share_relation
+  --- @within Replicator
+  --- @server
+  --- @param entity -- The entity that holds the pairs
+  --- @param relation -- The first id of each pair
+  --- @param to -- The players that get them. The default is each player of the entity
+  function share_relation<T>(self, entity: Entity, relation: jecs.Id<T>, to: To?) -> ()
+    self:serving('share_relation'):set_relation(
+      entity,
+      (relation :: unknown) :: Entity,
+      players_of(to)
+    )
+  end
+
+  --- Stops the replication of each pair of `relation` on `entity`. The
+  --- same as `stop_relation` of replecs.
+  --- @method unshare_relation
+  --- @within Replicator
+  --- @server
+  --- @param entity -- The entity that holds the pairs
+  --- @param relation -- The first id of each pair
+  function unshare_relation<T>(self, entity: Entity, relation: jecs.Id<T>) -> ()
+    self:serving('unshare_relation'):stop_relation(entity, (relation :: unknown) :: Entity)
+  end
+
+  --- Sends the value of a `Share.Once` id again, at the next send. The
+  --- same as `force_change` of replecs.
+  --- @method resend
+  --- @within Replicator
+  --- @server
+  --- @param entity -- The entity that holds the id
+  --- @param id -- The component
+  function resend<T>(self, entity: Entity, id: jecs.Id<T>) -> ()
+    self:serving('resend'):force_change(entity, (id :: unknown) :: Entity)
+  end
+
+  --- Sends `entity` now, with each id that replicates, to each player
+  --- that gets it. The next send does not wait for the interval. The
+  --- same as `collect_entity` of replecs.
+  --- @method send_now
+  --- @within Replicator
+  --- @server
+  --- @param entity -- The entity to send
+  function send_now(self, entity: Entity) -> ()
+    const server = self:serving('send_now')
+
+    if const remote = self.state.remote then
+      for player, packet, variants in server:collect_entity(entity) do
+        remote:FireClient(player, packet, lean_groups(variants), true)
       end
     end
+  end
 
-    -- `set_networked` changes the entity, so the walk ends before it.
-    const holders: { Entity } = {}
-    const paired: { Entity } = {}
+  --- A [Filter] of each player, now and later. The same as `everyone`
+  --- of replecs.
+  --- @method everyone
+  --- @within Replicator
+  --- @server
+  --- @return Filter -- The group
+  function everyone(self) -> Filter
+    return self:serving('everyone'):everyone()
+  end
 
-    for entity in world:query(id) do
-      table.insert(holders, entity)
+  --- A [Filter] of the players for which `test` gives true. The server
+  --- calls `test` for each player at each send, so keep it small, and
+  --- do not yield in it. The same as `filter_predicator` of replecs.
+  --- @method predicate
+  --- @within Replicator
+  --- @server
+  --- @param test -- Whether a player is in the group
+  --- @return Filter -- The group
+  function predicate(self, test: (player: Player) -> boolean) -> Filter
+    return self:serving('predicate'):filter_predicator(test)
+  end
+
+  --- Makes `alias` stand for `player` in each filter, so a game that
+  --- keeps an entity for each player can write `{ [entity] = true }`.
+  --- The same as `add_player_alias` of replecs.
+  --- @method alias
+  --- @within Replicator
+  --- @server
+  --- @param player -- The player
+  --- @param alias -- The entity that stands for the player
+  function alias(self, player: Player, alias: Entity) -> ()
+    self:serving('alias'):add_player_alias(player, alias)
+  end
+
+  --- Ends an alias. Call it when the player leaves. The same as
+  --- `remove_player_alias` of replecs.
+  --- @method unalias
+  --- @within Replicator
+  --- @server
+  --- @param alias -- The entity that stood for a player
+  function unalias(self, alias: Entity) -> ()
+    self:serving('unalias'):remove_player_alias(alias)
+  end
+
+  --- Whether `player` got the full state. The server sends a player
+  --- nothing before that. The same as `is_player_ready` of replecs.
+  --- @method is_ready
+  --- @within Replicator
+  --- @server
+  --- @param player -- The player
+  --- @return boolean -- Whether the player gets the changes
+  function is_ready(self, player: Player) -> boolean
+    return self:serving('is_ready'):is_player_ready(player)
+  end
+
+  --- Lets a client pick its own entity for `entity`. `by` is a shared
+  --- component that the entity holds and that replicates reliably: the
+  --- client's [Replicator:resolve] for that component gets its value.
+  --- Or `by` is a [CustomId]. The same as `set_custom` of replecs.
+  --- @method identify
+  --- @within Replicator
+  --- @server
+  --- @param entity -- The entity of the server
+  --- @param by -- A shared component of the entity, or a custom id
+  function identify<T>(self, entity: Entity, by: jecs.Id<T> | CustomId) -> ()
+    self:serving('identify'):set_custom(entity, (by :: unknown) :: Entity)
+  end
+
+  --- Ends [Replicator:identify] for `entity`. The same as
+  --- `remove_custom` of replecs.
+  --- @method unidentify
+  --- @within Replicator
+  --- @server
+  --- @param entity -- The entity of the server
+  function unidentify(self, entity: Entity) -> ()
+    self:serving('unidentify'):remove_custom(entity)
+  end
+
+  --- Gives `entity` a global id: a number from 0 to 245 that crosses as
+  --- one byte, in place of six. Each client maps the number with
+  --- [Replicator:globals]. The same as `set_global` of replecs.
+  --- @method global
+  --- @within Replicator
+  --- @server
+  --- @param entity -- The entity of the server
+  --- @param number -- The global id, from 0 to 245
+  function global(self, entity: Entity, number: number) -> ()
+    self:serving('global'):set_global(entity, number)
+  end
+
+  --- Takes the global id of `entity` away. The same as `remove_global`
+  --- of replecs.
+  --- @method unglobal
+  --- @within Replicator
+  --- @server
+  --- @param entity -- The entity of the server
+  function unglobal(self, entity: Entity) -> ()
+    self:serving('unglobal'):remove_global(entity)
+  end
+
+  --- Runs `run` each time a value of `id` arrives, after the client's
+  --- world has it. A tag gives no value. For a relationship, `id` is the
+  --- first id of the pairs, and `run` gets each pair. An error in `run`
+  --- shows as a warning, and the rest of the packet still applies. The
+  --- same as `hook('changed')` of replecs, for each channel.
+  --- @method received
+  --- @within Replicator
+  --- @client
+  --- @param id -- A shared component, tag, or relationship
+  --- @param run -- Gets the entity, the id or the pair, and the value
+  --- @return () -> () -- Stops the hook
+  function received<T>(
+    self,
+    id: Entity<T>,
+    run: (entity: Entity, id: Entity<T>, value: T) -> ()
+  ) -> () -> ()
+    return self:hooks('received', 'changed', id, run, false)
+  end
+
+  --- As [Replicator:received], but `run` takes the place of the write:
+  --- the client's world gets the value only when `run` sets it. The
+  --- same as `override('changed')` of replecs.
+  --- @method override_received
+  --- @within Replicator
+  --- @client
+  --- @param id -- A shared component, tag, or relationship
+  --- @param run -- Gets the entity, the id or the pair, and the value
+  --- @return () -> () -- Stops the hook, and the write is the client's again
+  function override_received<T>(
+    self,
+    id: Entity<T>,
+    run: (entity: Entity, id: Entity<T>, value: T) -> ()
+  ) -> () -> ()
+    return self:hooks('override_received', 'changed', id, run, true)
+  end
+
+  --- Runs `run` each time the server removes `id` from an entity, before
+  --- the client's world loses it, so `get` still reads the value. The
+  --- same as `hook('removed')` of replecs.
+  --- @method removed
+  --- @within Replicator
+  --- @client
+  --- @param id -- A shared component, tag, or relationship
+  --- @param run -- Gets the entity and the id or the pair
+  --- @return () -> () -- Stops the hook
+  function removed<T>(self, id: Entity<T>, run: (entity: Entity, id: Entity<T>) -> ()) -> () -> ()
+    return self:hooks('removed', 'removed', id, run, false)
+  end
+
+  --- As [Replicator:removed], but `run` takes the place of the removal:
+  --- the entity keeps the id unless `run` removes it. The same as
+  --- `override('removed')` of replecs.
+  --- @method override_removed
+  --- @within Replicator
+  --- @client
+  --- @param id -- A shared component, tag, or relationship
+  --- @param run -- Gets the entity and the id or the pair
+  --- @return () -> () -- Stops the hook
+  function override_removed<T>(
+    self,
+    id: Entity<T>,
+    run: (entity: Entity, id: Entity<T>) -> ()
+  ) -> () -> ()
+    return self:hooks('override_removed', 'removed', id, run, true)
+  end
+
+  --- Runs `run` when the server deletes `entity`, before the client
+  --- deletes it. The hook ends with the entity. The same as
+  --- `hook('deleted')` of replecs.
+  --- @method deleted
+  --- @within Replicator
+  --- @client
+  --- @param entity -- An entity of the client that came from the server
+  --- @param run -- Gets the entity
+  --- @return () -> () -- Stops the hook
+  function deleted(self, entity: Entity, run: (entity: Entity) -> ()) -> () -> ()
+    return self:hook('deleted', 'deleted', entity, run, false)
+  end
+
+  --- As [Replicator:deleted], but `run` takes the place of the delete:
+  --- the client keeps the entity, and the game deletes it later. The
+  --- same as `override('deleted')` of replecs.
+  --- @method override_deleted
+  --- @within Replicator
+  --- @client
+  --- @param entity -- An entity of the client that came from the server
+  --- @param run -- Gets the entity
+  --- @return () -> () -- Stops the hook
+  function override_deleted(self, entity: Entity, run: (entity: Entity) -> ()) -> () -> ()
+    return self:hook('override_deleted', 'deleted', entity, run, true)
+  end
+
+  --- Runs `run` each time the client makes an entity for an entity of
+  --- the server. The entity is empty then; use [Replicator:after] to
+  --- read its ids. The same as `added` of replecs.
+  --- @method created
+  --- @within Replicator
+  --- @client
+  --- @param run -- Gets the new entity of the client
+  --- @return () -> () -- Stops the hook
+  function created(self, run: (entity: Entity) -> ()) -> () -> ()
+    return self:receiving('created'):added(function(entity: Entity) -> ()
+      attempt('a created hook', run, entity)
+    end)
+  end
+
+  --- Runs `run` one time, when the packet that applies now is done, so
+  --- each id of each entity is there. With no packet, and on the server,
+  --- it runs at once. The same as `after_replication` of replecs.
+  --- @method after
+  --- @within Replicator
+  --- @param run -- The code to run
+  function after(self, run: () -> ()) -> ()
+    local function safe() -> ()
+      attempt('an after hook', run)
     end
 
-    for entity in world:query(jecs.pair(id, jecs.Wildcard)) do
-      table.insert(paired, entity)
+    if const client = self.client then
+      client:after_replication(safe)
+    else
+      safe()
+    end
+  end
+
+  --- Lets the client pick its own entity for an entity that the server
+  --- gave [Replicator:identify] with the component `id`. `find` gets the
+  --- value of the component and gives an entity of the client, or nil to
+  --- drop the entity of the server. The ids of the server's entity then
+  --- go on the entity that `find` gave. The same as the
+  --- `custom_handler` of replecs.
+  --- @method resolve
+  --- @within Replicator
+  --- @client
+  --- @param id -- The shared component
+  --- @param find -- Gives the client's entity for a value
+  @allow(explicit_any)
+  function resolve<T>(self, id: Entity<T>, find: (value: T) -> Entity?) -> ()
+    self:receiving('resolve')
+
+    -- replecs types the value of a handler as `any`.
+    self.world:set(id :: Entity<any>, replecs.custom_handler, function(value: any) -> Entity?
+      if value == nil or value == FAILED then
+        return nil
+      end
+
+      const found = attempt(`the resolve of {name_of(id)}`, find, value)
+      return found ~= FAILED ? found : nil
+    end)
+  end
+
+  --- Sets the function that gives the client's entity for a global id
+  --- of [Replicator:global]. The same as `handle_global` of replecs.
+  --- @method globals
+  --- @within Replicator
+  --- @client
+  --- @param find -- Gives the client's entity for a number from 0 to 245
+  function globals(self, find: (number: number) -> Entity) -> ()
+    self:receiving('globals'):handle_global(find)
+  end
+
+  --- The number of the server's entity for an entity of the client, or
+  --- nil for an entity that did not come from the server. The same as
+  --- `get_server_entity` of replecs.
+  --- @method server_entity
+  --- @within Replicator
+  --- @client
+  --- @param entity -- An entity of the client
+  --- @return number? -- The number of the entity on the server
+  function server_entity(self, entity: Entity) -> number?
+    return self:receiving('server_entity'):get_server_entity(entity)
+  end
+
+  --- The client's entity for the number of an entity of the server, or
+  --- nil when the client does not have it. A component that holds an
+  --- entity crosses as its number; map it here. The same as
+  --- `get_client_entity` of replecs.
+  --- @method client_entity
+  --- @within Replicator
+  --- @client
+  --- @param number -- The number of an entity on the server
+  --- @return Entity? -- The entity of the client
+  function client_entity(self, number: number) -> Entity?
+    return self:receiving('client_entity'):get_client_entity(number)
+  end
+
+  --- Makes `entity` of the client stand for the server's entity with
+  --- `number`, before that entity arrives. The same as
+  --- `register_entity` of replecs.
+  --- @method bind
+  --- @within Replicator
+  --- @client
+  --- @param entity -- An entity of the client
+  --- @param number -- The number of an entity on the server
+  function bind(self, entity: Entity, number: number) -> ()
+    self:receiving('bind'):register_entity(entity, number)
+  end
+
+  --- Ends the tie of `entity` to its entity of the server. The same as
+  --- `unregister_entity` of replecs.
+  --- @method unbind
+  --- @within Replicator
+  --- @client
+  --- @param entity -- An entity of the client
+  function unbind(self, entity: Entity) -> ()
+    self:receiving('unbind'):unregister_entity(entity)
+  end
+
+  --- Whether the full state of the server arrived.
+  --- @method is_synced
+  --- @within Replicator
+  --- @client
+  --- @return boolean -- Whether the client has the world of the server
+  function is_synced(self) -> boolean
+    self:receiving('is_synced')
+    return self.state.synced
+  end
+
+  --- The number that stands for a shared id on the wire, the same on
+  --- both sides, for a packet of the game's own. The same as
+  --- `encode_component` of replecs.
+  --- @method encode
+  --- @within Replicator
+  --- @param id -- A shared id
+  --- @return number -- Its number on the wire
+  --- @error string -- When the id is not shared
+  function encode<T>(self, id: jecs.Id<T>) -> number
+    return self:either():encode_component((id :: unknown) :: Entity)
+  end
+
+  --- The shared id for a number of [Replicator:encode], or nil. The same
+  --- as `decode_component` of replecs.
+  --- @method decode
+  --- @within Replicator
+  --- @param number -- A number on the wire
+  --- @return Entity? -- The shared id
+  function decode(self, number: number) -> Entity?
+    return self:either():decode_component(number)
+  end
+
+  --- How many shared ids the world has. The same as `get_shared_count`
+  --- of replecs.
+  --- @method shared_count
+  --- @within Replicator
+  --- @return number -- The count of the shared ids
+  function shared_count(self) -> number
+    return self:either():get_shared_count()
+  end
+
+  --- Stops the replication of the world. The server destroys its remotes
+  --- and sends no more; a client applies no more. The entities stay. A
+  --- later [replication.replicate] starts a new replicator.
+  --- @method stop
+  --- @within Replicator
+  function stop(self) -> ()
+    for _, stop in self.state.stops do
+      stop()
     end
 
-    for _, entity in holders do
-      start(entity, id)
+    table.clear(self.state.stops)
+
+    if running.server == self then
+      running.server = nil
     end
 
-    for _, entity in paired do
-      for _, target in targets(world, entity, id) do
-        start(entity, jecs.pair(id, target))
+    if running.client == self then
+      running.client = nil
+    end
+  end
+
+  -- The server or the client of replecs. The two have these methods,
+  -- and a union of them does not call, so it goes through `any`.
+  @allow(explicit_any)
+  private function either(self) -> any
+    return self.server ?? self.client
+  end
+
+  -- The server of replecs. On a client, the call stops with an error.
+  private function serving(self, what: string) -> replecs.Server
+    return self.server ?? error(`lattice: {what}() works on the server only`, 3)
+  end
+
+  -- The client of replecs. On the server, the call stops with an error.
+  private function receiving(self, what: string) -> replecs.Client
+    return self.client ?? error(`lattice: {what}() works on a client only`, 3)
+  end
+
+  -- Hooks `run` to each key of an id.
+  @allow(explicit_any)
+  private function hooks(
+    self,
+    what: string,
+    action: string,
+    id: Id,
+    run: (...any) -> (),
+    replaces: boolean
+  ) -> () -> ()
+    self:receiving(what)
+    const stops: { () -> () } = {}
+
+    for _, key in keys_of(self.world, (id :: unknown) :: Entity, action) do
+      table.insert(stops, self:hook(what, action, key, run, replaces))
+    end
+
+    return function() -> ()
+      for _, stop in stops do
+        stop()
       end
     end
+  end
 
-    world:added(id, start)
+  -- Hooks `run` to one key of replecs: a pair for `changed` and
+  -- `removed`, an entity for `deleted`. replecs keeps one override flag
+  -- for each key, and its `hook` clears the flag. So a key whose write
+  -- has an owner takes each callback through `override`.
+  @allow(explicit_any)
+  private function hook(
+    self,
+    what: string,
+    action: string,
+    key: Entity,
+    run: (...any) -> (),
+    replaces: boolean
+  ) -> () -> ()
+    const client: any = self:receiving(what)
+    local counts = self.replaced[action]
+    const owned = action == 'changed' and (self.written[key] ?? false)
+
+    if replaces then
+      counts[key] = (counts[key] ?? 0) + 1
+    end
+
+    const connect = (owned or counts[key] ~= nil) ? client.override : client.hook
+
+    const stop: () -> () = connect(
+      client,
+      action,
+      key,
+      function(entity: Entity, held: any, value: any) -> ()
+        -- replecs drops the hooks of an entity that goes.
+        if action == 'deleted' then
+          counts[key] = nil
+        end
+
+        if value ~= FAILED then
+          attempt(`a hook of {what}`, run, entity, held, value)
+        end
+      end
+    )
+
+    local stopped = false
+
+    return function() -> ()
+      if stopped then
+        return
+      end
+
+      stopped = true
+      stop()
+
+      if not replaces then
+        return
+      end
+
+      const left = (counts[key] ?? 1) - 1
+      counts[key] = left > 0 ? left : nil
+
+      -- The write goes back to replecs.
+      if left == 0 and not owned then
+        client:hook(action, key, nothing)()
+      end
+    end
+  end
+
+  -- Takes the write of each guarded id, on a client, so a value that
+  -- failed to deserialize changes nothing.
+  @allow(explicit_any)
+  private function guard(self, client: replecs.Client) -> ()
+    const world = self.world
+    const replaced = self.replaced.changed
+
+    for id in guarded do
+      for _, key in keys_of(world, id, 'changed') do
+        if self.written[key] then
+          continue
+        end
+
+        self.written[key] = true;
+
+        (client :: any):override(
+          'changed',
+          key,
+          function(entity: Entity, held: Entity<any>, value: any) -> ()
+            if value ~= FAILED and replaced[key] == nil then
+              world:set(entity, held, value)
+            end
+          end
+        )
+      end
+    end
   end
 end
 
--- The server's side: sends the changes each `interval` seconds, and the
--- full state to each client that asked for it since the last send.
+--- An id that lets a client pick its own entity for an entity of the
+--- server, from all that arrives with it. `handle` runs on a client: it
+--- reads the entity through the [Context], and gives an entity of the
+--- client, or nil to drop the entity of the server. Make the id in a
+--- module of both sides, with the same name. On the server,
+--- [Replicator:identify] gives it to an entity. The same as
+--- `create_custom_id` and `register_custom_id` of replecs.
+--- @within replication
+--- @param name -- The name that the two sides match the id by
+--- @param handle -- Gives the client's entity for an entity that arrives
+--- @return CustomId -- The custom id
+export function custom_id(name: string, handle: (context: Context) -> Entity?) -> CustomId
+  const made = replecs.create_custom_id(name, function(context: Context) -> Entity?
+    const found = attempt(`the custom id {name}`, handle, context)
+    return found ~= FAILED ? found : nil
+  end)
+
+  table.insert(custom_ids, made)
+  running.server?.server?:register_custom_id(made)
+  running.client?.client?:register_custom_id(made)
+  return made
+end
+
+-- Gives a server or a client of replecs each preprocessor and each
+-- custom id of the game.
+@allow(explicit_any)
+local function equip(side: replecs.Server | replecs.Client) -> ()
+  -- The two have the same methods, and a union of them does not call.
+  const lib: any = side
+
+  for id, preprocessor in preprocessors do
+    lib:set_preprocessor(id, preprocessor)
+  end
+
+  for _, custom in custom_ids do
+    lib:register_custom_id(custom)
+  end
+end
+
+-- Makes one id of one entity replicate, on its channel.
+local function track_id(
+  server: replecs.Server,
+  entity: Entity,
+  id: Entity,
+  unreliable: boolean,
+  once: boolean
+) -> ()
+  if unreliable then
+    server:set_unreliable(entity, id)
+  elseif once then
+    server:set_once(entity, id)
+  else
+    server:set_reliable(entity, id)
+  end
+end
+
+-- Runs `start` for each entity that holds `id`, or a pair of it, now.
+local function walk(world: World, id: Entity, start: (entity: Entity, held: Entity) -> ()) -> ()
+  -- `set_networked` changes the entity, so the walk ends before it.
+  const holders: { Entity } = {}
+  const paired: { Entity } = {}
+  const any_target = jecs.pair(id, jecs.Wildcard)
+
+  for entity in world:query(id) do
+    table.insert(holders, entity)
+  end
+
+  for entity in world:query(any_target) do
+    table.insert(paired, entity)
+  end
+
+  for _, entity in holders do
+    start(entity, id)
+  end
+
+  for _, entity in paired do
+    start(entity, any_target)
+  end
+end
+
+-- Makes the server follow each entity that holds a followed id, now and
+-- from now on. It gives back what stops that. Each call below is the
+-- call that a game on replecs makes by hand, one time for each entity
+-- and each id: a later `set` of the id runs no code of Lattice.
+local function follow(world: World, server: replecs.Server) -> { () -> () }
+  const tracked = server.networked
+  const stops: { () -> () } = {}
+
+  for id, share in followed do
+    -- replecs sends a value on the unreliable channel, and a tag has none.
+    const unreliable = share == Share.Unreliable and world:has(id, jecs.Component)
+    const once = share == Share.Once
+
+    local function start(entity: Entity, held: Entity) -> ()
+      local storage = tracked[entity]
+
+      -- An entity that the game gave `track` keeps its players: a second
+      -- `set_networked` makes replecs compare the players of each id. An
+      -- entity that the game gave `untrack` stays as it is, and replecs
+      -- keeps the id for the next `track`.
+      if storage == nil and not world:has(entity, untracked) then
+        server:set_networked(entity)
+        storage = tracked[entity]
+      end
+
+      -- An id that the game gave `share` keeps its players and its channel.
+      if jecs.IS_PAIR(held) then
+        if storage == nil or storage.relation_storages[id] == nil then
+          server:set_relation(entity, id)
+        end
+      elseif
+        storage == nil
+        or (storage.reliable_storages[id] == nil and storage.unreliable_storages[id] == nil)
+      then
+        track_id(server, entity, id, unreliable, once)
+      end
+    end
+
+    walk(world, id, start)
+    table.insert(stops, world:added(id, start))
+  end
+
+  return stops
+end
+
+-- The server's side: sends the changes each `interval` seconds, the
+-- unreliable values each `unreliable_interval` seconds, and the full
+-- state to each client that asked for it since the last send.
 local function serve(
-  world: World,
+  server: replecs.Server,
   reliable: RemoteEvent,
   unreliable: UnreliableRemoteEvent,
-  interval: number
-) -> ()
-  const server = replecs.create_server(world)
-  server:init()
-  follow(world, server)
-
+  interval: number,
+  unreliable_interval: number
+) -> { RBXScriptConnection }
   -- The players that asked for the world and wait for the next send.
   local joining: { [Player]: boolean } = {}
 
-  reliable.OnServerEvent:Connect(function(player: Player) -> ()
+  -- The players that left. replecs dropped them, and a mark would
+  -- register them again, for good. Weak keys: a player that goes takes
+  -- its entry with it.
+  local left: { [Player]: boolean } = setmetatable({}, { __mode = 'k' })
+
+  const asked = reliable.OnServerEvent:Connect(function(player: Player) -> ()
     -- A client gets the full state one time. A second request gets no
     -- answer, so a client cannot make the server pack the world again.
-    if not server:is_player_ready(player) then
+    if not left[player] and not server:is_player_ready(player) then
       joining[player] = true
     end
   end)
 
-  local waited = 0
+  const gone = Players.PlayerRemoving:Connect(function(player: Player) -> ()
+    left[player] = true
+    joining[player] = nil
+  end)
 
-  RunService.Heartbeat:Connect(function(dt: number) -> ()
-    waited += dt
-
-    if waited < interval then
-      return
-    end
-
-    waited = 0
-
-    -- A player that left since its request has no parent. replecs
-    -- dropped it, and a mark would register it again.
+  -- Sends the changes, and the full state to each player that waits.
+  local function send_changes() -> ()
+    -- A player with no parent left the game.
     for player in joining do
       if player.Parent == nil then
         joining[player] = nil
@@ -200,184 +1248,465 @@ local function serve(
     -- state from an earlier moment loses each change between the two.
     for player, changes, variants in server:collect_updates() do
       if not joining[player] then
-        reliable:FireClient(player, changes, variants)
+        reliable:FireClient(player, changes, lean_groups(variants))
       end
     end
 
     for player in joining do
       const state, variants = server:get_full(player)
-      reliable:FireClient(player, state, variants, server:generate_handshake())
+      reliable:FireClient(player, state, lean(variants), server:generate_handshake())
     end
 
     table.clear(joining)
+  end
 
-    for player, values, variants in server:collect_unreliable() do
-      unreliable:FireClient(player, values, variants)
+  local waited = 0
+  local lagged = 0
+
+  const beat = RunService.Heartbeat:Connect(function(dt: number) -> ()
+    waited += dt
+    lagged += dt
+
+    if waited >= interval then
+      waited = 0
+      send_changes()
+    end
+
+    if lagged >= unreliable_interval then
+      lagged = 0
+
+      for player, values, variants in server:collect_unreliable() do
+        unreliable:FireClient(player, values, lean_groups(variants))
+      end
     end
   end)
+
+  return { asked, gone, beat }
 end
 
 -- The client's side: asks for the world, then applies what arrives.
 -- replecs types the values beside a buffer as `any`.
 @allow(explicit_any)
-local function receive(world: World, reliable: RemoteEvent, unreliable: UnreliableRemoteEvent) -> ()
-  const client = replecs.create_client(world)
-  client:init()
-
+local function receive(
+  client: replecs.Client,
+  reliable: RemoteEvent,
+  unreliable: UnreliableRemoteEvent,
+  synced: () -> ()
+) -> { RBXScriptConnection }
   -- Whether the full state arrived. It is the first reliable message.
-  local synced = false
+  local ready = false
 
-  reliable.OnClientEvent:Connect(
-    function(state: buffer, variants: any, handshake: replecs.HandshakeInfo?) -> ()
-      if synced then
-        client:apply_updates(state, variants)
+  const changes = reliable.OnClientEvent:Connect(
+    function(packet: buffer, variants: any, extra: (replecs.HandshakeInfo | boolean)?) -> ()
+      if ready then
+        -- `send_now` marks its packet with `true`.
+        if extra == true then
+          client:apply_entity(packet, variants)
+        else
+          client:apply_updates(packet, variants)
+        end
+
         return
       end
 
-      if handshake ~= nil then
-        const fits, why = client:verify_handshake(handshake)
+      if extra is table then
+        const fits, why = client:verify_handshake(extra)
 
         if not fits then
           warn(`lattice: the shared ids of the client and the server differ: {why}`)
         end
       end
 
-      synced = true
-      client:apply_full(state, variants)
+      ready = true
+      synced()
+      client:apply_full(packet, variants)
     end
   )
 
-  unreliable.OnClientEvent:Connect(function(values: buffer, variants: any) -> ()
+  const values = unreliable.OnClientEvent:Connect(function(packet: buffer, variants: any) -> ()
     -- A value that comes before the full state names entities that the
     -- client does not know.
-    if synced then
-      client:apply_unreliable(values, variants)
+    if ready then
+      client:apply_unreliable(packet, variants)
     end
   end)
 
   reliable:FireServer()
+  return { changes, values }
 end
 
---- Replicates `world`. On the server, it makes the remotes and sends
---- the world to each client. On a client, it asks for the world and
---- applies each change. [Scheduler:start] calls it when the game has
---- shared ids, so call it only for another interval, or for a world
---- with no scheduler. A second call for the same world does nothing.
+--- Replicates `world`, and gives its [Replicator]. On the server, it
+--- makes the remotes and sends the world to each client. On a client,
+--- it asks for the world and applies each change. [Scheduler:start]
+--- calls it when the game has shared ids, so call it for the
+--- [Replicator], for other intervals, or for a world with no scheduler.
+--- A second call for the same world gives the same replicator, and its
+--- intervals do nothing.
 --- @within replication
 --- @param world -- The world to replicate
---- @param interval -- The seconds between two sends of the server. The default is 1/20
+--- @param interval -- The seconds between two sends of the changes. The default is 1/20
+--- @param unreliable_interval -- The seconds between two sends of the Unreliable values. The default is `interval`
+--- @return Replicator -- The replicator of the world
 --- @error string -- When another world replicates already
-export function replicate(world: World, interval: number = 1 / 20) -> ()
-  if replicated == world then
-    return
+@allow(explicit_any)
+export function replicate(
+  world: World,
+  interval: number = 1 / 20,
+  unreliable_interval: number = interval
+) -> Replicator
+  const serves = RunService:IsServer()
+  const had = serves ? running.server : running.client
+
+  if had ~= nil then
+    assert(had.world == world, 'lattice: another world replicates already')
+    return had
   end
 
-  assert(replicated == nil, 'lattice: another world replicates already')
-  replicated = world
+  local state: State = { synced = false, stops = {}, remote = nil }
 
-  if RunService:IsServer() then
-    serve(
-      world,
-      new Instance('RemoteEvent') { Name = RELIABLE, Parent = ReplicatedStorage },
-      new Instance('UnreliableRemoteEvent') { Name = UNRELIABLE, Parent = ReplicatedStorage },
-      interval
-    )
-  else
-    -- The wait for the server's remotes must not hold the caller.
-    task.spawn(function() -> ()
-      receive(
-        world,
-        ReplicatedStorage:WaitForChild(RELIABLE) :: RemoteEvent,
-        ReplicatedStorage:WaitForChild(UNRELIABLE) :: UnreliableRemoteEvent
-      )
+  if serves then
+    -- replecs has room for 128 players, and stops with an error at the
+    -- next one. A write to its module goes through `any`.
+    local lib: any = replecs
+    lib.MAX_CLIENTS = math.max(lib.MAX_CLIENTS, Players.MaxPlayers ?? 0)
+
+    const server = replecs.create_server(world)
+    equip(server)
+    server:init()
+
+    const reliable = new Instance('RemoteEvent') { Name = RELIABLE, Parent = ReplicatedStorage }
+    const unreliable =
+      new Instance('UnreliableRemoteEvent') { Name = UNRELIABLE, Parent = ReplicatedStorage }
+    const connections = serve(server, reliable, unreliable, interval, unreliable_interval)
+
+    state.remote = reliable
+    state.stops = follow(world, server)
+
+    table.insert(state.stops, function() -> ()
+      for _, connection in connections do
+        connection:Disconnect()
+      end
+
+      reliable:Destroy()
+      unreliable:Destroy()
+      server:destroy()
     end)
+
+    const net = new Replicator(world, server, nil, state)
+    running.server = net
+    return net
   end
+
+  const client = replecs.create_client(world)
+  equip(client)
+  client:init()
+  named_by = world
+
+  local stopped = false
+  local connections: { RBXScriptConnection } = {}
+
+  table.insert(state.stops, function() -> ()
+    stopped = true
+
+    for _, connection in connections do
+      connection:Disconnect()
+    end
+
+    client:destroy()
+  end)
+
+  -- The wait for the server's remotes must not hold the caller.
+  task.spawn(function() -> ()
+    const reliable = ReplicatedStorage:WaitForChild(RELIABLE) :: RemoteEvent
+    const unreliable = ReplicatedStorage:WaitForChild(UNRELIABLE) :: UnreliableRemoteEvent
+
+    if not stopped then
+      connections = receive(client, reliable, unreliable, function() -> ()
+        state.synced = true
+      end)
+    end
+  end)
+
+  const net = new Replicator(world, nil, client, state)
+  running.client = net
+  return net
 end
 
 @test
 namespace ReplicationTests
-  import Players from '@game/Players'
   import { component, pair, tag, world as new_world } from './world'
+
+  -- A value with a method. A table loses its metatable on a remote.
+  struct Purse
+    coins: number
+  end
+
+  impl Purse
+    function double(self) -> number
+      return self.coins * 2
+    end
+  end
+
+  -- The client's replicator of the last link, for the code of an id.
+  local receiver: Replicator? = nil
+
+  -- The client's entity for each value of Seat, for `spot`.
+  local seats: { [number]: Entity } = {}
 
   const ct = shared({
     Position = component<<Vector3>>('Position'),
     Health = component<<number>>('Health'),
     Burning = tag('Burning'),
     Likes = tag('Likes'),
+    -- Each value of Owes crosses as the value plus 1000. A value that
+    -- did not go through `serialize` does not come back. A followed
+    -- relationship takes the code of its first id.
+    Owes = preprocess(component<<number>>('Owes'), {
+      serialize = |owed: number| owed + 1000,
+      deserialize = function(sent: number) -> number
+        assert(sent >= 1000 and sent ~= 1013, 'unlucky')
+        return sent - 1000
+      end,
+    }),
+    Owner = component<<Player>>('Owner'),
+    Seat = component<<number>>('Seat'),
+    -- Three floats in a buffer of one size.
+    Packed = serdes(component<<Vector3>>('Packed'), {
+      bytespan = 12,
+      serialize = function(value: Vector3) -> buffer
+        const packed = buffer.create(12)
+        buffer.writef32(packed, 0, value.X)
+        buffer.writef32(packed, 4, value.Y)
+        buffer.writef32(packed, 8, value.Z)
+        return packed
+      end,
+      deserialize = |packed: buffer| new Vector3(
+        buffer.readf32(packed, 0),
+        buffer.readf32(packed, 4),
+        buffer.readf32(packed, 8)
+      ),
+    }),
+    -- A number in a buffer, and a player beside it. 13 does not read.
+    Brittle = serdes(component<<{ count: number, owner: Player }>>('Brittle'), {
+      includes_variants = true,
+      serialize = function(value: { count: number, owner: Player }) -> (buffer, { unknown })
+        const packed = buffer.create(1)
+        buffer.writeu8(packed, 0, value.count)
+        return packed, { value.owner }
+      end,
+      deserialize = function(
+        packed: buffer,
+        variants: { unknown }?
+      ) -> { count: number, owner: Player }
+        const count = buffer.readu8(packed, 0)
+        assert(count ~= 13, 'unlucky')
+        return { count = count, owner = (variants :: { unknown })[1] :: Player }
+      end,
+    }),
+    -- A struct crosses as its number, and comes back as a struct. A
+    -- purse of 13 coins does not come back.
+    Wallet = preprocess(component<<Purse>>('Wallet'), {
+      serialize = |purse: Purse| purse.coins,
+      deserialize = function(coins: number) -> Purse
+        assert(coins ~= 13, 'unlucky')
+        return new Purse { coins = coins }
+      end,
+    }),
+    -- An entity crosses as its number, and comes back as the client's.
+    Target = preprocess(component<<Entity>>('Target'), {
+      serialize = |target: Entity| (target :: unknown) :: number,
+      deserialize = function(number: number) -> Entity
+        return (receiver :: Replicator):client_entity(number) :: Entity
+      end,
+    }),
   })
 
   const fast = shared({ Aim = component<<Vector3>>('Aim') }, Share.Unreliable)
-  const manual = shared({ Secret = component<<number>>('Secret') }, Share.Manual)
+  const once = shared({ Title = component<<string>>('Title') }, Share.Once)
 
-  -- The one player of the fake transport. A test writes its parent.
+  const manual = shared(
+    {
+      Secret = component<<number>>('Secret'),
+      Guards = tag('Guards'),
+      Range = component<<number>>('Range'),
+      Heat = component<<number>>('Heat'),
+    },
+    Share.Manual
+  )
+
+  -- A pair that `share` names takes the code of the pair. Each pair of
+  -- Range crosses as its value plus 1000.
+  preprocess(pair(manual.Range, jecs.Wildcard), {
+    serialize = |range: number| range + 1000,
+    deserialize = function(sent: number) -> number
+      assert(sent >= 1000, 'no serialize ran')
+      return sent - 1000
+    end,
+  })
+
+  -- Gives the client's seat for the Seat value that arrives.
+  const spot = custom_id('spot', function(context: Context) -> Entity?
+    return seats[context.component(ct.Seat)]
+  end)
+
+  -- The players of the fake transport. `visitor` is the client of
+  -- `replicate` itself; `guest` and `late` join through `enter`.
   local visitor = new Instance('Player')
+  const guest = new Instance('Player')
+  const late = new Instance('Player')
 
-  -- How many messages went down the fake remotes of the last link.
-  local sent = 0
+  -- How many messages each player got since the last link.
+  local got: { [Player]: number } = {}
 
-  -- The number of the last link. A server of an earlier link stays on
-  -- Heartbeat, and its messages do not count.
-  local links = 0
+  -- Each replicator of the last link, which the next link stops.
+  const live: { Replicator } = {}
 
-  -- A remote of the fake transport: a fire on one side runs the handlers
-  -- of the other side at once. The table stands for a RemoteEvent, so it
-  -- goes through `any`.
+  -- The client side of each fake remote, for each player.
+  local sides: { [string]: { [Player]: BindableEvent } } = {}
+
+  -- The request side of each fake remote.
+  local requests: { [string]: BindableEvent } = {}
+
+  -- What a remote does to a value: a table crosses as a copy with no
+  -- metatable, and an Instance or a datatype crosses as itself.
+  @allow(explicit_any, manual_type_test)
+  private function cross(value: any) -> any
+    -- The test shim names its doubles as the engine does, so a plain
+    -- table and a struct are the two that answer `table`.
+    if typeof(value) ~= 'table' then
+      return value
+    end
+
+    local copy = {}
+
+    for key, item in value do
+      copy[key] = cross(item)
+    end
+
+    return copy
+  end
+
+  -- The client side of a fake remote for one player.
+  private function side(name: string, player: Player) -> BindableEvent
+    const down = sides[name][player] ?? new Instance('BindableEvent')
+    sides[name][player] = down
+    return down
+  end
+
+  -- Makes a remote of `replicate` work in one process: a fire on one
+  -- side runs the handlers of the other side at once. The test shim
+  -- gives an Instance each field that a test writes, so the writes go
+  -- through `any`.
   @allow(explicit_any)
-  private function remote() -> any
+  private function wire(remote: any) -> ()
+    const name: string = remote.Name
     const up = new Instance('BindableEvent')
-    const down = new Instance('BindableEvent')
-    const link = links
+    sides[name] = {}
+    requests[name] = up
 
+    -- The client of `replicate` asks as `visitor`.
+    local function fire_server(_self: unknown, ...: unknown) -> ()
+      up:Fire(visitor, ...)
+    end
+
+    local function fire_client(_self: unknown, player: Player, ...: unknown) -> ()
+      got[player] = (got[player] ?? 0) + 1
+      local sent = table.pack(...)
+
+      for index = 1, sent.n do
+        sent[index] = cross(sent[index])
+      end
+
+      side(name, player):Fire(table.unpack(sent, 1, sent.n))
+    end
+
+    remote.OnServerEvent = up.Event
+    remote.OnClientEvent = side(name, visitor).Event
+    remote.FireServer = fire_server
+    remote.FireClient = fire_client
+  end
+
+  -- A remote as one more player sees it.
+  @allow(explicit_any)
+  private function view(name: string, player: Player) -> any
     return {
-      OnServerEvent = up.Event,
-      OnClientEvent = down.Event,
+      OnClientEvent = side(name, player).Event,
       FireServer = function(_self: unknown, ...: unknown) -> ()
-        up:Fire(visitor, ...)
-      end,
-      FireClient = function(_self: unknown, _player: unknown, ...: unknown) -> ()
-        if link == links then
-          sent += 1
-        end
-
-        down:Fire(...)
+        requests[name]:Fire(player, ...)
       end,
     }
   end
 
-  -- A server world and a client world with the fake transport between
-  -- them. `join` makes the client ask for the world, and the server
-  -- answers at its next send. `ask` sends the request one more time.
+  -- Whether the fake transport is in place.
+  local wired = false
+
+  -- A server world that `replicate` itself serves. `join` makes the
+  -- client of `visitor`, through `replicate` too, and gives its
+  -- replicator. The server answers at its next send.
   @allow(explicit_any)
-  private function link(interval: number?) -> (World, World, () -> (), () -> ())
-    -- replecs connects to PlayerRemoving, which the test shim does not
-    -- have. A write to a service goes through `any`.
+  private function link(
+    interval: number?,
+    unreliable_interval: number?
+  ) -> (Replicator, () -> Replicator)
+    -- A write to a service goes through `any`.
     local players: any = Players
-    players.PlayerRemoving = new Instance('BindableEvent').Event
+    local service: any = RunService
+
+    if not wired then
+      wired = true
+      -- The test shim has no PlayerRemoving.
+      players.PlayerRemoving = new Instance('BindableEvent').Event
+
+      ReplicatedStorage.ChildAdded:Connect(function(child: Instance) -> ()
+        wire(child)
+      end)
+    end
+
+    for _, net in live do
+      net:stop()
+    end
+
+    table.clear(live)
+    table.clear(got)
+    table.clear(seats)
+    receiver = nil
 
     -- A player that did not leave has a parent.
-    visitor.Parent = Players
+    for _, player in { visitor, guest, late } do
+      player.Parent = Players
+    end
 
-    links += 1
-    sent = 0
+    service.IsServer = || true
+    const server = replicate(new_world(), interval ?? 0, unreliable_interval)
+    table.insert(live, server)
 
-    const server = new_world()
-    const client = new_world()
-    const reliable = remote()
-    const unreliable = remote()
-    serve(server, reliable, unreliable, interval ?? 0)
+    return server, function() -> Replicator
+      service.IsServer = || false
+      const client = replicate(new_world())
+      service.IsServer = || true
 
-    return server, client, function() -> ()
-      receive(client, reliable, unreliable)
-    end, function() -> ()
-      reliable:FireServer()
+      table.insert(live, client)
+      receiver = client
+      return client
     end
   end
 
-  -- One interval of the server passes. The test shim keeps Heartbeat as
-  -- a signal with a `Fire`, which the type does not have.
+  -- One more player joins, with a world of its own, through the
+  -- client's side of `replicate`.
+  private function enter(player: Player) -> World
+    const world = new_world()
+    const client = replecs.create_client(world)
+    equip(client)
+    client:init()
+    receive(client, view(RELIABLE, player), view(UNRELIABLE, player), nothing)
+    return world
+  end
+
+  -- `seconds` of the server pass. The test shim keeps Heartbeat as a
+  -- signal with a `Fire`, which the type does not have.
   @allow(explicit_any)
-  private function send(dt: number?) -> ()
-    (RunService.Heartbeat :: any):Fire(dt ?? 1)
+  private function send(seconds: number?) -> ()
+    (RunService.Heartbeat :: any):Fire(seconds ?? 1)
   end
 
   -- The entities of a world that hold `id`.
@@ -391,33 +1720,51 @@ namespace ReplicationTests
     return found
   end
 
+  -- The number of an entity of the server, as a client knows it.
+  private function number_of(entity: Entity) -> number
+    return (entity :: unknown) :: number
+  end
+
+  -- The one entity of a world that holds `id`.
+  private function only<T>(world: World, id: Entity<T>) -> Entity
+    const found = holders(world, id)
+    $assert_eq(#found, 1)
+    return found[1]
+  end
+
   --- A client that joins gets each entity that holds a shared id.
   public function a_client_that_joins_gets_the_world() -> ()
-    const server, client, join = link()
+    const net, join = link()
+    const server = net.world
     const dummy = server:entity()
     server:set(dummy, ct.Position, new Vector3(1, 2, 3))
     server:set(dummy, ct.Health, 100)
     server:add(dummy, ct.Burning)
     server:entity()
 
-    join()
+    const mine = join()
+    const client = mine.world
+    $assert(not mine:is_synced())
+    $assert(not net:is_ready(visitor))
     send()
+    $assert(mine:is_synced())
+    $assert(net:is_ready(visitor))
 
-    const found = holders(client, ct.Health)
-    $assert_eq(#found, 1)
-    $assert_eq(client:get(found[1], ct.Position), new Vector3(1, 2, 3))
-    $assert_eq(client:get(found[1], ct.Health), 100)
-    $assert(client:has(found[1], ct.Burning))
+    const found = only(client, ct.Health)
+    $assert_eq(client:get(found, ct.Position), new Vector3(1, 2, 3))
+    $assert_eq(client:get(found, ct.Health), 100)
+    $assert(client:has(found, ct.Burning))
   end
 
   --- After the full state, each change arrives at the next interval: a
   --- new value, a removed id, a new entity, and a deleted entity.
   public function a_change_reaches_the_client() -> ()
-    const server, client, join = link()
+    const net, join = link()
+    const server = net.world
     const dummy = server:entity()
     server:set(dummy, ct.Health, 100)
     server:add(dummy, ct.Burning)
-    join()
+    const client = join().world
     send()
 
     server:set(dummy, ct.Health, 40)
@@ -438,11 +1785,12 @@ namespace ReplicationTests
   end
 
   --- An entity that gets its first shared id after the client joined
-  --- replicates from then on.
+  --- replicates from then on. An id that goes and comes back arrives.
   public function an_entity_replicates_from_its_first_shared_id() -> ()
-    const server, client, join = link()
+    const net, join = link()
+    const server = net.world
     const plain = server:entity()
-    join()
+    const client = join().world
     send()
     send()
     $assert_eq(#holders(client, ct.Health), 0)
@@ -450,33 +1798,66 @@ namespace ReplicationTests
     server:set(plain, ct.Health, 5)
     send()
     $assert_eq(#holders(client, ct.Health), 1)
+
+    server:remove(plain, ct.Health)
+    send()
+    $assert_eq(#holders(client, ct.Health), 0)
+
+    server:set(plain, ct.Health, 6)
+    send()
+    $assert_eq(client:get(only(client, ct.Health), ct.Health), 6)
   end
 
   --- An unreliable id sends its value at each interval.
   public function an_unreliable_id_sends_its_value() -> ()
-    const server, client, join = link()
+    const net, join = link()
+    const server = net.world
     const turret = server:entity()
     server:set(turret, ct.Health, 1)
     server:set(turret, fast.Aim, Vector3.xAxis)
-    join()
+    const client = join().world
     send()
 
     server:set(turret, fast.Aim, Vector3.yAxis)
     send()
 
-    $assert_eq(client:get(holders(client, ct.Health)[1], fast.Aim), Vector3.yAxis)
+    $assert_eq(client:get(only(client, ct.Health), fast.Aim), Vector3.yAxis)
+  end
+
+  --- The unreliable values have an interval of their own.
+  public function the_unreliable_values_have_their_interval() -> ()
+    const net, join = link(1, 0.25)
+    const server = net.world
+    const turret = server:entity()
+    server:set(turret, ct.Health, 1)
+    server:set(turret, fast.Aim, Vector3.xAxis)
+    const client = join().world
+    send(1)
+
+    server:set(turret, ct.Health, 2)
+    server:set(turret, fast.Aim, Vector3.yAxis)
+    send(0.25)
+
+    const found = only(client, ct.Health)
+    $assert_eq(client:get(found, fast.Aim), Vector3.yAxis)
+    $assert_eq(client:get(found, ct.Health), 1)
+
+    send(0.75)
+    $assert_eq(client:get(found, ct.Health), 2)
   end
 
   --- A pair of a shared relationship replicates, and its target is the
-  --- client's own entity.
+  --- client's own entity. A pair that holds a value brings the value.
   public function a_pair_reaches_the_client() -> ()
-    const server, client, join = link()
+    const net, join = link()
+    const server = net.world
     const alice = server:entity()
     const bob = server:entity()
     server:set(alice, ct.Health, 1)
     server:set(bob, ct.Health, 2)
     server:add(alice, pair(ct.Likes, bob))
-    join()
+    server:set(alice, pair(ct.Owes, bob), 30)
+    const client = join().world
     send()
 
     local fan: Entity? = nil
@@ -492,97 +1873,206 @@ namespace ReplicationTests
 
     $assert(fan ~= nil and star ~= nil)
     $assert(client:has(fan :: Entity, pair(ct.Likes, star :: Entity)))
+    $assert_eq(client:get(fan :: Entity, pair(ct.Owes, star :: Entity)), 30)
 
     server:remove(alice, pair(ct.Likes, bob))
     server:add(bob, pair(ct.Likes, alice))
+    server:set(alice, pair(ct.Owes, bob), 45)
     send()
 
     $assert(not client:has(fan :: Entity, pair(ct.Likes, star :: Entity)))
     $assert(client:has(star :: Entity, pair(ct.Likes, fan :: Entity)))
+    $assert_eq(client:get(fan :: Entity, pair(ct.Owes, star :: Entity)), 45)
+
+    -- A pair value that fails to deserialize changes nothing.
+    server:set(alice, pair(ct.Owes, bob), 13)
+    server:set(alice, ct.Health, 7)
+    send()
+    $assert_eq(client:get(fan :: Entity, pair(ct.Owes, star :: Entity)), 45)
+    $assert_eq(client:get(fan :: Entity, ct.Health), 7)
   end
 
-  --- A Manual id replicates only where the game gives an entity the
-  --- replecs ids for it.
+  --- A Manual id replicates only where the game shares it, and stops
+  --- where the game unshares it.
   public function a_manual_id_waits_for_the_game() -> ()
-    const server, client, join = link()
+    const net, join = link()
+    const server = net.world
     const vault = server:entity()
     server:set(vault, ct.Health, 1)
     server:set(vault, manual.Secret, 42)
-    join()
+    const client = join().world
     send()
 
-    const found = holders(client, ct.Health)[1]
+    const found = only(client, ct.Health)
     $assert_eq(client:get(found, manual.Secret), nil)
 
-    server:add(vault, pair(replecs.reliable, manual.Secret))
+    net:share(vault, manual.Secret)
     send()
     $assert_eq(client:get(found, manual.Secret), 42)
+
+    net:unshare(vault, manual.Secret)
+    send()
+    $assert(not client:has(found, manual.Secret))
+    $assert_eq(server:get(vault, manual.Secret), 42)
   end
 
-  --- An entity with a filter of its own keeps it: the game gave it
-  --- `replecs.networked` for no player, so its shared ids stay.
-  public function a_filter_of_the_game_stays() -> ()
-    const server, client, join = link()
+  --- `share` takes the channel of a Manual id: Once sends one time, and
+  --- Unreliable sends at each interval.
+  public function share_takes_a_channel() -> ()
+    const net, join = link()
+    const server = net.world
+    const forge = server:entity()
+    server:set(forge, ct.Health, 1)
+    server:set(forge, manual.Secret, 1)
+    server:set(forge, manual.Heat, 10)
+    net:share(forge, manual.Secret, nil, Share.Once)
+    net:share(forge, manual.Heat, nil, Share.Unreliable)
+    const client = join().world
+    send()
+
+    const found = only(client, ct.Health)
+    $assert_eq(client:get(found, manual.Secret), 1)
+    $assert_eq(client:get(found, manual.Heat), 10)
+
+    server:set(forge, manual.Secret, 2)
+    server:set(forge, manual.Heat, 20)
+    send()
+    $assert_eq(client:get(found, manual.Secret), 1)
+    $assert_eq(client:get(found, manual.Heat), 20)
+
+    net:resend(forge, manual.Secret)
+    net:unshare(forge, manual.Heat)
+    send()
+    $assert_eq(client:get(found, manual.Secret), 2)
+    $assert(not client:has(found, manual.Heat))
+  end
+
+  --- An unreliable packet that comes before the full state changes
+  --- nothing, and raises nothing.
+  public function a_value_before_the_full_state_waits() -> ()
+    const _net, join = link()
+    const mine = join()
+    side(UNRELIABLE, visitor):Fire(buffer.create(0))
+    $assert(not mine:is_synced())
+    send()
+    $assert(mine:is_synced())
+  end
+
+  --- The server has room for each player of the place. replecs stops
+  --- at 128 with no call of Lattice.
+  @allow(explicit_any)
+  public function the_server_has_room_for_the_place() -> ()
+    -- A write to a service goes through `any`.
+    local players: any = Players
+    players.MaxPlayers = 300
+    link()
+    players.MaxPlayers = nil
+    $assert_eq(replecs.MAX_CLIENTS, 300)
+  end
+
+  --- The pair API of replecs works on the world as it is: an entity
+  --- with `replecs.networked` for no player stays on the server, a pair
+  --- of `replecs.reliable` shares a Manual id, and `replecs.serdes` on
+  --- an id of each world packs it with no guard of Lattice.
+  public function the_pair_api_of_replecs_works() -> ()
+    -- One byte for a number.
+    const codec: replecs.Serdes = {
+      bytespan = 1,
+      serialize = function(value: number) -> buffer
+        const packed = buffer.create(1)
+        buffer.writeu8(packed, 0, value)
+        return packed
+      end,
+      deserialize = |packed: buffer| buffer.readu8(packed, 0),
+    }
+
+    const net, join = link()
+    const server = net.world
+    server:set(manual.Secret, replecs.serdes, codec)
     const hidden = server:entity()
     server:set(hidden, replecs.networked, {})
     server:set(hidden, ct.Health, 1)
-    join()
+
+    const shown = server:entity()
+    server:add(shown, replecs.networked)
+    server:set(shown, manual.Secret, 7)
+    server:add(shown, pair(replecs.reliable, manual.Secret))
+    const client = join().world
+    client:set(manual.Secret, replecs.serdes, codec)
+
+    local beside: unknown = 'none'
+    side(RELIABLE, visitor).Event:Connect(function(_packet: buffer, variants: unknown) -> ()
+      beside = variants
+    end)
+
     send()
     send()
 
     $assert_eq(#holders(client, ct.Health), 0)
+    $assert_eq(client:get(only(client, manual.Secret), manual.Secret), 7)
+    $assert_eq(beside, nil)
   end
 
   --- A change between the request and the answer is in the answer, and
   --- a change after the answer arrives too.
   public function no_change_gets_lost_while_a_client_joins() -> ()
-    const server, client, join = link()
+    const net, join = link()
+    const server = net.world
     const dummy = server:entity()
     server:set(dummy, ct.Health, 100)
     send()
 
-    join()
+    const client = join().world
     server:set(dummy, ct.Health, 90)
     send()
-    $assert_eq(client:get(holders(client, ct.Health)[1], ct.Health), 90)
+    $assert_eq(client:get(only(client, ct.Health), ct.Health), 90)
 
     server:set(dummy, ct.Health, 80)
     send()
-    $assert_eq(client:get(holders(client, ct.Health)[1], ct.Health), 80)
+    $assert_eq(client:get(only(client, ct.Health), ct.Health), 80)
   end
 
   --- The server sends nothing before a client asks, and one full state
   --- to a client that asks two times.
   public function the_server_answers_one_request() -> ()
-    const server, _client, join, ask = link()
-    server:set(server:entity(), ct.Health, 1)
+    const net, join = link()
+    net.world:set(net.world:entity(), ct.Health, 1)
     send()
-    $assert_eq(sent, 0)
+    $assert_eq(got[visitor], nil)
 
     join()
-    $assert_eq(sent, 0)
+    $assert_eq(got[visitor], nil)
     send()
-    $assert_eq(sent, 1)
+    $assert_eq(got[visitor], 1)
 
-    ask()
+    requests[RELIABLE]:Fire(visitor)
     send()
-    $assert_eq(sent, 1)
+    $assert_eq(got[visitor], 1)
   end
 
-  --- A player that left before the answer gets none.
+  --- A player that left before the answer gets none, and a player that
+  --- asks after it left gets none.
+  @allow(explicit_any)
   public function a_player_that_left_gets_no_answer() -> ()
-    const _server, _client, join = link()
+    const _net, join = link()
     join()
     visitor.Parent = nil
     send()
+    $assert_eq(got[visitor], nil)
 
-    $assert_eq(sent, 0)
+    -- The test shim keeps PlayerRemoving as a signal with a `Fire`.
+    const removing: any = Players.PlayerRemoving
+    removing:Fire(guest)
+    enter(guest)
+    send()
+    $assert_eq(got[guest], nil)
   end
 
   --- The server sends at each interval, not at each frame.
   public function the_server_waits_for_the_interval() -> ()
-    const server, client, join = link(1)
-    join()
+    const net, join = link(1)
+    const server = net.world
+    const client = join().world
     send(1)
     server:set(server:entity(), ct.Health, 1)
 
@@ -600,5 +2090,1051 @@ namespace ReplicationTests
     $expect(function() -> ()
       shared({ ct.Health })
     end):toThrow('before the first world')
+
+    $expect(function() -> ()
+      serdes(ct.Health, { serialize = |_value| buffer.create(0), deserialize = |_packed| 0 })
+    end):toThrow('before the first world')
+
+    $expect(function() -> ()
+      preprocess(ct.Health, { serialize = |value| value, deserialize = |sent: number| sent })
+    end):toThrow('before the first world')
+  end
+
+  --- `replicate` gives one replicator for a world, makes the remotes on
+  --- the server, and refuses a second world. `stop` destroys the
+  --- remotes, and a later `replicate` starts again.
+  public function replicate_serves_one_world() -> ()
+    const net, join = link()
+    const server = net.world
+    $assert_eq(replicate(server), net)
+    $assert(ReplicatedStorage->LatticeReliable ~= nil)
+    $assert(ReplicatedStorage->LatticeUnreliable ~= nil)
+
+    $expect(function() -> ()
+      replicate(new_world())
+    end):toThrow('another world replicates already')
+
+    const dummy = server:entity()
+    server:set(dummy, ct.Health, 1)
+    const client = join().world
+    send()
+    $assert_eq(#holders(client, ct.Health), 1)
+
+    -- What the world holds when it replicates again goes too.
+    server:add(dummy, pair(ct.Likes, dummy))
+    server:set(dummy, fast.Aim, Vector3.xAxis)
+
+    net:stop()
+    live[2]:stop()
+    $assert(ReplicatedStorage->LatticeReliable == nil)
+    $assert(ReplicatedStorage->LatticeUnreliable == nil)
+    server:set(dummy, ct.Health, 2)
+    send()
+    $assert_eq(client:get(only(client, ct.Health), ct.Health), 1)
+
+    -- The same world replicates again, to a client that starts again.
+    const again = replicate(server, 0)
+    table.insert(live, again)
+    $assert(again ~= net)
+    const fresh = join().world
+    send()
+    const found = only(fresh, ct.Health)
+    $assert_eq(fresh:get(found, ct.Health), 2)
+    $assert(fresh:has(found, pair(ct.Likes, found)))
+    $assert_eq(fresh:get(found, fast.Aim), Vector3.xAxis)
+
+    server:set(dummy, ct.Health, 3)
+    send()
+    $assert_eq(fresh:get(only(fresh, ct.Health), ct.Health), 3)
+  end
+
+  --- A method of the other side stops with an error.
+  public function a_method_of_the_other_side_stops() -> ()
+    const net, join = link()
+    const mine = join()
+
+    $expect(function() -> ()
+      net:received(ct.Health, function() end)
+    end):toThrow('received() works on a client only')
+
+    $expect(function() -> ()
+      mine:track(mine.world:entity())
+    end):toThrow('track() works on the server only')
+
+    $expect(function() -> ()
+      net:share(net.world:entity(), ct.Health, nil, Share.Manual)
+    end):toThrow('takes Reliable, Unreliable, or Once')
+
+    $expect(function() -> ()
+      net:share(net.world:entity(), pair(ct.Likes, net.world:entity()), nil, Share.Once)
+    end):toThrow('a pair has no Share.Once')
+  end
+
+  --- A player that the entity's filter leaves out never gets the
+  --- entity: not in the full state, and not in a change.
+  public function a_player_outside_the_filter_gets_nothing() -> ()
+    const net, join = link()
+    const server = net.world
+    const chest = server:entity()
+    net:track(chest, visitor)
+    server:set(chest, ct.Health, 100)
+
+    const client = join().world
+    const other = enter(guest)
+    send()
+    $assert_eq(client:get(only(client, ct.Health), ct.Health), 100)
+    $assert_eq(#holders(other, ct.Health), 0)
+
+    const before = got[guest]
+    server:set(chest, ct.Health, 50)
+    send()
+    $assert_eq(client:get(only(client, ct.Health), ct.Health), 50)
+    $assert_eq(#holders(other, ct.Health), 0)
+    $assert_eq(got[guest], before)
+  end
+
+  --- A change of the filter sends the entity to a player that comes in,
+  --- and deletes it for a player that goes out.
+  public function a_filter_change_sends_or_removes_the_entity() -> ()
+    const net, join = link()
+    const server = net.world
+    const chest = server:entity()
+    server:set(chest, ct.Health, 100)
+    net:track(chest, { [visitor] = true })
+
+    const client = join().world
+    const other = enter(guest)
+    send()
+    $assert_eq(#holders(client, ct.Health), 1)
+    $assert_eq(#holders(other, ct.Health), 0)
+
+    net:track(chest, { [guest] = true })
+    send()
+    $assert_eq(#holders(client, ct.Health), 0)
+    $assert_eq(other:get(only(other, ct.Health), ct.Health), 100)
+
+    -- A set of `false` values names the players that do not get it.
+    net:track(chest, { [guest] = false })
+    send()
+    $assert_eq(#holders(client, ct.Health), 1)
+    $assert_eq(#holders(other, ct.Health), 0)
+
+    -- No filter is each player.
+    net:track(chest)
+    send()
+    $assert_eq(#holders(client, ct.Health), 1)
+    $assert_eq(#holders(other, ct.Health), 1)
+  end
+
+  --- A player that joins later gets only what its filter allows.
+  public function a_late_player_gets_what_its_filter_allows() -> ()
+    const net, join = link()
+    const server = net.world
+    const open = server:entity()
+    server:set(open, ct.Health, 1)
+    const mine = server:entity()
+    net:track(mine, late)
+    server:set(mine, ct.Health, 2)
+    const theirs = server:entity()
+    net:track(theirs, visitor)
+    server:set(theirs, ct.Health, 3)
+
+    const client = join().world
+    send()
+    send()
+
+    const other = enter(late)
+    send()
+
+    local seen = 0
+
+    for _, health in other:query(ct.Health) do
+      seen += health
+    end
+
+    $assert_eq(seen, 3)
+    $assert_eq(#holders(client, ct.Health), 2)
+  end
+
+  --- A filter of one id sends that id to its players only, and the rest
+  --- of the entity to each player. A change of it adds or removes the id.
+  public function a_filter_of_one_id() -> ()
+    const net, join = link()
+    const server = net.world
+    const chest = server:entity()
+    net:share(chest, ct.Position, visitor)
+    server:set(chest, ct.Health, 100)
+    server:set(chest, ct.Position, Vector3.one)
+
+    const client = join().world
+    const other = enter(guest)
+    send()
+    $assert_eq(client:get(only(client, ct.Health), ct.Position), Vector3.one)
+    $assert(not other:has(only(other, ct.Health), ct.Position))
+
+    server:set(chest, ct.Position, Vector3.zero)
+    send()
+    $assert_eq(client:get(only(client, ct.Health), ct.Position), Vector3.zero)
+    $assert(not other:has(only(other, ct.Health), ct.Position))
+
+    net:share(chest, ct.Position, guest)
+    send()
+    $assert(not client:has(only(client, ct.Health), ct.Position))
+    $assert_eq(other:get(only(other, ct.Health), ct.Position), Vector3.zero)
+
+    -- A player gets the id only when it gets the entity.
+    net:track(chest, visitor)
+    send()
+    $assert_eq(#holders(other, ct.Health), 0)
+  end
+
+  --- A followed id leaves the players that the game gave the entity or
+  --- the id, at each later change.
+  public function a_followed_id_keeps_the_filters_of_the_game() -> ()
+    const net, join = link()
+    const server = net.world
+    const chest = server:entity()
+    server:set(chest, ct.Health, 100)
+    net:track(chest, visitor)
+    net:share(chest, ct.Health, visitor)
+    server:set(chest, ct.Position, Vector3.one)
+    server:add(chest, ct.Burning)
+    server:remove(chest, ct.Health)
+    server:set(chest, ct.Health, 90)
+
+    const client = join().world
+    const other = enter(guest)
+    send()
+    $assert_eq(client:get(only(client, ct.Health), ct.Health), 90)
+    $assert_eq(#holders(other, ct.Position), 0)
+
+    net:track(chest)
+    send()
+    $assert_eq(#holders(other, ct.Position), 1)
+    $assert_eq(#holders(other, ct.Health), 0)
+  end
+
+  --- A group changes its players at run time, and each entity that
+  --- uses it follows. A group that derives from it follows too.
+  public function a_group_changes_at_run_time() -> ()
+    const net, join = link()
+    const server = net.world
+    const team = filter(visitor)
+    const admins = filter()
+    const banner = server:entity()
+    net:track(banner, team)
+    server:set(banner, ct.Health, 1)
+    const log = server:entity()
+    net:track(log, team:extend(admins))
+    server:set(log, ct.Position, Vector3.one)
+    const bait = server:entity()
+    net:track(bait, net:everyone():exclude(team))
+    server:add(bait, ct.Burning)
+
+    const client = join().world
+    const other = enter(guest)
+    send()
+    $assert_eq(#holders(client, ct.Health), 1)
+    $assert_eq(#holders(other, ct.Health), 0)
+    $assert_eq(#holders(other, ct.Position), 0)
+    $assert_eq(#holders(client, ct.Burning), 0)
+    $assert_eq(#holders(other, ct.Burning), 1)
+    $assert(team:contains(visitor) and not team:contains(guest))
+
+    team:add(guest)
+    send()
+    $assert_eq(#holders(other, ct.Health), 1)
+    $assert_eq(#holders(other, ct.Position), 1)
+    $assert_eq(#holders(other, ct.Burning), 0)
+
+    team:remove(visitor)
+    admins:add(visitor)
+    send()
+    $assert_eq(#holders(client, ct.Health), 0)
+    $assert_eq(#holders(client, ct.Position), 1)
+    $assert_eq(#holders(client, ct.Burning), 1)
+
+    team:clear()
+    send()
+    $assert_eq(#holders(other, ct.Health), 0)
+
+    team:set({ [visitor] = true, [guest] = true })
+    send()
+    $assert_eq(#holders(client, ct.Health), 1)
+    $assert_eq(#holders(other, ct.Health), 1)
+  end
+
+  --- A function as a filter runs for each player at each send, and a
+  --- predicate group does the same for each entity that uses it.
+  public function a_function_filters_at_each_send() -> ()
+    const net, join = link()
+    const server = net.world
+    local allowed: { [Player]: boolean } = { [visitor] = true }
+    const chest = server:entity()
+    net:track(chest, |player| allowed[player] ?? false)
+    server:set(chest, ct.Health, 1)
+    const map = server:entity()
+    net:track(map, net:predicate(|player| not allowed[player]))
+    server:set(map, ct.Position, Vector3.one)
+
+    const client = join().world
+    const other = enter(guest)
+    send()
+    $assert_eq(#holders(client, ct.Health), 1)
+    $assert_eq(#holders(other, ct.Health), 0)
+    $assert_eq(#holders(client, ct.Position), 0)
+    $assert_eq(#holders(other, ct.Position), 1)
+
+    allowed = { [guest] = true }
+    send()
+    $assert_eq(#holders(client, ct.Health), 0)
+    $assert_eq(#holders(other, ct.Health), 1)
+    $assert_eq(#holders(client, ct.Position), 1)
+    $assert_eq(#holders(other, ct.Position), 0)
+  end
+
+  --- An alias stands for its player in a filter.
+  public function an_alias_stands_for_a_player() -> ()
+    const net, join = link()
+    const server = net.world
+    const avatar = server:entity()
+    net:alias(guest, avatar)
+    const chest = server:entity()
+    net:track(chest, { [avatar] = true })
+    server:set(chest, ct.Health, 1)
+
+    const client = join().world
+    const other = enter(guest)
+    send()
+    $assert_eq(#holders(client, ct.Health), 0)
+    $assert_eq(#holders(other, ct.Health), 1)
+
+    net:unalias(avatar)
+    net:track(chest, { [avatar] = true })
+    send()
+    $assert_eq(#holders(other, ct.Health), 0)
+  end
+
+  --- `untrack` deletes the entity on each client and keeps it on the
+  --- server. `track` sends it again, with each id.
+  public function untrack_stops_an_entity() -> ()
+    const net, join = link()
+    const server = net.world
+    const dummy = server:entity()
+    server:set(dummy, ct.Health, 100)
+    server:add(dummy, ct.Burning)
+    const client = join().world
+    send()
+
+    net:untrack(dummy)
+    send()
+    $assert_eq(#holders(client, ct.Health), 0)
+    $assert_eq(server:get(dummy, ct.Health), 100)
+
+    -- A followed id that comes now does not start the entity again.
+    server:set(dummy, ct.Health, 70)
+    server:set(dummy, ct.Position, Vector3.one)
+    send()
+    send()
+    $assert_eq(#holders(client, ct.Health), 0)
+    $assert_eq(#holders(client, ct.Position), 0)
+
+    net:track(dummy)
+    send()
+    const found = only(client, ct.Health)
+    $assert_eq(client:get(found, ct.Health), 70)
+    $assert_eq(client:get(found, ct.Position), Vector3.one)
+    $assert(client:has(found, ct.Burning))
+
+    server:set(dummy, ct.Health, 60)
+    send()
+    $assert_eq(client:get(found, ct.Health), 60)
+  end
+
+  --- For the same world, Lattice sends the bytes that replecs sends to
+  --- a game that names each entity and each id by hand.
+  @allow(explicit_any)
+  public function lattice_sends_the_bytes_of_replecs() -> ()
+    -- Fills a world: two entities, a tag, values, and two pairs.
+    local function fill(world: World) -> (Entity, Entity)
+      const alice = world:entity()
+      const bob = world:entity()
+      world:set(alice, ct.Health, 100)
+      world:set(alice, ct.Position, Vector3.one)
+      world:set(alice, ct.Packed, Vector3.one)
+      world:add(alice, ct.Burning)
+      world:set(bob, ct.Health, 50)
+      world:add(alice, pair(ct.Likes, bob))
+      world:set(alice, pair(ct.Owes, bob), 5)
+      world:set(alice, fast.Aim, Vector3.zAxis)
+      return alice, bob
+    end
+
+    -- The second step: a new value, a removed tag, and a new pair.
+    local function change(world: World, alice: Entity, bob: Entity) -> ()
+      world:set(alice, ct.Health, 90)
+      world:remove(alice, ct.Burning)
+      world:add(bob, pair(ct.Likes, alice))
+      world:set(alice, fast.Aim, Vector3.xAxis)
+    end
+
+    const net, join = link()
+    const sizes: { number } = {}
+
+    for _, name in { RELIABLE, UNRELIABLE } do
+      side(name, visitor).Event:Connect(function(packet: buffer) -> ()
+        table.insert(sizes, buffer.len(packet))
+      end)
+    end
+
+    const alice, bob = fill(net.world)
+    join()
+    send()
+    change(net.world, alice, bob)
+    send()
+
+    -- The same game on replecs alone, for the player `late`.
+    const world = new_world()
+    const raw = replecs.create_server(world)
+    raw:init()
+    const first, second = fill(world)
+
+    for _, entity in { first, second } do
+      raw:set_networked(entity)
+      raw:set_reliable(entity, ct.Health)
+    end
+
+    raw:set_reliable(first, ct.Position)
+    raw:set_reliable(first, ct.Packed)
+    raw:set_reliable(first, ct.Burning)
+    raw:set_relation(first, ct.Likes)
+    raw:set_relation(first, ct.Owes)
+    raw:set_unreliable(first, fast.Aim)
+
+    const expected: { number } = {}
+
+    -- The sizes of each packet of one collect, for `late`. replecs types
+    -- its iterator with `any`.
+    local function note(packets: any) -> ()
+      for player, packet in packets do
+        if player == late then
+          table.insert(expected, buffer.len(packet))
+        end
+      end
+    end
+
+    raw:mark_player_ready(late)
+    note(raw:collect_updates())
+    table.insert(expected, buffer.len((raw:get_full(late))))
+    note(raw:collect_unreliable())
+    change(world, first, second)
+    raw:set_relation(second, ct.Likes)
+    note(raw:collect_updates())
+    note(raw:collect_unreliable())
+    raw:destroy()
+
+    $assert_eq(#sizes, 4)
+    $assert_eq(table.concat(sizes, ' '), table.concat(expected, ' '))
+  end
+
+  --- A Manual relationship replicates each pair with `share_relation`,
+  --- or one pair with `share`. An Unreliable pair sends its value at
+  --- each interval.
+  public function a_relationship_shares_by_hand() -> ()
+    const net, join = link()
+    const server = net.world
+    const tower = server:entity()
+    const gate = server:entity()
+    const wall = server:entity()
+
+    for health, entity in { tower, gate, wall } do
+      server:set(entity, ct.Health, health)
+    end
+
+    server:add(tower, pair(manual.Guards, gate))
+    server:add(tower, pair(manual.Guards, wall))
+    server:set(tower, pair(manual.Range, gate), 10)
+    server:set(tower, pair(manual.Range, wall), 20)
+    net:share(tower, pair(manual.Guards, gate))
+    net:share(tower, pair(manual.Range, wall), nil, Share.Unreliable)
+
+    const client = join().world
+    send()
+
+    local mine: { Entity } = {}
+
+    for entity, health in client:query(ct.Health) do
+      mine[health] = entity
+    end
+
+    $assert(client:has(mine[1], pair(manual.Guards, mine[2])))
+    $assert(not client:has(mine[1], pair(manual.Guards, mine[3])))
+    $assert_eq(client:get(mine[1], pair(manual.Range, mine[3])), 20)
+    $assert(not client:has(mine[1], pair(manual.Range, mine[2])))
+
+    server:set(tower, pair(manual.Range, wall), 25)
+    net:unshare(tower, pair(manual.Guards, gate))
+    net:share_relation(tower, manual.Guards)
+    send()
+    $assert_eq(client:get(mine[1], pair(manual.Range, mine[3])), 25)
+    $assert(client:has(mine[1], pair(manual.Guards, mine[2])))
+    $assert(client:has(mine[1], pair(manual.Guards, mine[3])))
+
+    net:unshare_relation(tower, manual.Guards)
+    net:unshare(tower, pair(manual.Range, wall))
+    send()
+    $assert(not client:has(mine[1], pair(manual.Guards, mine[2])))
+    $assert(not client:has(mine[1], pair(manual.Guards, mine[3])))
+    $assert(not client:has(mine[1], pair(manual.Range, mine[3])))
+  end
+
+  --- A Once id arrives with its entity, and a later value stays on the
+  --- server until `resend`.
+  public function a_once_id_sends_one_time() -> ()
+    const net, join = link()
+    const server = net.world
+    const guard = server:entity()
+    server:set(guard, once.Title, 'Guard')
+    const client = join().world
+    send()
+    $assert_eq(client:get(only(client, once.Title), once.Title), 'Guard')
+
+    server:set(guard, once.Title, 'Captain')
+    send()
+    $assert_eq(client:get(only(client, once.Title), once.Title), 'Guard')
+
+    net:resend(guard, once.Title)
+    send()
+    $assert_eq(client:get(only(client, once.Title), once.Title), 'Captain')
+
+    -- A second entity gets the id while the client listens.
+    server:set(server:entity(), once.Title, 'Scout')
+    send()
+    $assert_eq(#holders(client, once.Title), 2)
+  end
+
+  --- `send_now` sends an entity between two intervals, to the players
+  --- that get it.
+  public function send_now_does_not_wait() -> ()
+    const net, join = link(1)
+    const server = net.world
+    const dummy = server:entity()
+    server:set(dummy, ct.Health, 100)
+    const hidden = server:entity()
+    net:track(hidden, guest)
+    server:set(hidden, ct.Position, Vector3.one)
+    const client = join().world
+    send(1)
+
+    server:set(dummy, ct.Health, 60)
+    const fresh = server:entity()
+    server:set(fresh, ct.Position, Vector3.zero)
+    net:send_now(dummy)
+    net:send_now(fresh)
+    net:send_now(hidden)
+    $assert_eq(client:get(only(client, ct.Health), ct.Health), 60)
+    $assert_eq(client:get(only(client, ct.Position), ct.Position), Vector3.zero)
+
+    -- The interval's own send changes nothing more.
+    server:set(dummy, ct.Health, 50)
+    send(1)
+    $assert_eq(client:get(only(client, ct.Health), ct.Health), 50)
+    $assert_eq(#holders(client, ct.Position), 1)
+  end
+
+  --- A serdes writes the value into the packet, so no value crosses
+  --- beside the buffer, on each channel.
+  public function a_serdes_packs_the_value() -> ()
+    const net, join = link()
+    const server = net.world
+    const rock = server:entity()
+    server:set(rock, ct.Packed, new Vector3(1, 2, 3))
+
+    local beside: unknown = 'none'
+    side(RELIABLE, visitor).Event:Connect(function(_packet: buffer, variants: unknown) -> ()
+      beside = variants
+    end)
+
+    const client = join().world
+    send()
+    $assert_eq(client:get(only(client, ct.Packed), ct.Packed), new Vector3(1, 2, 3))
+    $assert_eq(beside, nil)
+
+    server:set(rock, ct.Packed, new Vector3(4, 5, 6))
+    send()
+    $assert_eq(client:get(only(client, ct.Packed), ct.Packed), new Vector3(4, 5, 6))
+    $assert_eq(beside, nil)
+
+    -- A value with no serdes crosses beside the buffer.
+    server:set(rock, ct.Health, 1)
+    send()
+    $assert(beside ~= nil)
+  end
+
+  --- A serdes with variants sends an Instance beside the buffer. A
+  --- value that fails to deserialize shows a warning: the entity keeps
+  --- the value that it had, and each other id of the packet arrives.
+  public function a_value_that_fails_changes_nothing() -> ()
+    const net, join = link()
+    const server = net.world
+    const box = server:entity()
+    server:set(box, ct.Brittle, { count = 4, owner = visitor })
+    server:set(box, ct.Wallet, new Purse { coins = 5 })
+    server:set(box, ct.Health, 1)
+
+    const mine = join()
+    const client = mine.world
+    local seen = 0
+
+    mine:received(ct.Brittle, function() -> ()
+      seen += 1
+    end)
+
+    send()
+    const found = only(client, ct.Health)
+    $assert_eq((client:get(found, ct.Brittle) :: { count: number }).count, 4)
+    $assert_eq((client:get(found, ct.Brittle) :: { owner: Player }).owner, visitor)
+    $assert_eq((client:get(found, ct.Wallet) :: Purse):double(), 10)
+    $assert_eq(seen, 1)
+
+    server:set(box, ct.Brittle, { count = 13, owner = visitor })
+    server:set(box, ct.Wallet, new Purse { coins = 13 })
+    server:set(box, ct.Health, 2)
+    server:set(box, ct.Position, Vector3.one)
+    send()
+    $assert_eq((client:get(found, ct.Brittle) :: { count: number }).count, 4)
+    $assert_eq((client:get(found, ct.Wallet) :: Purse).coins, 5)
+    $assert_eq(client:get(found, ct.Health), 2)
+    $assert_eq(client:get(found, ct.Position), Vector3.one)
+    $assert_eq(seen, 1)
+
+    server:set(box, ct.Brittle, { count = 6, owner = visitor })
+    server:set(box, ct.Wallet, new Purse { coins = 7 })
+    send()
+    $assert_eq((client:get(found, ct.Brittle) :: { count: number }).count, 6)
+    $assert_eq((client:get(found, ct.Wallet) :: Purse):double(), 14)
+    $assert_eq(seen, 2)
+  end
+
+  --- A value that fails in the full state leaves the entity without
+  --- that id, and with each other id.
+  public function a_first_value_that_fails_does_not_arrive() -> ()
+    const net, join = link()
+    const server = net.world
+    const box = server:entity()
+    server:set(box, ct.Wallet, new Purse { coins = 13 })
+    server:set(box, ct.Health, 1)
+    const client = join().world
+    send()
+
+    const found = only(client, ct.Health)
+    $assert(not client:has(found, ct.Wallet))
+
+    server:set(box, ct.Wallet, new Purse { coins = 1 })
+    send()
+    $assert_eq((client:get(found, ct.Wallet) :: Purse):double(), 2)
+  end
+
+  --- A component that holds a Player arrives as that Player, and a
+  --- hook of the client runs code with it.
+  public function a_player_reference_arrives() -> ()
+    const net, join = link()
+    const server = net.world
+    const avatar = server:entity()
+    server:set(avatar, ct.Owner, visitor)
+    server:set(avatar, ct.Health, 100)
+
+    const mine = join()
+    const client = mine.world
+    local refs: { [Player]: Entity } = {}
+    local health_then: number? = nil
+
+    mine:received(ct.Owner, function(entity: Entity, _id: Entity<Player>, player: Player) -> ()
+      refs[player] = entity
+
+      -- The other ids of the entity are there when the packet is done.
+      mine:after(function() -> ()
+        health_then = client:get(entity, ct.Health)
+      end)
+    end)
+
+    send()
+    $assert_eq(refs[visitor], only(client, ct.Owner))
+    $assert_eq(client:get(refs[visitor], ct.Owner), visitor)
+    $assert_eq(health_then, 100)
+
+    const second = server:entity()
+    server:set(second, ct.Owner, guest)
+    send()
+    $assert(refs[guest] ~= nil and refs[guest] ~= refs[visitor])
+  end
+
+  --- The client picks its own entity for an entity of the server, by
+  --- the value of a component: the ids of the server go on it.
+  public function the_client_resolves_its_own_entity() -> ()
+    const net, join = link()
+    const server = net.world
+    const avatar = server:entity()
+    server:set(avatar, ct.Owner, visitor)
+    server:set(avatar, ct.Health, 100)
+    net:identify(avatar, ct.Owner)
+    const stray = server:entity()
+    server:set(stray, ct.Owner, guest)
+    net:identify(stray, ct.Owner)
+
+    const mine = join()
+    const client = mine.world
+    const me = client:entity()
+    client:add(me, ct.Burning)
+    mine:resolve(ct.Owner, |player| player == visitor ? me : nil)
+    send()
+
+    $assert_eq(only(client, ct.Owner), me)
+    $assert_eq(client:get(me, ct.Health), 100)
+    $assert(client:has(me, ct.Burning))
+    $assert_eq(mine:server_entity(me), number_of(avatar))
+    $assert_eq(mine:client_entity(number_of(avatar)), me)
+
+    server:set(avatar, ct.Health, 80)
+    send()
+    $assert_eq(client:get(me, ct.Health), 80)
+
+    net:unidentify(avatar)
+  end
+
+  --- A custom id picks the client's entity from all that arrives.
+  public function a_custom_id_reads_the_context() -> ()
+    const net, join = link()
+    const server = net.world
+    const chair = server:entity()
+    server:set(chair, ct.Seat, 3)
+    server:set(chair, ct.Health, 9)
+    net:identify(chair, spot)
+
+    const mine = join()
+    const client = mine.world
+    seats[3] = client:entity()
+    send()
+
+    $assert_eq(client:get(seats[3], ct.Health), 9)
+    $assert_eq(client:get(seats[3], ct.Seat), 3)
+    $assert_eq(#holders(client, ct.Health), 1)
+  end
+
+  --- A global id crosses as one byte, and the client maps the number.
+  public function a_global_id_maps_by_number() -> ()
+    const net, join = link()
+    const server = net.world
+    const sun = server:entity()
+    server:set(sun, ct.Health, 1)
+    net:global(sun, 7)
+
+    const mine = join()
+    const client = mine.world
+    const star = client:entity()
+    mine:globals(|number| number == 7 ? star : client:entity())
+    send()
+    $assert_eq(client:get(star, ct.Health), 1)
+
+    server:set(sun, ct.Health, 2)
+    send()
+    $assert_eq(client:get(star, ct.Health), 2)
+    net:unglobal(sun)
+  end
+
+  --- An entity in a value crosses as its number, and a preprocessor
+  --- maps it to the client's entity.
+  public function an_entity_in_a_value_maps() -> ()
+    const net, join = link()
+    const server = net.world
+    const prey = server:entity()
+    server:set(prey, ct.Health, 5)
+    const mine = join()
+    const client = mine.world
+    send()
+
+    const hunter = server:entity()
+    server:set(hunter, ct.Target, prey)
+    send()
+
+    const found = only(client, ct.Target)
+    $assert_eq(client:get(found, ct.Target), only(client, ct.Health))
+  end
+
+  --- Each hook of a client runs for its event, and its result stops it.
+  public function the_hooks_of_a_client_run() -> ()
+    const net, join = link()
+    const server = net.world
+    const mine = join()
+    const client = mine.world
+    const log: { string } = {}
+
+    const stop_created = mine:created(function(entity: Entity) -> ()
+      table.insert(log, `created {client:has(entity, ct.Health)}`)
+
+      mine:deleted(entity, function() -> ()
+        table.insert(log, `deleted {client:get(entity, ct.Health)}`)
+      end)
+    end)
+
+    const stop_received = mine:received(
+      ct.Health,
+      function(entity: Entity, _id, health: number) -> ()
+        table.insert(log, `health {health} {client:get(entity, ct.Health)}`)
+      end
+    )
+
+    mine:received(ct.Burning, function() -> ()
+      table.insert(log, 'burning')
+    end)
+
+    mine:received(fast.Aim, function(_entity: Entity, _id, aim: Vector3) -> ()
+      table.insert(log, `aim {aim.X}`)
+    end)
+
+    mine:received(ct.Likes, function(entity: Entity, id) -> ()
+      table.insert(log, `likes {client:has(entity, id)}`)
+    end)
+
+    mine:removed(ct.Burning, function(entity: Entity) -> ()
+      table.insert(log, `no burning {client:has(entity, ct.Burning)}`)
+    end)
+
+    mine:removed(ct.Likes, function(entity: Entity, id) -> ()
+      table.insert(log, `no likes {client:has(entity, id)}`)
+    end)
+
+    send()
+    const dummy = server:entity()
+    server:set(dummy, ct.Health, 100)
+    send()
+    $assert_eq(table.concat(log, ', '), 'created false, health 100 100')
+
+    table.clear(log)
+    server:set(dummy, ct.Health, 90)
+    server:add(dummy, ct.Burning)
+    server:set(dummy, fast.Aim, new Vector3(1, 0, 0))
+    server:add(dummy, pair(ct.Likes, dummy))
+    send()
+    -- The first value of an Unreliable id comes on both channels.
+    table.sort(log)
+    $assert_eq(table.concat(log, ', '), 'aim 1, aim 1, burning, health 90 90, likes true')
+
+    table.clear(log)
+    server:set(dummy, fast.Aim, new Vector3(2, 0, 0))
+    server:remove(dummy, ct.Burning)
+    server:remove(dummy, pair(ct.Likes, dummy))
+    send()
+    table.sort(log)
+    $assert_eq(table.concat(log, ', '), 'aim 2, no burning true, no likes true')
+
+    table.clear(log)
+    stop_received()
+    stop_received()
+    stop_created()
+    server:set(dummy, ct.Health, 80)
+    server:set(server:entity(), ct.Position, Vector3.one)
+    send()
+    $assert_eq(table.concat(log, ', '), 'aim 2')
+
+    table.clear(log)
+    server:delete(dummy)
+    send()
+    $assert_eq(table.concat(log, ', '), 'deleted 80')
+  end
+
+  --- A hook that raises shows a warning. The value is in the world, the
+  --- next hook runs, and each other id of the packet arrives.
+  public function a_hook_that_raises_stops_nothing() -> ()
+    const net, join = link()
+    const server = net.world
+    const mine = join()
+    const client = mine.world
+    local later = 0
+
+    mine:received(ct.Health, function() -> ()
+      error('boom')
+    end)
+
+    mine:received(ct.Health, function() -> ()
+      later += 1
+    end)
+
+    mine:created(function() -> ()
+      error('boom')
+    end)
+
+    mine:removed(ct.Health, function() -> ()
+      error('boom')
+    end)
+
+    const dummy = server:entity()
+    server:set(dummy, ct.Health, 100)
+    server:set(dummy, ct.Position, Vector3.one)
+    server:set(dummy, ct.Wallet, new Purse { coins = 2 })
+
+    mine:after(function() -> ()
+      error('boom')
+    end)
+
+    send()
+    const found = only(client, ct.Health)
+    $assert_eq(client:get(found, ct.Health), 100)
+    $assert_eq(client:get(found, ct.Position), Vector3.one)
+    $assert_eq((client:get(found, ct.Wallet) :: Purse).coins, 2)
+    $assert_eq(later, 1)
+
+    mine:deleted(found, function() -> ()
+      error('boom')
+    end)
+
+    server:remove(dummy, ct.Health)
+    send()
+    $assert(not client:has(found, ct.Health))
+
+    server:delete(dummy)
+    send()
+    $assert_eq(#holders(client, ct.Position), 0)
+  end
+
+  --- An override takes the place of the write, of the removal, or of
+  --- the delete. When it stops, the client writes again.
+  public function an_override_takes_the_place_of_the_write() -> ()
+    const net, join = link()
+    const server = net.world
+    const mine = join()
+    const client = mine.world
+    local plain = 0
+
+    const stop_health = mine:override_received(
+      ct.Health,
+      function(entity: Entity, id, health: number) -> ()
+        client:set(entity, id, health * 2)
+      end
+    )
+
+    -- A plain hook beside an override runs too, in any order of calls.
+    mine:received(ct.Health, function() -> ()
+      plain += 1
+    end)
+
+    -- An override of an id with a preprocessor gets the value that the
+    -- preprocessor made.
+    const stop_wallet = mine:override_received(
+      ct.Wallet,
+      function(entity: Entity, id, purse: Purse) -> ()
+        client:set(entity, id, new Purse { coins = purse:double() })
+      end
+    )
+
+    const stop_burning = mine:override_removed(ct.Burning, function() -> ()
+    end)
+
+    const dummy = server:entity()
+    server:set(dummy, ct.Health, 10)
+    server:set(dummy, ct.Wallet, new Purse { coins = 3 })
+    server:add(dummy, ct.Burning)
+    send()
+
+    const found = only(client, ct.Health)
+    $assert_eq(client:get(found, ct.Health), 20)
+    $assert_eq((client:get(found, ct.Wallet) :: Purse).coins, 6)
+    $assert_eq(plain, 1)
+
+    server:remove(dummy, ct.Burning)
+    send()
+    $assert(client:has(found, ct.Burning))
+
+    stop_health()
+    stop_wallet()
+    stop_burning()
+    server:set(dummy, ct.Health, 11)
+    server:set(dummy, ct.Wallet, new Purse { coins = 4 })
+    server:add(dummy, ct.Burning)
+    send()
+    server:remove(dummy, ct.Burning)
+    send()
+    $assert_eq(client:get(found, ct.Health), 11)
+    $assert_eq((client:get(found, ct.Wallet) :: Purse).coins, 4)
+    $assert(not client:has(found, ct.Burning))
+    $assert_eq(plain, 2)
+
+    local kept = false
+
+    mine:override_deleted(found, function() -> ()
+      kept = true
+    end)
+
+    server:delete(dummy)
+    send()
+    $assert(kept)
+    $assert(client:contains(found))
+    $assert_eq(mine:server_entity(found), nil)
+  end
+
+  --- The client binds its own entity to an entity of the server before
+  --- it arrives, and the ids go on that entity.
+  public function the_client_binds_an_entity() -> ()
+    const net, join = link()
+    const server = net.world
+    const mine = join()
+    const client = mine.world
+    send()
+
+    const dummy = server:entity()
+    const ghost = client:entity()
+    mine:bind(ghost, number_of(dummy))
+    server:set(dummy, ct.Health, 100)
+    send()
+    $assert_eq(client:get(ghost, ct.Health), 100)
+    $assert_eq(mine:server_entity(ghost), number_of(dummy))
+
+    mine:unbind(ghost)
+    $assert_eq(mine:server_entity(ghost), nil)
+    $assert_eq(mine:client_entity(number_of(dummy)), nil)
+  end
+
+  --- The two sides give a shared id the same number on the wire.
+  public function the_sides_agree_on_the_numbers() -> ()
+    const net, join = link()
+    const mine = join()
+
+    $assert_eq(net:encode(ct.Health), mine:encode(ct.Health))
+    $assert_eq(mine:decode(net:encode(ct.Wallet)), ct.Wallet)
+    $assert_eq(net:shared_count(), mine:shared_count())
+    $assert(net:shared_count() > 10)
+  end
+
+  --- A client whose custom ids differ from the server's shows a
+  --- warning, and still gets the world.
+  public function a_handshake_that_differs_warns() -> ()
+    const net, join = link()
+    const server = net.world
+    server:set(server:entity(), ct.Health, 1)
+    const raw = net.server :: replecs.Server
+    raw:register_custom_id(replecs.create_custom_id('extra', || nil))
+
+    const mine = join()
+    send()
+    $assert(mine:is_synced())
+    $assert_eq(#holders(mine.world, ct.Health), 1)
+  end
+
+  --- `after` runs at once on the server, and at once on a client that
+  --- applies no packet.
+  public function after_runs_at_once_outside_a_packet() -> ()
+    const net, join = link()
+    const mine = join()
+    local ran = 0
+
+    net:after(function() -> ()
+      ran += 1
+    end)
+
+    mine:after(function() -> ()
+      ran += 1
+    end)
+
+    $assert_eq(ran, 2)
   end
 end
