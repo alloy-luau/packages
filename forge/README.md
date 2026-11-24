@@ -14,10 +14,11 @@ default: providers, the Init and Start barrier, and extensions.
 Lifecycles, dependencies, traits, and Bin are opt-in features. A game
 turns on the features it uses, and the others stay out of its install.
 
-Forge needs Alloy 0.1.0-rc.9 or later. Installed with
-[Ember](https://emberpm.dev), it needs Alloy 0.1.3 and embr 1.0.0-rc.3
-or later. An older embr installs every file but links the core only, so
-each feature stays off.
+Forge needs Alloy 0.2.0-rc.6 or later. Installed with
+[Ember](https://emberpm.dev), it needs embr 1.0.0-rc.3 or later. An older
+embr installs every file but links the core only, so each feature stays
+off. Forge turns on the Alloy flag it uses in its own configuration, so a
+game sets no flag.
 
 ## Learn
 
@@ -47,7 +48,7 @@ The same in `ember.toml`:
 
 ```toml
 [dependencies]
-forge = { name = "alloy/forge", version = "^0.2.0", features = ["lifecycles", "dependencies", "traits"] }
+forge = { name = "alloy/forge", version = "^0.3.0", features = ["lifecycles", "dependencies", "traits"] }
 ```
 
 - With no features, only the core installs. The core does not change
@@ -490,7 +491,8 @@ the cleanup still runs. The same trait added to two Forges warns with
 
 `Forge.trait<<Door>>(part, Door)` gives the object a trait bound to an
 instance, or nil. `Forge.traits<<Door>>(Door)` gives every object a trait
-has bound.
+has bound. Each call takes the trait struct, and the type check refuses a
+value that is no struct.
 
 Write an attribute through the instance: `self.instance:SetAttribute(...)`.
 The field follows at the next `AttributeChanged`.

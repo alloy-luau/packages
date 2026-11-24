@@ -15,7 +15,8 @@ context, one `InputAction` for each action, and one `InputBinding` for each
 binding. The engine reads the hardware and applies the priority and the sink of
 each context. Lever depends on no other package.
 
-Lever needs Alloy 0.1.5 or later and embr 0.8.1 or later.
+Lever needs Alloy 0.2.0-rc.6 or later and embr 0.8.1 or later. Lever turns on
+the Alloy flag it uses in its own configuration, so a game sets no flag.
 
 ## Learn
 
@@ -32,7 +33,7 @@ Add Lever to the game's `ember.toml`, then run `embr install`:
 
 ```toml
 [dependencies]
-lever = { name = "alloy/lever", version = "^0.1.0" }
+lever = { name = "alloy/lever", version = "^0.2.0" }
 ```
 
 Mount the packages folder in `alloy.toml`:
@@ -114,8 +115,8 @@ end)
 
 Lever runs on the client. `new Lever(actions, contexts, action, context)` takes
 the two enums themselves, then their specs, and reads the variants of each
-enum. A fifth argument names the parent of Lever's folder, which is
-`ReplicatedStorage` when it is nil.
+enum. The type check refuses a value that is no enum. A fifth argument names
+the parent of Lever's folder, which is `ReplicatedStorage` when it is nil.
 
 ## Actions and bindings
 

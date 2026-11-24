@@ -6,6 +6,11 @@
 ]]
 
 export default {
+  -- The types of Alloy 0.2 that Lever uses. Lever builds with its own
+  -- flags, so a game sets none of them.
+  fflags = {
+    AlloyExperimentalSupertypes = true,
+  },
   build = {
     ['in'] = 'src',
     out = 'build',

@@ -688,19 +688,19 @@ impl Forge
   --- `Forge.trait<<Door>>(part, Door)`.
   ---
   --- @param instance -- The tagged instance
-  --- @param trait -- The trait struct, or the value of its module
+  --- @param trait -- The trait struct
   --- @return T? -- The bound object, or nil when the trait has not bound to `instance`
   --- @error string -- When the traits feature is off (MissingFeature)
-  function trait<T>(instance: Instance, trait: unknown) -> T?
+  function trait<T>(instance: Instance, trait: struct<T>) -> T?
     return served(hook.trait, 'traits', 'Forge.trait')(instance, trait) :: T?
   end
 
   --- Every object a trait has bound: `Forge.traits<<Door>>(Door)`.
   ---
-  --- @param trait -- The trait struct, or the value of its module
+  --- @param trait -- The trait struct
   --- @return { T } -- The bound objects, in no set order
   --- @error string -- When the traits feature is off (MissingFeature)
-  function traits<T>(trait: unknown) -> { T }
+  function traits<T>(trait: struct<T>) -> { T }
     return (served(hook.traits, 'traits', 'Forge.traits')(trait) :: unknown) :: { T }
   end
 end
@@ -918,10 +918,10 @@ namespace CoreTests
       quiet():AddTrait(module('Door'))
     end):toThrow('MissingFeature: AddTrait needs the traits feature')
     $expect(function() -> ()
-      Forge.trait(module('Door'), {})
+      Forge.trait<<Keyed>>(module('Door'), Keyed)
     end):toThrow('MissingFeature: Forge.trait needs the traits feature')
     $expect(function() -> ()
-      Forge.traits({})
+      Forge.traits<<Keyed>>(Keyed)
     end):toThrow('MissingFeature: Forge.traits needs the traits feature')
   end
 
