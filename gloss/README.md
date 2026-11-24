@@ -14,7 +14,8 @@ numbers with the separators of each language, reads the language of the
 player, and switches the language at run time. It depends on no other
 package.
 
-Gloss needs Alloy 0.1.5 or later and embr 0.8.1 or later.
+Gloss needs Alloy 0.2.0-rc.8 or later and embr 0.8.1 or later. Gloss turns on
+the Alloy flags it uses in its own configuration, so a game sets no flag.
 
 ## Learn
 

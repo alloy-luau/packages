@@ -203,11 +203,7 @@ impl Machine<S, E>
 
   -- One transition: exit, drop the timers, enter, then changed.
   private function step(self, event: E) -> ()
-    const next = self.options.transition(self.current, event)
-
-    if next == nil then
-      return
-    end
+    const next = self.options.transition(self.current, event) ?? return
 
     const from = self.current
     const exit = self.options.exit

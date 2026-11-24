@@ -11,8 +11,9 @@ that drop when their state leaves, and a history of the last states.
 A machine runs on a clock of its own, which `update(dt)` moves. A game connects
 it to `Heartbeat`, and a test moves it by hand, with no real time.
 
-Shift depends on no other package. It needs Alloy 0.1.5 or later and embr 0.8.1
-or later.
+Shift depends on no other package. It needs Alloy 0.2.0-rc.8 or later and embr
+0.8.1 or later. Shift turns on the Alloy flags it uses in its own
+configuration, so a game sets no flag.
 
 ## Learn
 
