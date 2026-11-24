@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2
+
+- The timer heap takes its order as a lambda, and a transition that gives
+  nil leaves with `?? return`.
+- Shift needs Alloy 0.2.0-rc.8 or later. The syntax is behind the flags
+  `AlloyExperimentalLambdaSyntax` and `AlloyExperimentalBailSyntax`.
+  Shift sets them in its own `.config.aly`, so a game sets no flag.
+
+The API and the code that runs are the same as 0.1.1.
+
 ## 0.1.1
 
 - The doc comments use the Moonwave format. The API tab on Ember shows

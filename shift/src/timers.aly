@@ -27,9 +27,9 @@ impl Timers<E>
   --- @return Timers<E> -- The timers, with none set.
   function new() -> Timers<E>
     return new Timers<<E>> {
-      heap = new Heap(function(a: Timer<E>, b: Timer<E>) -> boolean
-        return a.at < b.at or (a.at == b.at and a.order < b.order)
-      end),
+      heap = new Heap(
+        |a: Timer<E>, b: Timer<E>| a.at < b.at or (a.at == b.at and a.order < b.order)
+      ),
       count = 0,
     }
   end
