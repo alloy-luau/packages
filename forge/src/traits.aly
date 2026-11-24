@@ -246,10 +246,7 @@ end
 local function settle(info: TraitInfo, instance: Instance, object: ProviderObject) -> string?
   for _, spec in info.attributes do
     const value = object[spec.field]
-
-    if value == nil then
-      return `the required attribute '{spec.name}' is missing (expected {spec.kind})`
-    end
+      ?? return `the required attribute '{spec.name}' is missing (expected {spec.kind})`
 
     if typeof(value) ~= spec.kind then
       return `the default of '{spec.name}' is a {typeof(value)}, not a {spec.kind}`

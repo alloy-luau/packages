@@ -67,9 +67,7 @@ end
 local function frame(method: string, signal: () -> RBXScriptSignal) -> CustomLifecycle
   return {
     Method = method,
-    Connect = function(fire: Fire) -> RBXScriptConnection?
-      return signal():Connect(fire)
-    end,
+    Connect = |fire: Fire| signal():Connect(fire),
     Dispatch = Dispatch.Inline,
   }
 end
@@ -79,15 +77,11 @@ end
 const BUILTINS: { [string]: CustomLifecycle } = {
   PlayerAdded = {
     Method = 'PlayerAdded',
-    Connect = function(fire: Fire) -> RBXScriptConnection?
-      return each_player(fire)
-    end,
+    Connect = |fire: Fire| each_player(fire),
   },
   PlayerRemoving = {
     Method = 'PlayerRemoving',
-    Connect = function(fire: Fire) -> RBXScriptConnection?
-      return Players.PlayerRemoving:Connect(fire)
-    end,
+    Connect = |fire: Fire| Players.PlayerRemoving:Connect(fire),
   },
   CharacterAdded = {
     Method = 'CharacterAdded',
@@ -144,21 +138,11 @@ const BUILTINS: { [string]: CustomLifecycle } = {
     end,
     Dispatch = Dispatch.Await,
   },
-  PreRender = frame('PreRender', function() -> RBXScriptSignal
-    return RunService.PreRender
-  end),
-  PreAnimation = frame('PreAnimation', function() -> RBXScriptSignal
-    return RunService.PreAnimation
-  end),
-  PreSimulation = frame('PreSimulation', function() -> RBXScriptSignal
-    return RunService.PreSimulation
-  end),
-  PostSimulation = frame('PostSimulation', function() -> RBXScriptSignal
-    return RunService.PostSimulation
-  end),
-  Heartbeat = frame('Heartbeat', function() -> RBXScriptSignal
-    return RunService.Heartbeat
-  end),
+  PreRender = frame('PreRender', || RunService.PreRender),
+  PreAnimation = frame('PreAnimation', || RunService.PreAnimation),
+  PreSimulation = frame('PreSimulation', || RunService.PreSimulation),
+  PostSimulation = frame('PostSimulation', || RunService.PostSimulation),
+  Heartbeat = frame('Heartbeat', || RunService.Heartbeat),
   LocalCharacterAdded = {
     Method = 'LocalCharacterAdded',
     Connect = function(fire: Fire) -> RBXScriptConnection?

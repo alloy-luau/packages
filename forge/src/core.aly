@@ -779,9 +779,7 @@ namespace CoreTests
     const entries = [ ranked('A', 0), ranked('B', 5), ranked('C', 0), ranked('D', 5) ]
     sort_by_priority(entries)
 
-    const names = entries:map(function(entry: Entry) -> string
-      return entry.Name
-    end)
+    const names = entries:map(|entry: Entry| entry.Name)
 
     $assert_eq(names:join(','), 'B,D,A,C')
   end
@@ -907,9 +905,7 @@ namespace CoreTests
       Forge.every(1, 'Tick')
     end):toThrow('MissingFeature: Forge.every needs the lifecycles feature')
     $expect(function() -> ()
-      quiet():AddLifecycle({ Method = 'Tick', Connect = function(_fire) -> RBXScriptConnection?
-        return nil
-      end })
+      quiet():AddLifecycle({ Method = 'Tick', Connect = |_fire| nil })
     end):toThrow('MissingFeature: AddLifecycle needs the lifecycles feature')
     $expect(function() -> ()
       Forge.use('Data')
