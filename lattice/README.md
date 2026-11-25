@@ -835,6 +835,42 @@ values through the pair API names the players that get the entity. `track` and
 Lattice uses replecs 0.4.0-rc.5, the first line of replecs that takes jecs
 0.11.
 
+## Plain jecs
+
+Each part of Lattice is optional. A game can make its ids and its world with
+jecs, and still use the scheduler and replication:
+
+```aly
+import jecs from '@packages/jecs'
+import { Scheduler, type World } from '@packages/lattice'
+
+const ct = {
+  Position = jecs.component<<Vector3>>(),
+}
+jecs.meta(ct.Position, jecs.Name, 'Position')
+
+const world = jecs.world()
+const moving = world:query(ct.Position):cached()
+
+--- Lifts each entity by one stud a second.
+local function lift(_w: World, dt: number) -> ()
+  for entity, position in moving do
+    world:set(entity, ct.Position, position + new Vector3(0, dt, 0))
+  end
+end
+
+new Scheduler(world):add(lift):start()
+```
+
+- The scheduler takes any jecs world. A system gets the world as its first
+  argument, and it can use its own world in its place.
+- Give each id a `Name` with `jecs.meta`. jabby shows the name, and
+  replication matches the ids of the server and the client by it. An id with
+  no name shows as a number in jabby.
+- Make each id before `jecs.world()`, the same as with `component` and `tag`.
+- A cached query of jecs belongs to one world. "The queries of jecs" above
+  has its rules.
+
 ## jabby
 
 To see the world in jabby, register it with the world applet:

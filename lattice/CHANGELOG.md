@@ -4,6 +4,9 @@
 
 - The README tells when the queries of jecs fit, and when a game needs `query`
   and `of`. A second `with` or `without` of jecs replaces the first.
+- A "Plain jecs" section shows a game that makes its ids and its world with
+  jecs and keeps the scheduler. Each id needs a `Name` for jabby and for
+  replication.
 
 The code is the same as 0.3.0.
 
