@@ -155,6 +155,9 @@ that a controls screen shows; it is the variant with spaces when nil, so
   ends inside one frame counts as both.
 - `controls:axis(action)` reads an Axis, and a Button as 1 or 0.
   `controls:axis2(action)` reads an Axis2.
+- A notch of the mouse wheel comes and goes inside one frame. After the step,
+  `axis` reads the largest value of that frame for one frame, so a wheel binding
+  works as a tap does.
 
 The signals are std `Signal`s, so `connect` gives a connection that
 `Disconnect` ends.

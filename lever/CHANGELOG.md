@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1
+
+- `axis` and `axis2` read a pulse that comes and goes inside one frame, such
+  as a notch of the mouse wheel. Before, they read zero, so an Axis bound to
+  `MouseWheel` never moved. After the step, the axis reads the largest value
+  of that frame for one frame. A Button tap reads 1 on `axis` the same way.
+
 ## 0.2.0
 
 `new Lever` takes its two enums with the type `enum`. This is a breaking
