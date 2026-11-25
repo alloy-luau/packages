@@ -128,6 +128,11 @@ struct Entry<C>
   -- The Scriptable binding that `fire` drives, made on the first fire.
   script: InputBinding? = nil
   value: Value = false
+  -- The largest value since the last step, and the one that the last
+  -- step kept. A pulse that comes and goes in one frame, such as a notch
+  -- of the mouse wheel, reads as `pulse` for a frame.
+  peak: Value = false
+  pulse: Value = false
   held: boolean = false
   -- Whether the action began, or ended, since the last step.
   began: boolean = false
@@ -146,15 +151,20 @@ local function zero(kind: Kind) -> Value
   end
 end
 
---- Whether a value holds an action: down, or off zero.
-local function active(value: Value) -> boolean
+--- How far a value is from rest: 1 for a key that is down.
+local function size(value: Value) -> number
   if value is boolean then
-    return value
+    return value ? 1 : 0
   elseif value is number then
-    return value ~= 0
+    return math.abs(value)
   end
 
-  return value.Magnitude > 0
+  return value.Magnitude
+end
+
+--- Whether a value holds an action: down, or off zero.
+local function active(value: Value) -> boolean
+  return size(value) > 0
 end
 
 --- The unit variants of an enum, sorted by name. A unit variant is a
@@ -456,6 +466,16 @@ local function entry_of<A, C>(self: Lever<A, C>, action: A) -> Entry<C>
   return found
 end
 
+--[[
+  The value that `axis` and `axis2` read. The engine sends a notch of
+  the mouse wheel as a value and then zero, both before the game reads
+  input. An action that began and ended in the frame of the last step,
+  and is at rest now, reads the peak of that frame.
+]]
+local function reading<C>(entry: Entry<C>) -> Value
+  return (entry.pressed and entry.released and not entry.held) ? entry.pulse : entry.value
+end
+
 --- Ends an action that is held, as its key coming up would.
 local function release<A, C>(self: Lever<A, C>, action: A) -> ()
   local entry = entry_of(self, action)
@@ -545,6 +565,10 @@ local function feed<A, C>(self: Lever<A, C>, action: A, value: Value) -> ()
   const was = entry.held
   entry.value = value
   entry.held = now
+
+  if size(value) > size(entry.peak) then
+    entry.peak = value
+  end
 
   if now and not was then
     entry.began = true
@@ -637,6 +661,8 @@ local function add<A, C>(self: Lever<A, C>, action: A, id: string, spec: ActionS
     defaults = defaults,
     bindings = copy(defaults),
     value = zero(spec.kind),
+    peak = zero(spec.kind),
+    pulse = zero(spec.kind),
   }
   table.insert(self.order, action)
   sync(self, action)
@@ -754,8 +780,10 @@ impl Lever<A, C>
     for _, entry in self.entries do
       entry.pressed = entry.began
       entry.released = entry.ended
+      entry.pulse = entry.peak
       entry.began = false
       entry.ended = false
+      entry.peak = zero(entry.kind)
     end
   end
 
@@ -799,7 +827,7 @@ impl Lever<A, C>
   --- @error string -- When `action` is no action of this Lever.
   --- @error string -- When the action is an Axis2.
   function axis(self, action: A) -> number
-    const value = entry_of(self, action).value
+    const value = reading(entry_of(self, action))
 
     if value is number then
       return value
@@ -818,7 +846,7 @@ impl Lever<A, C>
   --- @error string -- When `action` is no action of this Lever.
   --- @error string -- When the action is no Axis2.
   function axis2(self, action: A) -> Vector2
-    const value = entry_of(self, action).value
+    const value = reading(entry_of(self, action))
 
     if value is Vector2 then
       return value
@@ -1300,6 +1328,27 @@ namespace LeverTests
     $assert(lever:pressed(Action.Jump))
     $assert(lever:released(Action.Jump))
     $assert(not lever:held(Action.Jump))
+    $assert_eq(lever:axis(Action.Jump), 1)
+    lever:destroy()
+  end
+
+  --- A notch of the mouse wheel comes as a value and then zero in one
+  --- frame. The axis reads the value for the frame after the step.
+  public function a_pulse_in_one_frame_reads_on_the_axis() -> ()
+    const lever = make()
+
+    send(lever, Action.History, -1)
+    send(lever, Action.History, 0)
+    $assert_eq(lever:axis(Action.History), 0)
+    lever:step()
+    $assert_eq(lever:axis(Action.History), -1)
+    lever:step()
+    $assert_eq(lever:axis(Action.History), 0)
+
+    send(lever, Action.Move, new Vector2(3, 4))
+    send(lever, Action.Move, Vector2.zero)
+    lever:step()
+    $assert_eq(lever:axis2(Action.Move), new Vector2(3, 4))
     lever:destroy()
   end
 
