@@ -150,6 +150,31 @@ end
   to another table of jecs.
 - `moving:of(world):has(entity)` tells whether an entity matches.
 
+### The queries of jecs
+
+A game with one world can use the queries of jecs too. `world:query(...)` has
+no cache. Use it for a loop that runs once: at startup, on a remote, or in a
+command. A cached query adds work each time jecs makes a new table, and a loop
+that runs once gets nothing back for it.
+
+For a loop that runs each frame, a module that holds the game's world can make
+a cached query at the top:
+
+```aly
+const keypads = world:query(ct.Keypad):with(ct.Focused):without(ct.Used):cached()
+
+for entity, keypad in keypads do
+  print(entity, keypad)
+end
+```
+
+Two rules apply to the jecs form:
+
+- A second `with` or `without` replaces the first. Give each one all its ids in
+  one call: `:without(ct.Used, ct.Locked)`.
+- The cache belongs to one world. A system that the scheduler gives a world, or
+  a test that makes a new world, needs `query` and `of`.
+
 ## Relationships
 
 A pair joins two ids into one. `pair(Likes, bob)` is the id "likes bob", and an

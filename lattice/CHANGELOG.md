@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+- The README tells when the queries of jecs fit, and when a game needs `query`
+  and `of`. A second `with` or `without` of jecs replaces the first.
+
+The code is the same as 0.3.0.
+
 ## 0.3.0
 
 Lattice 0.2.0 did not go to Ember, so this is the first release with
