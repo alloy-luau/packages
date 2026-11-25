@@ -150,6 +150,31 @@ end
   to another table of jecs.
 - `moving:of(world):has(entity)` tells whether an entity matches.
 
+### The queries of jecs
+
+A game with one world can use the queries of jecs too. `world:query(...)` has
+no cache. Use it for a loop that runs once: at startup, on a remote, or in a
+command. A cached query adds work each time jecs makes a new table, and a loop
+that runs once gets nothing back for it.
+
+For a loop that runs each frame, a module that holds the game's world can make
+a cached query at the top:
+
+```aly
+const keypads = world:query(ct.Keypad):with(ct.Focused):without(ct.Used):cached()
+
+for entity, keypad in keypads do
+  print(entity, keypad)
+end
+```
+
+Two rules apply to the jecs form:
+
+- A second `with` or `without` replaces the first. Give each one all its ids in
+  one call: `:without(ct.Used, ct.Locked)`.
+- The cache belongs to one world. A system that the scheduler gives a world, or
+  a test that makes a new world, needs `query` and `of`.
+
 ## Relationships
 
 A pair joins two ids into one. `pair(Likes, bob)` is the id "likes bob", and an
@@ -809,6 +834,42 @@ values through the pair API names the players that get the entity. `track` and
 
 Lattice uses replecs 0.4.0-rc.5, the first line of replecs that takes jecs
 0.11.
+
+## Plain jecs
+
+Each part of Lattice is optional. A game can make its ids and its world with
+jecs, and still use the scheduler and replication:
+
+```aly
+import jecs from '@packages/jecs'
+import { Scheduler, type World } from '@packages/lattice'
+
+const ct = {
+  Position = jecs.component<<Vector3>>(),
+}
+jecs.meta(ct.Position, jecs.Name, 'Position')
+
+const world = jecs.world()
+const moving = world:query(ct.Position):cached()
+
+--- Lifts each entity by one stud a second.
+local function lift(_w: World, dt: number) -> ()
+  for entity, position in moving do
+    world:set(entity, ct.Position, position + new Vector3(0, dt, 0))
+  end
+end
+
+new Scheduler(world):add(lift):start()
+```
+
+- The scheduler takes any jecs world. A system gets the world as its first
+  argument, and it can use its own world in its place.
+- Give each id a `Name` with `jecs.meta`. jabby shows the name, and
+  replication matches the ids of the server and the client by it. An id with
+  no name shows as a number in jabby.
+- Make each id before `jecs.world()`, the same as with `component` and `tag`.
+- A cached query of jecs belongs to one world. "The queries of jecs" above
+  has its rules.
 
 ## jabby
 
